@@ -581,7 +581,7 @@ h1, h2, h3, h4, h5 {
 .score-bar-fill {
   height: 100%;
   border-radius: 99px;
-  transition: width 500ms ease;
+  transition: width 400ms ease, background 300ms ease;
 }
 .score-bar-fill.strong { background: var(--score-strong); }
 .score-bar-fill.amber  { background: var(--score-amber);  }
@@ -606,6 +606,142 @@ h1, h2, h3, h4, h5 {
 .score-band-dot {
   width: 6px; height: 6px; border-radius: 50%;
   /* color set inline from JS so it inherits the right token */
+}
+
+/* ── Score number (overall large digit) ─────────────────── */
+.score-number {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 2.6rem;
+  line-height: 1;
+  /* color injected via inline style; transition makes preset-switching smooth */
+  transition: color 300ms ease;
+}
+
+/* ── Demo switcher strip ─────────────────────────────────── */
+/*
+  Visible bar placed in the page body, directly below PageHeader.
+  Three large toggle buttons — one per score state.
+  Active button: tinted background matching the score color.
+  Inactive buttons: neutral, with a hover hint.
+*/
+
+/* Outer strip — card-like but with a dashed border to signal "test mode" */
+.demo-strip {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 14px 20px;
+  border: 1.5px dashed var(--border);
+  border-radius: calc(var(--radius) + 2px);
+  background: var(--background);
+  flex-wrap: wrap;
+}
+
+/* Left side — "Demo" tag + hint text */
+.demo-strip-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.demo-strip-tag {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-fg);
+  line-height: 1;
+}
+.demo-strip-hint {
+  font-size: 11.5px;
+  color: var(--muted-fg);
+  white-space: nowrap;
+}
+
+/* Button row */
+.demo-strip-btns {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+/* Individual state button */
+.demo-state-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 140px;
+  height: 40px;
+  padding: 0 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--card);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted-fg);
+  cursor: pointer;
+  transition: border-color 140ms, background 160ms, color 140ms;
+  white-space: nowrap;
+}
+.demo-state-btn:hover:not(.demo-state-btn-active) {
+  border-color: rgb(48 44 39 / 0.3);
+  color: var(--foreground);
+  background: var(--muted);
+}
+
+/* Indicator dot */
+.demo-state-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border);   /* neutral when inactive */
+  flex-shrink: 0;
+  transition: background 200ms ease;
+}
+
+/* Label */
+.demo-state-name {
+  flex: 1;
+  text-align: left;
+}
+
+/* Score badge — tabular, right-aligned */
+.demo-state-score {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  opacity: 0.55;
+  transition: opacity 140ms;
+}
+
+/* ── Active state variants ─────────────────────────────────
+   Background tinted by score color, dot and text coloured.
+*/
+.demo-state-btn-active {
+  border-width: 1.5px;
+}
+.demo-state-btn-active .demo-state-score { opacity: 1; }
+
+/* Strong — green */
+.demo-state-btn-active.demo-state-btn-strong {
+  background: var(--score-strong-bg);
+  border-color: var(--score-strong);
+  color: var(--accent-fg);
+}
+/* Amber */
+.demo-state-btn-active.demo-state-btn-amber {
+  background: var(--score-amber-bg);
+  border-color: var(--score-amber);
+  color: #7a4f00;
+}
+/* Weak — red */
+.demo-state-btn-active.demo-state-btn-weak {
+  background: var(--score-weak-bg);
+  border-color: var(--score-weak);
+  color: var(--destructive);
 }
 
 /* ── Meta dots ───────────────────────────────────────────── */

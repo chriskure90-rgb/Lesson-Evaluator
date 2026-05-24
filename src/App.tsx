@@ -536,27 +536,61 @@ const LESSON_META = {
   overview: "A 60-minute investigation where students model photosynthesis using elodea sprigs, then translate their observations into a labeled diagram that ties evidence to the photosynthesis equation.",
 };
 
-const OVERALL = {
-  score: 88,
-  band: "Classroom-ready",
-  summary: "Clear objectives, well-paced activities, and a defensible assessment. Minor refinements to standards citation and differentiation would strengthen the plan further.",
+/* ── Demo presets ─────────────────────────────────────────────────────────────
+   Three canned scenarios that let you preview all three score-color states
+   before the real API is wired up. Each preset overrides the overall score,
+   badge label, feedback summary, and every section score.
+────────────────────────────────────────────────────────────────────────────── */
+type DemoPreset = {
+  label: string;        // button label
+  score: number;        // overall score
+  band: string;         // badge text
+  summary: string;      // AI feedback paragraph
+  sectionScores: Record<string, number>;
 };
 
-const SECTIONS = [
+const DEMO_PRESETS: DemoPreset[] = [
   {
-    id: "standards", title: "Standards Alignment", score: 90,
+    label: "Strong Example",
+    score: 88,   // avg of section scores (90+92+84+86)/4
+    band: "Classroom-ready",
+    summary:
+      "Clear objectives, well-paced activities, and a defensible assessment. Minor refinements to standards citation and differentiation would strengthen the plan further.",
+    sectionScores: { standards: 90, objectives: 92, instruction: 84, assessment: 86 },
+  },
+  {
+    label: "Needs Revision",
+    score: 72,   // avg of section scores (74+71+68+73)/4
+    band: "Needs revision",
+    summary:
+      "The lesson has a solid foundation but requires revision before classroom use. Learning objectives need sharper measurable language and the assessment evidence is thin.",
+    sectionScores: { standards: 74, objectives: 71, instruction: 68, assessment: 73 },
+  },
+  {
+    label: "Not Ready",
+    score: 54,   // avg of section scores (55+58+49+52)/4
+    band: "Not ready",
+    summary:
+      "Significant gaps in standards alignment and instructional design. The plan needs a full rewrite of objectives, a clearer activity sequence, and a real assessment strategy.",
+    sectionScores: { standards: 55, objectives: 58, instruction: 49, assessment: 52 },
+  },
+];
+
+const SECTION_TEMPLATES = [
+  {
+    id: "standards", title: "Standards Alignment",
     feedback: "MS-LS1-6 is well represented across the modeling task and assessment. Consider explicitly tagging the science and engineering practice (developing and using models) in the rubric.",
   },
   {
-    id: "objectives", title: "Learning Objectives", score: 92,
+    id: "objectives", title: "Learning Objectives",
     feedback: "Objectives are observable and tied directly to the assessment. Phrasing is student-facing and action-oriented. No changes needed.",
   },
   {
-    id: "instruction", title: "Instructional Design", score: 84,
+    id: "instruction", title: "Instructional Design",
     feedback: "Pacing is appropriate and the lab anchors the conceptual content. Add a 2-minute checkpoint after the direct instruction segment to surface misconceptions earlier.",
   },
   {
-    id: "assessment", title: "Assessment Strategy", score: 86,
+    id: "assessment", title: "Assessment Strategy",
     feedback: "Exit ticket aligns with the objectives and produces evidence of learning. Consider providing a sentence stem for students who need a writing scaffold.",
   },
 ];
@@ -578,7 +612,7 @@ function EvalSection({
   section,
   isLast,
 }: {
-  section: typeof SECTIONS[0];
+  section: typeof SECTION_TEMPLATES[0] & { score: number };
   isLast: boolean;
 }) {
   const [override, setOverride] = useState("");
@@ -626,12 +660,25 @@ function EvalSection({
 }
 
 function EvaluatorPage() {
+  const [presetIdx, setPresetIdx] = useState(0);
+  const preset = DEMO_PRESETS[presetIdx];
+  const cat = scoreCategory(preset.score);
+
+  // Merge live section scores from the active preset into the static templates
+  const sections = SECTION_TEMPLATES.map((t) => ({
+    ...t,
+    score: preset.sectionScores[t.id] ?? 0,
+  }));
+
   return (
     <div style={{ maxWidth: 820, margin: "0 auto", padding: "40px 40px 60px" }}>
       <PageHeader title="Lesson Evaluator" subtitle="AI assessment with teacher review." />
 
+      {/* ── Demo switcher — prominent, always visible ── */}
+      <DemoControl presetIdx={presetIdx} onSelect={setPresetIdx} />
+
       {/* Lesson card */}
-      <div className="card" style={{ padding: "24px 28px" }}>
+      <div className="card" style={{ padding: "24px 28px", marginTop: 24 }}>
         <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)" }}>
           Reviewing
         </p>
@@ -653,28 +700,22 @@ function EvaluatorPage() {
       {/* Overall score card */}
       <div className="card" style={{ padding: "24px 28px", marginTop: 20 }}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 32, flexWrap: "wrap" }}>
-          {/* Score */}
-          {(() => {
-            const cat = scoreCategory(OVERALL.score);
-            const colorVar = scoreColorVar(cat);
-            return (
-              <div style={{ flexShrink: 0 }}>
-                <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)" }}>
-                  Overall
-                </p>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginTop: 6 }}>
-                  <span style={{ fontFamily: "Space Grotesk, sans-serif", fontSize: "2.6rem", lineHeight: 1, color: colorVar }}>
-                    {OVERALL.score}
-                  </span>
-                  <span style={{ fontSize: 13, color: "var(--muted-fg)" }}>/100</span>
-                </div>
-                <div className={`score-band ${cat}`}>
-                  <span className="score-band-dot" style={{ background: `var(--score-${cat}-dot)` }} />
-                  {OVERALL.band}
-                </div>
-              </div>
-            );
-          })()}
+          {/* Score number + badge */}
+          <div style={{ flexShrink: 0 }}>
+            <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)" }}>
+              Overall
+            </p>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginTop: 6 }}>
+              <span className="score-number" style={{ color: scoreColorVar(cat) }}>
+                {preset.score}
+              </span>
+              <span style={{ fontSize: 13, color: "var(--muted-fg)" }}>/100</span>
+            </div>
+            <div className={`score-band ${cat}`}>
+              <span className="score-band-dot" style={{ background: `var(--score-${cat}-dot)` }} />
+              {preset.band}
+            </div>
+          </div>
 
           {/* Divider */}
           <div style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
@@ -685,7 +726,7 @@ function EvaluatorPage() {
               AI Feedback
             </p>
             <p style={{ marginTop: 8, fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.65 }}>
-              {OVERALL.summary}
+              {preset.summary}
             </p>
           </div>
         </div>
@@ -697,10 +738,58 @@ function EvaluatorPage() {
           Detailed Evaluation
         </p>
         <div className="card" style={{ padding: "0 24px", overflow: "hidden" }}>
-          {SECTIONS.map((s, i) => (
-            <EvalSection key={s.id} section={s} isLast={i === SECTIONS.length - 1} />
+          {sections.map((s, i) => (
+            <EvalSection key={s.id} section={s} isLast={i === sections.length - 1} />
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Demo switcher ────────────────────────────────────────────────────────────
+   Visible strip placed directly in the page body (not tucked into the header).
+   Three large toggle buttons — one per score state — with clear label, score,
+   and a coloured indicator dot. Active button gets a tinted background so the
+   current selection is immediately obvious.
+────────────────────────────────────────────────────────────────────────────── */
+function DemoControl({
+  presetIdx,
+  onSelect,
+}: {
+  presetIdx: number;
+  onSelect: (i: number) => void;
+}) {
+  return (
+    <div className="demo-strip">
+      {/* Left label */}
+      <div className="demo-strip-label">
+        <span className="demo-strip-tag">Demo</span>
+        <span className="demo-strip-hint">Preview score states</span>
+      </div>
+
+      {/* Three state buttons */}
+      <div className="demo-strip-btns">
+        {DEMO_PRESETS.map((p, i) => {
+          const cat = scoreCategory(p.score);
+          const isActive = presetIdx === i;
+          return (
+            <button
+              key={i}
+              type="button"
+              className={`demo-state-btn demo-state-btn-${cat}${isActive ? " demo-state-btn-active" : ""}`}
+              onClick={() => onSelect(i)}
+            >
+              {/* Colour indicator */}
+              <span
+                className="demo-state-dot"
+                style={{ background: isActive ? `var(--score-${cat}-dot)` : undefined }}
+              />
+              <span className="demo-state-name">{p.label}</span>
+              <span className="demo-state-score">{p.score}</span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
