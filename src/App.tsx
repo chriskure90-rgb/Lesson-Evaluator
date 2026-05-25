@@ -5,7 +5,7 @@ import "./index.css";
    TYPES
 ════════════════════════════════════════════════════════════ */
 
-type Page = "generator" | "evaluator";
+type Page = "login" | "generator" | "evaluator" | "library";
 
 type Activity = { name: string; minutes: number; detail: string };
 
@@ -141,6 +141,26 @@ const Icon = {
       <polyline points="6 9 12 15 18 9"/>
     </svg>
   ),
+  Library: () => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 3v18"/><path d="M3 6h4a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3"/><path d="M13 3l4 18"/><path d="M21 3l-4 18"/>
+    </svg>
+  ),
+  Search: () => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+    </svg>
+  ),
+  ArrowUpRight: () => (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M7 7h10v10"/><path d="M7 17 17 7"/>
+    </svg>
+  ),
+  ChevronDown: () => (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="6 9 12 15 18 9"/>
+    </svg>
+  ),
 };
 
 /* ════════════════════════════════════════════════════════════
@@ -239,6 +259,7 @@ function Sidebar({ page, setPage }: { page: Page; setPage: (p: Page) => void }) 
   const nav = [
     { id: "generator" as Page, label: "Generator", Icon: Icon.Sparkles },
     { id: "evaluator" as Page, label: "Evaluator", Icon: Icon.FileCheck },
+    { id: "library"   as Page, label: "Library",   Icon: Icon.Library  },
   ];
 
   return (
@@ -937,25 +958,415 @@ function DemoControl({
 }
 
 /* ════════════════════════════════════════════════════════════
+   LESSON LIBRARY — mock data + UI
+════════════════════════════════════════════════════════════ */
+
+type LessonStatus = "classroom-ready" | "needs-revision" | "teacher-edited";
+
+type LibraryLesson = {
+  id: string;
+  title: string;
+  subject: string;
+  grade: string;
+  model: string;
+  score: number;
+  status: LessonStatus;
+  created: string;   // ISO date string
+  frameworks: string[];
+  duration: number;
+};
+
+const LIBRARY_MOCK: LibraryLesson[] = [
+  {
+    id: "1",
+    title: "Modeling Photosynthesis with Everyday Materials",
+    subject: "Science",
+    grade: "7",
+    model: "Claude",
+    score: 88,
+    status: "classroom-ready",
+    created: "2025-05-18",
+    frameworks: ["NGSS"],
+    duration: 60,
+  },
+  {
+    id: "2",
+    title: "Introduction to Fractions Using Pattern Blocks",
+    subject: "Mathematics",
+    grade: "4",
+    model: "GPT-4",
+    score: 74,
+    status: "needs-revision",
+    created: "2025-05-15",
+    frameworks: ["Common Core"],
+    duration: 45,
+  },
+  {
+    id: "3",
+    title: "The Water Cycle: Evaporation & Condensation",
+    subject: "Science",
+    grade: "5",
+    model: "Gemini",
+    score: 91,
+    status: "classroom-ready",
+    created: "2025-05-12",
+    frameworks: ["NGSS"],
+    duration: 60,
+  },
+  {
+    id: "4",
+    title: "Writing Persuasive Paragraphs with Evidence",
+    subject: "English",
+    grade: "6",
+    model: "Claude",
+    score: 82,
+    status: "teacher-edited",
+    created: "2025-05-10",
+    frameworks: ["Common Core"],
+    duration: 45,
+  },
+  {
+    id: "5",
+    title: "Understanding Supply & Demand with Role-Play",
+    subject: "Social Studies",
+    grade: "9",
+    model: "Mistral",
+    score: 55,
+    status: "needs-revision",
+    created: "2025-05-08",
+    frameworks: ["State-specific"],
+    duration: 90,
+  },
+  {
+    id: "6",
+    title: "Cell Division: Mitosis vs. Meiosis Comparison",
+    subject: "Biology",
+    grade: "10",
+    model: "GPT-4",
+    score: 95,
+    status: "classroom-ready",
+    created: "2025-05-05",
+    frameworks: ["NGSS", "Common Core"],
+    duration: 60,
+  },
+  {
+    id: "7",
+    title: "Colonial America: Primary Source Analysis",
+    subject: "History",
+    grade: "8",
+    model: "Claude",
+    score: 67,
+    status: "teacher-edited",
+    created: "2025-04-30",
+    frameworks: ["Common Core"],
+    duration: 45,
+  },
+  {
+    id: "8",
+    title: "Graphing Linear Equations on the Coordinate Plane",
+    subject: "Mathematics",
+    grade: "8",
+    model: "Gemini",
+    score: 79,
+    status: "needs-revision",
+    created: "2025-04-25",
+    frameworks: ["Common Core"],
+    duration: 60,
+  },
+];
+
+const STATUS_META: Record<LessonStatus, { label: string; cls: string }> = {
+  "classroom-ready": { label: "Classroom Ready", cls: "badge-ready"   },
+  "needs-revision":  { label: "Needs Revision",  cls: "badge-revision"},
+  "teacher-edited":  { label: "Teacher Edited",  cls: "badge-edited"  },
+};
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+function LibraryPage() {
+  const [query,     setQuery]     = useState("");
+  const [statusFlt, setStatusFlt] = useState<string>("all");
+  const [sortBy,    setSortBy]    = useState<"recent" | "score">("recent");
+
+  // Filter + sort
+  const visible = LIBRARY_MOCK
+    .filter((l) => {
+      const matchQ = query === "" ||
+        l.title.toLowerCase().includes(query.toLowerCase()) ||
+        l.subject.toLowerCase().includes(query.toLowerCase());
+      const matchS = statusFlt === "all" || l.status === statusFlt;
+      return matchQ && matchS;
+    })
+    .sort((a, b) =>
+      sortBy === "score"
+        ? b.score - a.score
+        : new Date(b.created).getTime() - new Date(a.created).getTime()
+    );
+
+  return (
+    <div style={{ maxWidth: 960, margin: "0 auto", padding: "40px 40px 60px" }}>
+      <PageHeader
+        title="Lesson Library"
+        subtitle="Browse, search, and reopen your previously generated lesson plans."
+      />
+
+      {/* ── Toolbar ── */}
+      <div className="lib-toolbar">
+        {/* Search */}
+        <div className="lib-search-wrap">
+          <span className="lib-search-icon"><Icon.Search /></span>
+          <input
+            className="input lib-search-input"
+            type="search"
+            placeholder="Search lessons or subjects…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+
+        {/* Filter by status */}
+        <div className="lib-select-wrap">
+          <select
+            className="select lib-select"
+            value={statusFlt}
+            onChange={(e) => setStatusFlt(e.target.value)}
+          >
+            <option value="all">All statuses</option>
+            <option value="classroom-ready">Classroom Ready</option>
+            <option value="needs-revision">Needs Revision</option>
+            <option value="teacher-edited">Teacher Edited</option>
+          </select>
+        </div>
+
+        {/* Sort */}
+        <div className="lib-sort-group">
+          {([["recent", "Recent"], ["score", "Highest score"]] as const).map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              className={`lib-sort-btn${sortBy === v ? " lib-sort-btn-active" : ""}`}
+              onClick={() => setSortBy(v)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Results count ── */}
+      <p className="lib-count">
+        {visible.length} {visible.length === 1 ? "lesson" : "lessons"}
+        {statusFlt !== "all" || query ? " matching filters" : ""}
+      </p>
+
+      {/* ── Cards grid ── */}
+      {visible.length === 0 ? (
+        <div className="lib-empty">
+          <p className="lib-empty-title">No lessons found</p>
+          <p className="lib-empty-sub">Try adjusting your search or filters.</p>
+        </div>
+      ) : (
+        <div className="lib-grid">
+          {visible.map((lesson) => (
+            <LessonCard key={lesson.id} lesson={lesson} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LessonCard({ lesson }: { lesson: LibraryLesson }) {
+  const cat    = scoreCategory(lesson.score);
+  const status = STATUS_META[lesson.status];
+
+  return (
+    <div className="lib-card">
+      {/* Top row: status badge + score */}
+      <div className="lib-card-top">
+        <span className={`lib-badge ${status.cls}`}>{status.label}</span>
+        <span className={`lib-score score-${cat}`}>{lesson.score}</span>
+      </div>
+
+      {/* Title */}
+      <h3 className="lib-card-title">{lesson.title}</h3>
+
+      {/* Meta row */}
+      <div className="lib-card-meta">
+        <span>{lesson.subject}</span>
+        <span className="lib-meta-dot">·</span>
+        <span>Grade {lesson.grade}</span>
+        <span className="lib-meta-dot">·</span>
+        <span>{lesson.duration} min</span>
+      </div>
+
+      {/* Secondary meta */}
+      <div className="lib-card-meta" style={{ marginTop: 4 }}>
+        <span>{lesson.frameworks.join(", ")}</span>
+        <span className="lib-meta-dot">·</span>
+        <span>{lesson.model}</span>
+      </div>
+
+      {/* Footer: date + open button */}
+      <div className="lib-card-footer">
+        <span className="lib-card-date">{formatDate(lesson.created)}</span>
+        <button type="button" className="lib-open-btn">
+          Open <Icon.ArrowUpRight />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════
+   LOGIN PAGE
+════════════════════════════════════════════════════════════ */
+
+function LoginPage({ onLogin }: { onLogin: () => void }) {
+  const [email, setEmail]       = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState<string | null>(null);
+
+  function handleSubmit() {
+    if (!email.trim() || !password) {
+      setError("Please enter your email and password.");
+      return;
+    }
+    setError(null);
+    setLoading(true);
+    // Mock auth delay — replace with real call when ready
+    setTimeout(() => {
+      setLoading(false);
+      onLogin();
+    }, 900);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") handleSubmit();
+  }
+
+  return (
+    <div className="login-shell">
+      <div className="login-card">
+
+        {/* ── Brand ── */}
+        <div className="login-brand">
+          <div className="login-brand-icon">
+            <Icon.BookOpen />
+          </div>
+          <div>
+            <div className="login-brand-name">LessonAI</div>
+            <div className="login-brand-sub">Teacher workspace</div>
+          </div>
+        </div>
+
+        {/* ── Heading ── */}
+        <div className="login-heading">
+          <h1 className="login-title">Welcome back</h1>
+          <p className="login-subtitle">Sign in to your teacher account</p>
+        </div>
+
+        {/* ── Form ── */}
+        <div className="login-form">
+          {error && <p className="error-box" style={{ marginBottom: 16 }}>{error}</p>}
+
+          <div className="field">
+            <FieldLabel htmlFor="login-email">Email address</FieldLabel>
+            <input
+              id="login-email"
+              type="email"
+              className="input"
+              placeholder="you@school.edu"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={handleKeyDown}
+              autoComplete="email"
+              autoFocus
+            />
+          </div>
+
+          <div className="field" style={{ marginTop: 14 }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 6 }}>
+              <label htmlFor="login-password" className="field-label">Password</label>
+              <button type="button" className="login-forgot" onClick={() => {}}>
+                Forgot password?
+              </button>
+            </div>
+            <input
+              id="login-password"
+              type="password"
+              className="input"
+              placeholder="••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={handleKeyDown}
+              autoComplete="current-password"
+            />
+          </div>
+
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ marginTop: 22 }}
+            onClick={handleSubmit}
+            disabled={loading}
+          >
+            {loading ? <><Icon.Loader /> Signing in…</> : "Sign in"}
+          </button>
+
+          {/* Divider */}
+          <div className="login-divider">
+            <span className="login-divider-line" />
+            <span className="login-divider-text">or</span>
+            <span className="login-divider-line" />
+          </div>
+
+          <button
+            type="button"
+            className="btn-outline-sm login-demo-btn"
+            onClick={onLogin}
+          >
+            Continue as demo
+          </button>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════
    APP ROOT
 ════════════════════════════════════════════════════════════ */
 
 export default function App() {
-  const [page, setPage] = useState<Page>("generator");
-  // Lesson lives here so the Evaluator can access what the Generator produced
+  const [page, setPage] = useState<Page>("login");
   const [sharedLesson, setSharedLesson] = useState<Lesson | null>(null);
+
+  function handleLogin() {
+    setPage("generator");
+  }
 
   return (
     <>
       <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
-      <div className="app-shell">
-        <Sidebar page={page} setPage={setPage} />
-        <main className="main-content">
-          {page === "generator"
-            ? <GeneratorPage sharedLesson={sharedLesson} onLessonGenerated={setSharedLesson} />
-            : <EvaluatorPage lesson={sharedLesson} />}
-        </main>
-      </div>
+      {page === "login" ? (
+        <LoginPage onLogin={handleLogin} />
+      ) : (
+        <div className="app-shell">
+          <Sidebar page={page} setPage={setPage} />
+          <main className="main-content">
+            {page === "generator"
+              ? <GeneratorPage sharedLesson={sharedLesson} onLessonGenerated={setSharedLesson} />
+              : page === "evaluator"
+              ? <EvaluatorPage lesson={sharedLesson} />
+              : <LibraryPage />}
+          </main>
+        </div>
+      )}
     </>
   );
 }

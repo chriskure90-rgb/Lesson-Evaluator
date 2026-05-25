@@ -888,6 +888,327 @@ h1, h2, h3, h4, h5 {
 .space-y-5 > * + * { margin-top: 20px; }
 .space-y-6 > * + * { margin-top: 24px; }
 
+/* ── Lesson Library ──────────────────────────────────────── */
+
+/* Toolbar: search + filter + sort in one row */
+.lib-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+/* Search */
+.lib-search-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 180px;
+}
+.lib-search-icon {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted-fg);
+  display: flex;
+  pointer-events: none;
+}
+.lib-search-input {
+  padding-left: 32px;
+}
+
+/* Filter dropdown — fixed width */
+.lib-select-wrap { flex-shrink: 0; }
+.lib-select { width: 170px; }
+
+/* Sort toggle group */
+.lib-sort-group {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.lib-sort-btn {
+  height: 38px;
+  padding: 0 13px;
+  background: var(--background);
+  border: none;
+  border-right: 1px solid var(--border);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted-fg);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms, color 120ms;
+}
+.lib-sort-btn:last-child { border-right: none; }
+.lib-sort-btn:hover:not(.lib-sort-btn-active) {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.lib-sort-btn-active {
+  background: var(--primary);
+  color: var(--primary-fg);
+}
+
+/* Results count */
+.lib-count {
+  font-size: 12.5px;
+  color: var(--muted-fg);
+  margin-bottom: 18px;
+}
+
+/* Card grid — 3 cols on wide, 2 on medium, 1 on narrow */
+.lib-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+@media (max-width: 860px) { .lib-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .lib-grid { grid-template-columns: 1fr; } }
+
+/* Individual lesson card */
+.lib-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 2px);
+  box-shadow: var(--shadow-card);
+  padding: 18px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  transition: box-shadow 150ms, border-color 150ms;
+}
+.lib-card:hover {
+  box-shadow: var(--shadow-soft);
+  border-color: rgb(58 107 82 / 0.3);
+}
+
+/* Top row: badge + score */
+.lib-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+/* Status badges */
+.lib-badge {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 9px;
+  border-radius: 99px;
+  white-space: nowrap;
+}
+.badge-ready    { background: var(--score-strong-bg); color: var(--accent-fg);   }
+.badge-revision { background: var(--score-amber-bg);  color: #7a4f00;            }
+.badge-edited   { background: var(--muted);           color: var(--muted-fg);    border: 1px solid var(--border); }
+
+/* Score number on card */
+.lib-score {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 15px;
+  font-weight: 600;
+  tabular-nums: true;
+}
+.lib-score.score-strong { color: var(--score-strong); }
+.lib-score.score-amber  { color: var(--score-amber);  }
+.lib-score.score-weak   { color: var(--score-weak);   }
+
+/* Title */
+.lib-card-title {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
+  margin-bottom: 8px;
+  flex: 1;
+}
+
+/* Meta rows */
+.lib-card-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--muted-fg);
+}
+.lib-meta-dot { color: var(--border); }
+
+/* Footer */
+.lib-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.lib-card-date {
+  font-size: 12px;
+  color: var(--muted-fg);
+}
+
+/* Open button */
+.lib-open-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--primary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  transition: opacity 120ms;
+}
+.lib-open-btn:hover { opacity: 0.75; }
+
+/* Empty state */
+.lib-empty {
+  padding: 64px 0;
+  text-align: center;
+}
+.lib-empty-title {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 15px;
+  color: var(--foreground);
+  margin-bottom: 6px;
+}
+.lib-empty-sub { font-size: 13px; color: var(--muted-fg); }
+
+/* ── Login page ──────────────────────────────────────────── */
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--background);
+  /* Subtle radial wash behind the card */
+  background-image: radial-gradient(
+    ellipse 70% 55% at 50% 38%,
+    oklch(0.93 0.025 150 / 0.45) 0%,
+    transparent 100%
+  );
+}
+
+.login-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 4px);
+  box-shadow: var(--shadow-soft);
+  padding: 40px 36px 36px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* Brand row */
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 28px;
+}
+.login-brand-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: rgb(58 107 82 / 0.12);
+  border: 1px solid rgb(58 107 82 / 0.22);
+  display: grid;
+  place-items: center;
+  color: var(--primary);
+  flex-shrink: 0;
+}
+.login-brand-name {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--foreground);
+  line-height: 1.2;
+}
+.login-brand-sub {
+  font-size: 11px;
+  color: var(--muted-fg);
+  margin-top: 1px;
+}
+
+/* Heading */
+.login-heading {
+  margin-bottom: 24px;
+}
+.login-title {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  color: var(--foreground);
+  line-height: 1.2;
+}
+.login-subtitle {
+  margin-top: 5px;
+  font-size: 14px;
+  color: var(--muted-fg);
+}
+
+/* Form wrapper */
+.login-form {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Forgot password link */
+.login-forgot {
+  font-size: 12px;
+  color: var(--primary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font-family: inherit;
+  font-weight: 500;
+  line-height: 1;
+}
+.login-forgot:hover { text-decoration: underline; }
+
+/* Divider */
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 20px 0;
+}
+.login-divider-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.login-divider-text {
+  font-size: 12px;
+  color: var(--muted-fg);
+  white-space: nowrap;
+}
+
+/* Demo button — full width */
+.login-demo-btn {
+  width: 100%;
+  justify-content: center;
+  height: 38px;
+  font-size: 13.5px;
+}
+
 /* ── Responsive ──────────────────────────────────────────── */
 @media (max-width: 900px) {
   .sidebar { width: 56px; }
