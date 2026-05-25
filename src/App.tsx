@@ -288,9 +288,10 @@ const GRADES = ["K","1","2","3","4","5","6","7","8","9","10","11","12"];
 const DURATIONS = [30, 45, 60, 90];
 
 const MODELS = [
-  { value: "gpt-4",   label: "GPT-4",   hint: "OpenAI"    },
-  { value: "claude",  label: "Claude",  hint: "Anthropic" },
-  { value: "gemini",  label: "Gemini",  hint: "Google"    },
+  { value: "gpt-4",    label: "GPT-4",    hint: "OpenAI"    },
+  { value: "claude",   label: "Claude",   hint: "Anthropic" },
+  { value: "gemini",   label: "Gemini",   hint: "Google"    },
+  { value: "mistral",  label: "Mistral",  hint: "Mistral AI" },
 ];
 
 const FRAMEWORKS = [
