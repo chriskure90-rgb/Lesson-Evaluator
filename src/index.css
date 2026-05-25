@@ -233,6 +233,29 @@ h1, h2, h3, h4, h5 {
 .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
 .btn-primary:disabled { opacity: 0.55; cursor: not-allowed; }
 
+/* Small outline button — used for Re-evaluate etc. */
+.btn-outline-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--muted-fg);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 120ms, color 120ms, background 120ms;
+}
+.btn-outline-sm:hover {
+  border-color: rgb(48 44 39 / 0.35);
+  color: var(--foreground);
+  background: var(--muted);
+}
+
 /* ── Form controls ───────────────────────────────────────── */
 .field { margin-bottom: 0; }
 

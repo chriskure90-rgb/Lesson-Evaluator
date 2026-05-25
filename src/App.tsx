@@ -21,53 +21,56 @@ type Lesson = {
    API
 ════════════════════════════════════════════════════════════ */
 
+/* ── API helpers ─────────────────────────────────────────────────────────────
+   Both functions call your backend routes, not the Anthropic API directly.
+   The backend is responsible for auth, prompt engineering, and parsing.
+────────────────────────────────────────────────────────────────────────────── */
+
 async function generateLesson(params: {
   grade: string;
-  frameworks: string[];   // resolved display labels, e.g. ["NGSS", "My District"]
+  frameworks: string[];
   code: string;
   goal: string;
   duration: number;
 }): Promise<Lesson> {
-  const frameworkLine = params.frameworks.length
-    ? `Standards frameworks: ${params.frameworks.join(", ")}${params.code ? ` (codes/standards: ${params.code})` : ""}.`
-    : "No specific standards framework specified.";
-
-  const systemPrompt = `You are an expert curriculum designer who writes concise, standards-aligned lesson plans for K–12 teachers.
-Return ONLY valid JSON matching this exact shape — no markdown fences, no extra keys:
-{
-  "title": "string",
-  "objectives": ["string"],
-  "materials": ["string"],
-  "activities": [{ "name": "string", "minutes": number, "detail": "string" }],
-  "assessment": "string"
-}
-Activities must sum to exactly ${params.duration} minutes. 2–4 objectives, 3–6 materials.`;
-
-  const userPrompt = `Create a ${params.duration}-minute lesson plan for Grade ${params.grade}.
-${frameworkLine}
-Lesson goal: ${params.goal}`;
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const res = await fetch("/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1000,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
-    }),
+    body: JSON.stringify(params),
   });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => `HTTP ${res.status}`);
+    throw new Error(msg || `Server error ${res.status}`);
+  }
+  return res.json() as Promise<Lesson>;
+}
 
-  if (!res.ok) throw new Error(`API error ${res.status}`);
+// Shape returned by /api/evaluate
+type EvaluationSection = {
+  id: string;
+  title: string;
+  score: number;
+  feedback: string;
+};
 
-  const data = await res.json();
-  const text: string = data.content
-    .filter((b: { type: string }) => b.type === "text")
-    .map((b: { text: string }) => b.text)
-    .join("");
+type EvaluationResult = {
+  score: number;          // overall 0-100
+  band: string;           // e.g. "Classroom-ready"
+  summary: string;        // AI feedback paragraph
+  sections: EvaluationSection[];
+};
 
-  const clean = text.replace(/```(?:json)?|```/g, "").trim();
-  return JSON.parse(clean) as Lesson;
+async function evaluateLesson(lesson: Lesson): Promise<EvaluationResult> {
+  const res = await fetch("/api/evaluate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lesson }),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => `HTTP ${res.status}`);
+    throw new Error(msg || `Server error ${res.status}`);
+  }
+  return res.json() as Promise<EvaluationResult>;
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -258,7 +261,13 @@ const FRAMEWORKS = [
   { value: "state", label: "State-specific" },
 ];
 
-function GeneratorPage() {
+function GeneratorPage({
+  sharedLesson,
+  onLessonGenerated,
+}: {
+  sharedLesson: Lesson | null;
+  onLessonGenerated: (l: Lesson) => void;
+}) {
   // Standards: multi-select list of framework ids + optional custom text
   const [selectedFws, setSelectedFws] = useState<string[]>(["ngss"]);
   const [customFw, setCustomFw]       = useState("");
@@ -267,7 +276,7 @@ function GeneratorPage() {
   const [goal, setGoal]               = useState("Help students understand how plants produce energy through photosynthesis.");
   const [duration, setDuration]       = useState(60);
   const [loading, setLoading]         = useState(false);
-  const [lesson, setLesson]           = useState<Lesson | null>(null);
+  const [lesson, setLesson]           = useState<Lesson | null>(sharedLesson);
   const [error, setError]             = useState<string | null>(null);
 
   const CUSTOM_ID = "custom";
@@ -293,6 +302,7 @@ function GeneratorPage() {
     try {
       const result = await generateLesson({ grade, frameworks: resolvedFrameworks(), code, goal, duration });
       setLesson(result);
+      onLessonGenerated(result);   // share with the Evaluator
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
     } finally {
@@ -659,42 +669,103 @@ function EvalSection({
   );
 }
 
-function EvaluatorPage() {
-  const [presetIdx, setPresetIdx] = useState(0);
-  const preset = DEMO_PRESETS[presetIdx];
-  const cat = scoreCategory(preset.score);
+function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
+  // Real API result — null until a successful /api/evaluate call
+  const [evalResult, setEvalResult]   = useState<EvaluationResult | null>(null);
+  const [evaluating, setEvaluating]   = useState(false);
+  const [evalError, setEvalError]     = useState<string | null>(null);
 
-  // Merge live section scores from the active preset into the static templates
-  const sections = SECTION_TEMPLATES.map((t) => ({
-    ...t,
-    score: preset.sectionScores[t.id] ?? 0,
-  }));
+  // Demo fallback — visible only when no real result exists yet
+  const [presetIdx, setPresetIdx]     = useState(0);
+
+  // The lesson displayed in the "Reviewing" card
+  const displayLesson = lesson ?? LESSON_META;
+
+  async function handleEvaluate() {
+    setEvaluating(true);
+    setEvalError(null);
+    try {
+      const result = await evaluateLesson(displayLesson as Lesson);
+      setEvalResult(result);
+    } catch (err) {
+      setEvalError(err instanceof Error ? err.message : "Evaluation failed. Please try again.");
+    } finally {
+      setEvaluating(false);
+    }
+  }
+
+  // Derive what to show: real API result takes priority over demo preset
+  const activePreset = DEMO_PRESETS[presetIdx];
+  const displayScore   = evalResult?.score   ?? activePreset.score;
+  const displayBand    = evalResult?.band    ?? activePreset.band;
+  const displaySummary = evalResult?.summary ?? activePreset.summary;
+  const displaySections: EvaluationSection[] = evalResult?.sections
+    ?? SECTION_TEMPLATES.map((t) => ({
+        ...t,
+        score: activePreset.sectionScores[t.id] ?? 0,
+      }));
+
+  const cat = scoreCategory(displayScore);
 
   return (
     <div style={{ maxWidth: 820, margin: "0 auto", padding: "40px 40px 60px" }}>
       <PageHeader title="Lesson Evaluator" subtitle="AI assessment with teacher review." />
 
-      {/* ── Demo switcher — prominent, always visible ── */}
-      <DemoControl presetIdx={presetIdx} onSelect={setPresetIdx} />
+      {/* ── Demo switcher — hidden once real results arrive ── */}
+      {!evalResult && (
+        <DemoControl presetIdx={presetIdx} onSelect={setPresetIdx} />
+      )}
 
       {/* Lesson card */}
-      <div className="card" style={{ padding: "24px 28px", marginTop: 24 }}>
-        <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)" }}>
-          Reviewing
-        </p>
-        <h2 style={{ marginTop: 6, fontSize: "1.2rem", lineHeight: 1.3, maxWidth: 600 }}>
-          {LESSON_META.title}
-        </h2>
-        <div className="meta-row">
-          <span>Grade {LESSON_META.grade}</span>
-          <span className="meta-dot">·</span>
-          <span>{LESSON_META.duration} min</span>
-          <span className="meta-dot">·</span>
-          <span>{LESSON_META.model}</span>
+      <div className="card" style={{ padding: "24px 28px", marginTop: evalResult ? 0 : 24 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)" }}>
+              Reviewing
+            </p>
+            <h2 style={{ marginTop: 6, fontSize: "1.2rem", lineHeight: 1.3, maxWidth: 600 }}>
+              {(displayLesson as typeof LESSON_META).title}
+            </h2>
+            <div className="meta-row">
+              <span>Grade {(displayLesson as typeof LESSON_META).grade}</span>
+              <span className="meta-dot">·</span>
+              <span>{(displayLesson as typeof LESSON_META).duration} min</span>
+            </div>
+            {(displayLesson as typeof LESSON_META).overview && (
+              <p style={{ marginTop: 12, fontSize: 14, color: "rgb(48 44 39 / 0.8)", lineHeight: 1.65, maxWidth: 620 }}>
+                {(displayLesson as typeof LESSON_META).overview}
+              </p>
+            )}
+          </div>
+
+          {/* Evaluate button */}
+          <div style={{ flexShrink: 0, paddingTop: 2 }}>
+            {evalResult ? (
+              <button
+                type="button"
+                className="btn-outline-sm"
+                onClick={() => { setEvalResult(null); setEvalError(null); }}
+              >
+                Re-evaluate
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ width: "auto", padding: "0 18px", height: 36, fontSize: 13 }}
+                onClick={handleEvaluate}
+                disabled={evaluating}
+              >
+                {evaluating
+                  ? <><Icon.Loader /> Evaluating…</>
+                  : <><Icon.FileCheck /> Evaluate lesson</>}
+              </button>
+            )}
+          </div>
         </div>
-        <p style={{ marginTop: 16, fontSize: 14, color: "rgb(48 44 39 / 0.8)", lineHeight: 1.65, maxWidth: 620 }}>
-          {LESSON_META.overview}
-        </p>
+        {evalError && (
+          <p className="error-box" style={{ marginTop: 12 }}>{evalError}</p>
+        )}
       </div>
 
       {/* Overall score card */}
@@ -707,13 +778,13 @@ function EvaluatorPage() {
             </p>
             <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginTop: 6 }}>
               <span className="score-number" style={{ color: scoreColorVar(cat) }}>
-                {preset.score}
+                {displayScore}
               </span>
               <span style={{ fontSize: 13, color: "var(--muted-fg)" }}>/100</span>
             </div>
             <div className={`score-band ${cat}`}>
               <span className="score-band-dot" style={{ background: `var(--score-${cat}-dot)` }} />
-              {preset.band}
+              {displayBand}
             </div>
           </div>
 
@@ -723,10 +794,10 @@ function EvaluatorPage() {
           {/* Feedback */}
           <div style={{ flex: 1, minWidth: 220 }}>
             <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)" }}>
-              AI Feedback
+              {evalResult ? "AI Feedback" : "AI Feedback · demo"}
             </p>
             <p style={{ marginTop: 8, fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.65 }}>
-              {preset.summary}
+              {displaySummary}
             </p>
           </div>
         </div>
@@ -735,11 +806,11 @@ function EvaluatorPage() {
       {/* Detailed sections */}
       <div style={{ marginTop: 32 }}>
         <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)", marginBottom: 12 }}>
-          Detailed Evaluation
+          {evalResult ? "Detailed Evaluation" : "Detailed Evaluation · demo"}
         </p>
         <div className="card" style={{ padding: "0 24px", overflow: "hidden" }}>
-          {sections.map((s, i) => (
-            <EvalSection key={s.id} section={s} isLast={i === sections.length - 1} />
+          {displaySections.map((s, i) => (
+            <EvalSection key={s.id} section={s} isLast={i === displaySections.length - 1} />
           ))}
         </div>
       </div>
@@ -801,6 +872,8 @@ function DemoControl({
 
 export default function App() {
   const [page, setPage] = useState<Page>("generator");
+  // Lesson lives here so the Evaluator can access what the Generator produced
+  const [sharedLesson, setSharedLesson] = useState<Lesson | null>(null);
 
   return (
     <>
@@ -808,7 +881,9 @@ export default function App() {
       <div className="app-shell">
         <Sidebar page={page} setPage={setPage} />
         <main className="main-content">
-          {page === "generator" ? <GeneratorPage /> : <EvaluatorPage />}
+          {page === "generator"
+            ? <GeneratorPage sharedLesson={sharedLesson} onLessonGenerated={setSharedLesson} />
+            : <EvaluatorPage lesson={sharedLesson} />}
         </main>
       </div>
     </>
