@@ -15,7 +15,38 @@ type Lesson = {
   materials: string[];
   activities: Activity[];
   assessment: string;
+  differentiation?: string;   // optional — API may include this
 };
+
+/**
+ * Coerce a raw API response into a safe Lesson.
+ * Guarantees every array field is actually an array, and every string field
+ * is a string, so .map() calls in JSX can never throw.
+ */
+function normaliseLesson(raw: unknown): Lesson {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const ensureArr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+  const ensureStr = (v: unknown): string  => (typeof v === "string" ? v : "");
+
+  const rawActivities = ensureArr(r.activities);
+  const activities: Activity[] = rawActivities.map((a) => {
+    const act = (a ?? {}) as Record<string, unknown>;
+    return {
+      name:    ensureStr(act.name),
+      minutes: typeof act.minutes === "number" ? act.minutes : 0,
+      detail:  ensureStr(act.detail),
+    };
+  });
+
+  return {
+    title:           ensureStr(r.title),
+    objectives:      ensureArr(r.objectives).map(ensureStr),
+    materials:       ensureArr(r.materials).map(ensureStr),
+    activities,
+    assessment:      ensureStr(r.assessment),
+    differentiation: r.differentiation !== undefined ? ensureStr(r.differentiation) : undefined,
+  };
+}
 
 /* ════════════════════════════════════════════════════════════
    API
@@ -42,7 +73,8 @@ async function generateLesson(params: {
     const msg = await res.text().catch(() => `HTTP ${res.status}`);
     throw new Error(msg || `Server error ${res.status}`);
   }
-  return res.json() as Promise<Lesson>;
+  const raw = await res.json();
+  return normaliseLesson(raw);
 }
 
 // Shape returned by /api/evaluate
@@ -473,7 +505,7 @@ function GeneratorPage({
             <div className="preview-body">
               <AccordionItem title="Learning Objectives" defaultOpen>
                 <ol className="obj-list">
-                  {lesson.objectives.map((o, i) => (
+                  {(lesson.objectives || []).map((o, i) => (
                     <li key={i} className="obj-item">
                       <span className="obj-num">{String(i + 1).padStart(2, "0")}</span>
                       <span style={{ lineHeight: 1.55 }}>{o}</span>
@@ -484,7 +516,7 @@ function GeneratorPage({
 
               <AccordionItem title="Materials">
                 <ul className="mat-list">
-                  {lesson.materials.map((m, i) => (
+                  {(lesson.materials || []).map((m, i) => (
                     <li key={i} className="mat-item">
                       <span className="mat-dot" />
                       {m}
@@ -495,7 +527,7 @@ function GeneratorPage({
 
               <AccordionItem title="Activities" defaultOpen>
                 <ol className="act-list">
-                  {lesson.activities.map((a, i) => (
+                  {(lesson.activities || []).map((a, i) => (
                     <li key={i} className="act-item">
                       <span className="act-time">{a.minutes}m</span>
                       <div>
@@ -507,11 +539,19 @@ function GeneratorPage({
                 </ol>
               </AccordionItem>
 
-              <AccordionItem title="Assessment" isLast>
+              <AccordionItem title="Assessment" isLast={!lesson.differentiation}>
                 <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
-                  {lesson.assessment}
+                  {lesson.assessment || "No assessment details provided."}
                 </p>
               </AccordionItem>
+
+              {lesson.differentiation && (
+                <AccordionItem title="Differentiation" isLast>
+                  <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
+                    {lesson.differentiation}
+                  </p>
+                </AccordionItem>
+              )}
             </div>
           </div>
         ) : (
