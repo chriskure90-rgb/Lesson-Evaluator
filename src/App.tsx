@@ -63,6 +63,7 @@ async function generateLesson(params: {
   code: string;
   goal: string;
   duration: number;
+  model: string;
 }): Promise<Lesson> {
   const res = await fetch("/api/generate", {
     method: "POST",
@@ -92,11 +93,11 @@ type EvaluationResult = {
   sections: EvaluationSection[];
 };
 
-async function evaluateLesson(lesson: Lesson): Promise<EvaluationResult> {
+async function evaluateLesson(lesson: Lesson, model: string): Promise<EvaluationResult> {
   const res = await fetch("/api/evaluate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ lesson }),
+    body: JSON.stringify({ lesson, model }),
   });
   if (!res.ok) {
     const msg = await res.text().catch(() => `HTTP ${res.status}`);
@@ -286,6 +287,12 @@ function Sidebar({ page, setPage }: { page: Page; setPage: (p: Page) => void }) 
 const GRADES = ["K","1","2","3","4","5","6","7","8","9","10","11","12"];
 const DURATIONS = [30, 45, 60, 90];
 
+const MODELS = [
+  { value: "gpt-4",   label: "GPT-4",   hint: "OpenAI"    },
+  { value: "claude",  label: "Claude",  hint: "Anthropic" },
+  { value: "gemini",  label: "Gemini",  hint: "Google"    },
+];
+
 const FRAMEWORKS = [
   { value: "ngss",  label: "NGSS" },
   { value: "ccss",  label: "Common Core" },
@@ -303,6 +310,7 @@ function GeneratorPage({
   // Standards: multi-select list of framework ids + optional custom text
   const [selectedFws, setSelectedFws] = useState<string[]>(["ngss"]);
   const [customFw, setCustomFw]       = useState("");
+  const [model, setModel]             = useState("claude");
   const [grade, setGrade]             = useState("7");
   const [code, setCode]               = useState("MS-LS1-6");
   const [goal, setGoal]               = useState("Help students understand how plants produce energy through photosynthesis.");
@@ -332,7 +340,7 @@ function GeneratorPage({
     setLoading(true);
     setError(null);
     try {
-      const result = await generateLesson({ grade, frameworks: resolvedFrameworks(), code, goal, duration });
+      const result = await generateLesson({ grade, frameworks: resolvedFrameworks(), code, goal, duration, model });
       setLesson(result);
       onLessonGenerated(result);   // share with the Evaluator
     } catch (err) {
@@ -342,7 +350,8 @@ function GeneratorPage({
     }
   }
 
-  const breadcrumb = [...resolvedFrameworks(), code, `Grade ${grade}`, `${duration} min`].filter(Boolean).join(" · ");
+  const modelLabel = MODELS.find((m) => m.value === model)?.label ?? model;
+  const breadcrumb = [modelLabel, ...resolvedFrameworks(), code, `Grade ${grade}`, `${duration} min`].filter(Boolean).join(" · ");
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: "40px 40px 60px" }}>
@@ -358,6 +367,25 @@ function GeneratorPage({
         {/* ── Form ───────────────────────────────── */}
         <div className="card" style={{ padding: "24px 24px 28px" }}>
           <div className="space-y-6">
+
+            {/* AI Model */}
+            <div className="field">
+              <FieldLabel>AI Model</FieldLabel>
+              <div className="model-pill-group">
+                {MODELS.map((m) => (
+                  <button
+                    key={m.value}
+                    type="button"
+                    className={`model-pill${model === m.value ? " model-pill-active" : ""}`}
+                    onClick={() => setModel(m.value)}
+                    aria-pressed={model === m.value}
+                  >
+                    <span className="model-pill-label">{m.label}</span>
+                    <span className="model-pill-hint">{m.hint}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
 
             {/* Grade */}
             <div className="field">
@@ -715,6 +743,9 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
   const [evaluating, setEvaluating]   = useState(false);
   const [evalError, setEvalError]     = useState<string | null>(null);
 
+  // Evaluation model selector
+  const [evalModel, setEvalModel]     = useState("claude");
+
   // Demo fallback — visible only when no real result exists yet
   const [presetIdx, setPresetIdx]     = useState(0);
 
@@ -725,7 +756,7 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
     setEvaluating(true);
     setEvalError(null);
     try {
-      const result = await evaluateLesson(displayLesson as Lesson);
+      const result = await evaluateLesson(displayLesson as Lesson, evalModel);
       setEvalResult(result);
     } catch (err) {
       setEvalError(err instanceof Error ? err.message : "Evaluation failed. Please try again.");
@@ -750,6 +781,25 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
   return (
     <div style={{ maxWidth: 820, margin: "0 auto", padding: "40px 40px 60px" }}>
       <PageHeader title="Lesson Evaluator" subtitle="AI assessment with teacher review." />
+
+      {/* ── Evaluation model selector ── */}
+      <div className="field" style={{ marginBottom: 20 }}>
+        <FieldLabel>Evaluation Model</FieldLabel>
+        <div className="model-pill-group">
+          {MODELS.map((m) => (
+            <button
+              key={m.value}
+              type="button"
+              className={`model-pill${evalModel === m.value ? " model-pill-active" : ""}`}
+              onClick={() => setEvalModel(m.value)}
+              aria-pressed={evalModel === m.value}
+            >
+              <span className="model-pill-label">{m.label}</span>
+              <span className="model-pill-hint">{m.hint}</span>
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* ── Demo switcher — hidden once real results arrive ── */}
       {!evalResult && (
@@ -833,9 +883,24 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
 
           {/* Feedback */}
           <div style={{ flex: 1, minWidth: 220 }}>
-            <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)" }}>
-              {evalResult ? "AI Feedback" : "AI Feedback · demo"}
-            </p>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+              <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)" }}>
+                {evalResult ? "AI Feedback" : "AI Feedback · demo"}
+              </p>
+              {/* Model attribution — shown in all states */}
+              <span style={{
+                fontSize: 11,
+                fontWeight: 500,
+                color: "var(--muted-fg)",
+                background: "var(--muted)",
+                border: "1px solid var(--border)",
+                borderRadius: 99,
+                padding: "1px 8px",
+                whiteSpace: "nowrap",
+              }}>
+                {MODELS.find((m) => m.value === evalModel)?.label ?? evalModel}
+              </span>
+            </div>
             <p style={{ marginTop: 8, fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.65 }}>
               {displaySummary}
             </p>

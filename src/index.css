@@ -305,6 +305,62 @@ h1, h2, h3, h4, h5 {
 }
 .input::placeholder, .textarea::placeholder { color: var(--muted-fg); opacity: 0.7; }
 
+/* ── AI Model pill group ─────────────────────────────────── */
+/*
+  Three equal-width pill buttons in a flex row.
+  Inactive: neutral border, muted text.
+  Active: green fill matching primary, hint text lightens.
+*/
+.model-pill-group {
+  display: flex;
+  gap: 8px;
+}
+
+.model-pill {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--background);
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 140ms, background 140ms, color 140ms;
+}
+.model-pill:hover:not(.model-pill-active) {
+  border-color: rgb(58 107 82 / 0.4);
+  background: var(--muted);
+}
+.model-pill-active {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.model-pill-label {
+  font-size: 13px;
+  font-weight: 600;
+  font-family: 'Space Grotesk', sans-serif;
+  color: var(--foreground);
+  line-height: 1.2;
+  transition: color 140ms;
+}
+.model-pill-active .model-pill-label {
+  color: var(--primary-fg);
+}
+
+.model-pill-hint {
+  font-size: 10.5px;
+  color: var(--muted-fg);
+  line-height: 1;
+  transition: color 140ms;
+}
+.model-pill-active .model-pill-hint {
+  color: rgb(255 255 255 / 0.65);
+}
+
 /* ── Grade row ───────────────────────────────────────────── */
 /*
   Single flex line: [K] | [1][2]…[12]
