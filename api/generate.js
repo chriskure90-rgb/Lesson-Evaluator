@@ -9,15 +9,24 @@ export default async function handler(req, res) {
     const prompt = `
 Create a middle school science lesson plan.
 
-Return JSON only.
+Return JSON only. Do not use markdown.
 
 Format:
 {
   "title": "...",
-  "grade": "...",
-  "duration": "...",
-  "objective": "...",
-  "activities": ["...", "...", "..."]
+  "grade": "Grade 7",
+  "duration": "60 min",
+  "objectives": ["...", "..."],
+  "materials": ["...", "..."],
+  "activities": [
+    {
+      "time": "10m",
+      "title": "...",
+      "description": "..."
+    }
+  ],
+  "assessment": ["...", "..."],
+  "differentiation": ["...", "..."]
 }
 `;
 
@@ -26,20 +35,25 @@ Format:
       contents: prompt,
     });
 
-    const text = response.text;
+    let text = response.text.trim();
+    text = text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "");
 
     const lesson = JSON.parse(text);
 
     res.status(200).json(lesson);
   } catch (error) {
-    console.error(error);
+    console.error("Gemini generate error:", error);
 
     res.status(200).json({
       title: "Fallback Lesson",
+      error: String(error?.message || error),
       grade: "Grade 7",
       duration: "60 min",
-      objective: "Fallback objective",
-      activities: ["Activity 1", "Activity 2"],
+      objectives: [],
+      materials: [],
+      activities: [],
+      assessment: [],
+      differentiation: [],
     });
   }
 }
