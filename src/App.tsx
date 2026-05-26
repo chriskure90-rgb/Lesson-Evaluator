@@ -841,10 +841,6 @@ function scoreCategory(s: number): ScoreCat {
   return "weak";
 }
 
-/** CSS variable name for a score's text color */
-function scoreColorVar(cat: ScoreCat): string {
-  return `var(--score-${cat})`;
-}
 
 function EvalSection({
   section,
