@@ -79,17 +79,24 @@ async function generateLesson(params: {
 }
 
 // Shape returned by /api/evaluate
+type RubricRating = "high" | "medium" | "low";
+
+const RATING_META: Record<RubricRating, { label: string; cat: "strong" | "amber" | "weak" }> = {
+  high:   { label: "High",   cat: "strong" },
+  medium: { label: "Medium", cat: "amber"  },
+  low:    { label: "Low",    cat: "weak"   },
+};
+
 type EvaluationSection = {
   id: string;
   title: string;
-  score: number;
-  feedback: string;
+  rating: RubricRating;
+  feedback: string;    // AI-written feedback for this section
 };
 
 type EvaluationResult = {
-  score: number;          // overall 0-100
-  band: string;           // e.g. "Classroom-ready"
-  summary: string;        // AI feedback paragraph
+  band: string;
+  summary: string;
   sections: EvaluationSection[];
 };
 
@@ -642,56 +649,187 @@ const LESSON_META = {
    badge label, feedback summary, and every section score.
 ────────────────────────────────────────────────────────────────────────────── */
 type DemoPreset = {
-  label: string;        // button label
-  score: number;        // overall score
-  band: string;         // badge text
-  summary: string;      // AI feedback paragraph
-  sectionScores: Record<string, number>;
+  label: string;
+  band: string;
+  summary: string;
+  sectionRatings: Record<string, RubricRating>;
 };
 
 const DEMO_PRESETS: DemoPreset[] = [
   {
     label: "Strong Example",
-    score: 88,   // avg of section scores (90+92+84+86)/4
     band: "Classroom-ready",
     summary:
-      "Clear objectives, well-paced activities, and a defensible assessment. Minor refinements to standards citation and differentiation would strengthen the plan further.",
-    sectionScores: { standards: 90, objectives: 92, instruction: 84, assessment: 86 },
+      "This lesson plan is well-constructed across all dimensions. Objectives are measurable, activities build logically toward assessment, and differentiation is intentional. Minor refinements to timing flexibility and the reflection prompt would complete an already strong plan.",
+    sectionRatings: {
+      "lesson-title":    "high",
+      "objectives":      "high",
+      "standards":       "high",
+      "assessment":      "high",
+      "activities":      "high",
+      "resources":       "medium",
+      "differentiation": "medium",
+      "timing":          "high",
+      "opening":         "high",
+      "evaluation":      "medium",
+    },
   },
   {
     label: "Needs Revision",
-    score: 72,   // avg of section scores (74+71+68+73)/4
     band: "Needs revision",
     summary:
-      "The lesson has a solid foundation but requires revision before classroom use. Learning objectives need sharper measurable language and the assessment evidence is thin.",
-    sectionScores: { standards: 74, objectives: 71, instruction: 68, assessment: 73 },
+      "The lesson has a solid foundation but requires revision before classroom use. Differentiation strategy and evaluation reflection are underdeveloped, and the assessment criteria need to be more explicit.",
+    sectionRatings: {
+      "lesson-title":    "high",
+      "objectives":      "medium",
+      "standards":       "medium",
+      "assessment":      "medium",
+      "activities":      "medium",
+      "resources":       "medium",
+      "differentiation": "low",
+      "timing":          "medium",
+      "opening":         "medium",
+      "evaluation":      "low",
+    },
   },
   {
     label: "Not Ready",
-    score: 54,   // avg of section scores (55+58+49+52)/4
     band: "Not ready",
     summary:
-      "Significant gaps in standards alignment and instructional design. The plan needs a full rewrite of objectives, a clearer activity sequence, and a real assessment strategy.",
-    sectionScores: { standards: 55, objectives: 58, instruction: 49, assessment: 52 },
+      "Significant gaps across multiple dimensions. Objectives are not measurable, activities are disconnected from the assessment, differentiation is absent, and the evaluation section provides no structured reflection opportunity.",
+    sectionRatings: {
+      "lesson-title":    "medium",
+      "objectives":      "low",
+      "standards":       "low",
+      "assessment":      "low",
+      "activities":      "low",
+      "resources":       "low",
+      "differentiation": "low",
+      "timing":          "low",
+      "opening":         "low",
+      "evaluation":      "low",
+    },
   },
 ];
 
-const SECTION_TEMPLATES = [
+type SectionTemplate = {
+  id: string;
+  title: string;
+  description: string;
+  criteria: Record<RubricRating, string>;
+  feedback: string;   // default demo feedback; API response overrides this
+};
+
+const SECTION_TEMPLATES: SectionTemplate[] = [
   {
-    id: "standards", title: "Standards Alignment",
-    feedback: "MS-LS1-6 is well represented across the modeling task and assessment. Consider explicitly tagging the science and engineering practice (developing and using models) in the rubric.",
+    id: "lesson-title",
+    title: "Lesson Title",
+    description: "Identifies the topic and focus of the specific instructional unit and lesson.",
+    criteria: {
+      high:   "Clearly and concisely reflects the specific lesson's topic and focus.",
+      medium: "Refers in general to the lesson's topic but lacks specificity regarding its focus.",
+      low:    "The title is too general, unspecified, or does not connect to the lesson.",
+    },
+    feedback: "The title clearly identifies the lesson topic and instructional focus. No changes needed.",
   },
   {
-    id: "objectives", title: "Learning Objectives",
-    feedback: "Objectives are observable and tied directly to the assessment. Phrasing is student-facing and action-oriented. No changes needed.",
+    id: "objectives",
+    title: "Learning Objectives",
+    description: "Specific statement using action verbs that communicates the 'big idea' students should gain and how they will be evaluated.",
+    criteria: {
+      high:   "The objective(s) are clearly aligned with the lesson, includes a 'big idea,' and include a measurable assessment strategy.",
+      medium: "The objective(s) are mostly aligned with the lesson, includes the gist of a 'big idea,' and the assessment strategy has measurable elements.",
+      low:    "The objective(s) are misaligned with the lesson, only partially includes a 'big idea,' and/or the assessment strategy is not measurable.",
+    },
+    feedback: "Objectives are observable and tied directly to the assessment. Phrasing is student-facing and action-oriented.",
   },
   {
-    id: "instruction", title: "Instructional Design",
-    feedback: "Pacing is appropriate and the lab anchors the conceptual content. Add a 2-minute checkpoint after the direct instruction segment to surface misconceptions earlier.",
+    id: "standards",
+    title: "Standards Alignment",
+    description: "One or more academic standards are identified that align with the objective, content being taught, and 'big idea' being assessed.",
+    criteria: {
+      high:   "The academic standards are tightly aligned with the lesson's topic, objective(s), and assessment.",
+      medium: "The academic standards are mostly aligned with the lesson's topic, objective(s), and assessment, though there are some gaps in logic.",
+      low:    "The academic standards are not clearly aligned with the lesson and/or there are severe gaps in logic.",
+    },
+    feedback: "MS-LS1-6 is well represented across the modeling task and assessment. Consider tagging the science and engineering practice explicitly.",
   },
   {
-    id: "assessment", title: "Assessment Strategy",
+    id: "assessment",
+    title: "Assessment Strategy",
+    description: "A plan to evaluate if students gained the 'big idea(s)' from the lesson, including grading criteria.",
+    criteria: {
+      high:   "The assessment is aligned with the lesson's 'big idea' and includes clear grading criteria.",
+      medium: "The assessment is mostly aligned with the lesson's 'big idea' and includes general grading criteria.",
+      low:    "The assessment is misaligned from the lesson's 'big idea' or lacks clear grading criteria.",
+    },
     feedback: "Exit ticket aligns with the objectives and produces evidence of learning. Consider providing a sentence stem for students who need a writing scaffold.",
+  },
+  {
+    id: "activities",
+    title: "Instructional Activities",
+    description: "The sequence of teaching procedures and student tasks that drive the lesson, aligned with objectives and assessments.",
+    criteria: {
+      high:   "The instructional activities denote clear procedures and tasks aligned with the objective organized in a logical progression that prepares students for the assessment.",
+      medium: "The instructional activities include mostly clear procedures and tasks aligned with the objective, though there are gaps in how the procedures prepare students for the assessment.",
+      low:    "The instructional activities are limited and disconnected from the objectives and do not prepare students for the assessment.",
+    },
+    feedback: "The activity sequence is logical and builds effectively toward the exit ticket. The lab investigation is well-positioned after direct instruction.",
+  },
+  {
+    id: "resources",
+    title: "Resources & Materials",
+    description: "The concrete tools, texts, technology, or objects identified for both teacher and student to facilitate teaching and learning.",
+    criteria: {
+      high:   "All the resources/materials are listed in detail, with links to digital resources and directions for where physical resources are located.",
+      medium: "Most of the resources and materials are listed in detail. A few resources/materials may not be included.",
+      low:    "Few of the resources/materials are listed in detail, with multiple resources missing from the list.",
+    },
+    feedback: "Materials list is thorough. Adding links to the printed diagrams or a supplier note for elodea sprigs would complete the picture.",
+  },
+  {
+    id: "differentiation",
+    title: "Differentiation Strategy",
+    description: "Plans for addressing the needs of diverse learners, including those from underrepresented populations or those with special needs.",
+    criteria: {
+      high:   "The lesson includes intentional supports and extensions that address varied learner needs and promote appropriate challenge.",
+      medium: "The lesson offers some supports or extensions, but they are limited, inconsistently applied, or only loosely tied to specific learner needs.",
+      low:    "The lesson provides few or no meaningful supports or extensions, and learner differences are not clearly considered in the planning.",
+    },
+    feedback: "Some supports are implied but not explicitly stated. Adding a sentence frame for ELL students and an extension task for advanced learners would strengthen this section.",
+  },
+  {
+    id: "timing",
+    title: "Timing & Pacing",
+    description: "Estimates for the duration of activities to ensure the lesson fits within the allotted period and maintains a steady flow.",
+    criteria: {
+      high:   "Time allocations are realistic for each lesson segment and include flexible ranges to adjust based on student needs.",
+      medium: "Time allocations are generally reasonable but may lack flexibility or sufficient detail for some lesson segments.",
+      low:    "Time allocations are unclear, unrealistic, or missing for key parts of the lesson, risking incomplete activities.",
+    },
+    feedback: "Timing is realistic for a 60-minute period. Consider adding a 2-minute buffer to the lab segment in case setup takes longer than expected.",
+  },
+  {
+    id: "opening",
+    title: "Opening / Introduction",
+    description: "The initial phase of a lesson used to preview the upcoming learning experience, activate prior knowledge, and set expectations.",
+    criteria: {
+      high:   "The opening efficiently previews the lesson, activates prior knowledge, and sets explicit expectations for students.",
+      medium: "The opening previews the lesson or activates prior knowledge, but expectations are only partially clear or incomplete.",
+      low:    "The opening does not clearly preview the lesson, connect to prior knowledge, or establish expectations for students.",
+    },
+    feedback: "The wilted vs. healthy plant hook effectively activates prior knowledge. Explicitly stating the lesson goal at the start would set clearer expectations.",
+  },
+  {
+    id: "evaluation",
+    title: "Evaluation / Reflection",
+    description: "Assessments that provide opportunities for students to look back on their learning and document it.",
+    criteria: {
+      high:   "Students engage in structured evaluation that prompts them to reflect on their learning and complete a task.",
+      medium: "Students engage in a structured evaluation, though it can be completed without reflecting on their learning.",
+      low:    "Students are told to complete an evaluation that is unclear and may require little to no reflection on their learning.",
+    },
+    feedback: "The labeled diagram exit ticket is structured and task-based. Adding a written reflection prompt ('What surprised you?') would deepen metacognitive engagement.",
   },
 ];
 
@@ -712,46 +850,113 @@ function EvalSection({
   section,
   isLast,
 }: {
-  section: typeof SECTION_TEMPLATES[0] & { score: number };
+  section: EvaluationSection & Partial<SectionTemplate>;
   isLast: boolean;
 }) {
-  const [override, setOverride] = useState("");
-  const cat = scoreCategory(section.score);
+  const [notes, setNotes]               = useState("");
+  // null = teacher accepts the AI rating; otherwise their override
+  const [teacherRating, setTeacherRating] = useState<RubricRating | null>(null);
 
-  const scoreEl = (
-    <span style={{ fontFamily: "Space Grotesk, sans-serif", fontSize: 15, fontWeight: 400, color: scoreColorVar(cat) }}>
-      {section.score}
-    </span>
-  );
+  const aiRating     = (section.rating ?? "medium") as RubricRating;
+  const activeRating = teacherRating ?? aiRating;
+  const isOverridden = teacherRating !== null && teacherRating !== aiRating;
+
+  const activeMeta   = RATING_META[activeRating];
+  const template     = SECTION_TEMPLATES.find((t) => t.id === section.id);
 
   return (
     <AccordionItem
-      key={section.id}
       title={section.title}
       right={
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
-          {scoreEl}
-          <div className="score-bar-track" style={{ width: 120 }}>
-            <div
-              className={`score-bar-fill ${cat}`}
-              style={{ width: `${section.score}%` }}
-            />
-          </div>
+        /* Badge reflects the current active rating (teacher or AI) */
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {isOverridden && (
+            <span className="override-chip">Edited</span>
+          )}
+          <span className={`rubric-badge rubric-badge-${activeRating}`}>
+            {activeMeta.label}
+          </span>
         </div>
       }
       isLast={isLast}
     >
-      <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
-        {section.feedback}
-      </p>
+      {/* Rubric description */}
+      {template?.description && (
+        <p className="rubric-description">{template.description}</p>
+      )}
+
+      {/* ── Rating selector ── */}
+      <div className="rating-selector">
+        <div className="rating-selector-label">
+          <span>Your rating</span>
+          {/* Show the AI's original when overridden */}
+          {isOverridden && (
+            <span className="rating-ai-original">
+              AI suggested:&nbsp;
+              <span className={`rating-ai-dot rating-ai-dot-${aiRating}`} />
+              {RATING_META[aiRating].label}
+              <button
+                type="button"
+                className="rating-reset-btn"
+                onClick={() => setTeacherRating(null)}
+              >
+                Reset
+              </button>
+            </span>
+          )}
+        </div>
+
+        <div className="rating-btn-group">
+          {(["high", "medium", "low"] as RubricRating[]).map((r) => {
+            const m          = RATING_META[r];
+            const isActive   = activeRating === r;
+            const isAiChoice = aiRating === r;
+            return (
+              <button
+                key={r}
+                type="button"
+                className={[
+                  "rating-btn",
+                  `rating-btn-${r}`,
+                  isActive ? `rating-btn-active rating-btn-active-${r}` : "",
+                ].join(" ")}
+                onClick={() => setTeacherRating(r === aiRating && teacherRating === null ? null : r)}
+                aria-pressed={isActive}
+              >
+                <span className="rating-btn-label">{m.label}</span>
+                {isAiChoice && (
+                  <span className="rating-btn-ai-tag">AI</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Highlighted criteria for the active rating */}
+      {template?.criteria[activeRating] && (
+        <div className={`rubric-criteria rubric-criteria-${activeRating}`}>
+          <span className="rubric-criteria-label">{activeMeta.label} — </span>
+          {template.criteria[activeRating]}
+        </div>
+      )}
+
+      {/* AI feedback */}
+      {section.feedback && (
+        <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6, marginTop: 12 }}>
+          {section.feedback}
+        </p>
+      )}
+
+      {/* Teacher notes */}
       <div className="override-section">
-        <div className="override-label">Teacher notes &amp; override</div>
+        <div className="override-label">Teacher notes</div>
         <textarea
           className="textarea"
           rows={2}
-          value={override}
-          onChange={(e) => setOverride(e.target.value)}
-          placeholder="Add context, adjust the score, or refine the feedback…"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="Add context or notes for this section…"
           style={{ background: "var(--background)", fontSize: 13 }}
         />
       </div>
@@ -787,16 +992,15 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
 
   // Derive what to show: real API result takes priority over demo preset
   const activePreset = DEMO_PRESETS[presetIdx];
-  const displayScore   = evalResult?.score   ?? activePreset.score;
+
+  const displaySections: EvaluationSection[] = evalResult?.sections
+    ?? SECTION_TEMPLATES.map((t) => {
+        const rating = activePreset.sectionRatings[t.id] ?? "medium";
+        return { ...t, rating };
+      });
+
   const displayBand    = evalResult?.band    ?? activePreset.band;
   const displaySummary = evalResult?.summary ?? activePreset.summary;
-  const displaySections: EvaluationSection[] = evalResult?.sections
-    ?? SECTION_TEMPLATES.map((t) => ({
-        ...t,
-        score: activePreset.sectionScores[t.id] ?? 0,
-      }));
-
-  const cat = scoreCategory(displayScore);
 
   return (
     <div style={{ maxWidth: 820, margin: "0 auto", padding: "40px 40px 60px" }}>
@@ -859,28 +1063,19 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
         )}
       </div>
 
-      {/* Overall score card */}
+      {/* Overall summary card */}
       <div className="card" style={{ padding: "24px 28px", marginTop: 20 }}>
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 32, flexWrap: "wrap" }}>
-          {/* Score number + badge */}
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+          {/* Status badge */}
           <div style={{ flexShrink: 0 }}>
-            <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)" }}>
+            <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)", marginBottom: 8 }}>
               Overall
             </p>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginTop: 6 }}>
-              <span className="score-number" style={{ color: scoreColorVar(cat) }}>
-                {displayScore}
-              </span>
-              <span style={{ fontSize: 13, color: "var(--muted-fg)" }}>/100</span>
-            </div>
-            <div className={`score-band ${cat}`}>
-              <span className="score-band-dot" style={{ background: `var(--score-${cat}-dot)` }} />
-              {displayBand}
-            </div>
+            <span className="eval-band-badge">{displayBand}</span>
           </div>
 
           {/* Divider */}
-          <div style={{ width: 1, alignSelf: "stretch", background: "var(--border)" }} />
+          <div style={{ width: 1, alignSelf: "stretch", background: "var(--border)", flexShrink: 0 }} />
 
           {/* Feedback */}
           <div style={{ flex: 1, minWidth: 220 }}>
@@ -909,12 +1104,16 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
   );
 }
 
-/* ── Demo switcher ────────────────────────────────────────────────────────────
-   Visible strip placed directly in the page body (not tucked into the header).
-   Three large toggle buttons — one per score state — with clear label, score,
-   and a coloured indicator dot. Active button gets a tinted background so the
-   current selection is immediately obvious.
-────────────────────────────────────────────────────────────────────────────── */
+/* ── Demo switcher ─────────────────────────────────────────────────────────── */
+function presetCat(p: DemoPreset): "strong" | "amber" | "weak" {
+  const ratings = Object.values(p.sectionRatings);
+  const counts = { high: 0, medium: 0, low: 0 };
+  ratings.forEach((r) => counts[r]++);
+  if (counts.low > counts.high && counts.low > counts.medium) return "weak";
+  if (counts.medium >= counts.high) return "amber";
+  return "strong";
+}
+
 function DemoControl({
   presetIdx,
   onSelect,
@@ -924,16 +1123,14 @@ function DemoControl({
 }) {
   return (
     <div className="demo-strip">
-      {/* Left label */}
       <div className="demo-strip-label">
         <span className="demo-strip-tag">Demo</span>
-        <span className="demo-strip-hint">Preview score states</span>
+        <span className="demo-strip-hint">Preview rating states</span>
       </div>
 
-      {/* Three state buttons */}
       <div className="demo-strip-btns">
         {DEMO_PRESETS.map((p, i) => {
-          const cat = scoreCategory(p.score);
+          const cat = presetCat(p);
           const isActive = presetIdx === i;
           return (
             <button
@@ -942,13 +1139,11 @@ function DemoControl({
               className={`demo-state-btn demo-state-btn-${cat}${isActive ? " demo-state-btn-active" : ""}`}
               onClick={() => onSelect(i)}
             >
-              {/* Colour indicator */}
               <span
                 className="demo-state-dot"
                 style={{ background: isActive ? `var(--score-${cat}-dot)` : undefined }}
               />
               <span className="demo-state-name">{p.label}</span>
-              <span className="demo-state-score">{p.score}</span>
             </button>
           );
         })}

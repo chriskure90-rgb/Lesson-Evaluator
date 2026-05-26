@@ -880,6 +880,214 @@ h1, h2, h3, h4, h5 {
   padding: 9px 12px;
 }
 
+/* ── Evaluator overall band badge ───────────────────────────
+   Replaces the numeric score — shows "Classroom-ready" etc.
+   with a calm pill using the existing accent palette.
+*/
+.eval-band-badge {
+  display: inline-block;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 5px 14px;
+  border-radius: 99px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  letter-spacing: -0.01em;
+}
+
+/* ── Rating selector (teacher override) ─────────────────────
+   Three pill buttons — High / Medium / Low.
+   The AI's suggestion is tagged with a small "AI" chip.
+   The active selection gets a filled background matching the
+   rubric color (green / amber / red).
+   An "Edited" chip on the accordion trigger signals the teacher
+   has changed from the AI's original rating.
+*/
+
+/* Row wrapper */
+.rating-selector {
+  margin: 10px 0 14px;
+}
+
+/* Label row: "Your rating" + AI original attribution */
+.rating-selector-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted-fg);
+  margin-bottom: 8px;
+}
+
+/* "AI suggested: ● High  [Reset]" */
+.rating-ai-original {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--muted-fg);
+}
+.rating-ai-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+}
+.rating-ai-dot-high   { background: var(--score-strong); }
+.rating-ai-dot-medium { background: var(--score-amber);  }
+.rating-ai-dot-low    { background: var(--score-weak);   }
+
+.rating-reset-btn {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--primary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 2px;
+  font-family: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.rating-reset-btn:hover { opacity: 0.75; }
+
+/* Button group */
+.rating-btn-group {
+  display: flex;
+  gap: 8px;
+}
+
+/* Base pill button */
+.rating-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: var(--radius);
+  border: 1.5px solid var(--border);
+  background: var(--background);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 130ms, background 130ms, color 130ms;
+  white-space: nowrap;
+}
+/* Inactive hover */
+.rating-btn:hover:not([aria-pressed="true"]) {
+  background: var(--muted);
+}
+
+/* "AI" tag inside a button */
+.rating-btn-ai-tag {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--border);
+  color: var(--muted-fg);
+  line-height: 1.4;
+}
+
+/* ── Active states ── */
+.rating-btn-active-high {
+  background: var(--score-strong-bg);
+  border-color: var(--score-strong);
+  color: var(--accent-fg);
+}
+.rating-btn-active-high .rating-btn-ai-tag {
+  background: rgb(58 107 82 / 0.2);
+  color: var(--accent-fg);
+}
+
+.rating-btn-active-medium {
+  background: var(--score-amber-bg);
+  border-color: var(--score-amber);
+  color: #7a4f00;
+}
+.rating-btn-active-medium .rating-btn-ai-tag {
+  background: rgb(160 106 0 / 0.15);
+  color: #7a4f00;
+}
+
+.rating-btn-active-low {
+  background: var(--score-weak-bg);
+  border-color: var(--score-weak);
+  color: var(--destructive);
+}
+.rating-btn-active-low .rating-btn-ai-tag {
+  background: rgb(192 68 42 / 0.12);
+  color: var(--destructive);
+}
+
+/* "Edited" chip shown in the accordion trigger when overridden */
+.override-chip {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--muted);
+  color: var(--muted-fg);
+  border: 1px solid var(--border);
+}
+
+/* ── Rubric rating badge (High / Medium / Low) ───────────── */
+.rubric-badge {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 99px;
+  white-space: nowrap;
+  font-family: 'Space Grotesk', sans-serif;
+  letter-spacing: 0.01em;
+}
+.rubric-badge-high   { background: var(--score-strong-bg); color: var(--accent-fg);  }
+.rubric-badge-medium { background: var(--score-amber-bg);  color: #7a4f00;           }
+.rubric-badge-low    { background: var(--score-weak-bg);   color: var(--destructive); }
+
+/* Section description (italicised rubric description line) */
+.rubric-description {
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--muted-fg);
+  line-height: 1.55;
+  margin-bottom: 10px;
+}
+
+/* Highlighted criteria block for the current rating */
+.rubric-criteria {
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border-left: 3px solid transparent;
+  margin-bottom: 4px;
+}
+.rubric-criteria-label {
+  font-weight: 600;
+}
+.rubric-criteria-high   {
+  background: var(--score-strong-bg);
+  border-color: var(--score-strong);
+  color: var(--accent-fg);
+}
+.rubric-criteria-medium {
+  background: var(--score-amber-bg);
+  border-color: var(--score-amber);
+  color: #7a4f00;
+}
+.rubric-criteria-low {
+  background: var(--score-weak-bg);
+  border-color: var(--score-weak);
+  color: var(--destructive);
+}
+
 /* ── Teacher override ────────────────────────────────────── */
 .override-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid rgb(228 224 216 / 0.6); }
 .override-label { font-size: 12px; font-weight: 500; color: var(--muted-fg); margin-bottom: 6px; }
