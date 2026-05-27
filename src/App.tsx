@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import "./index.css";
+import { supabase } from "./lib/supabase";
 
 /* ════════════════════════════════════════════════════════════
    TYPES
@@ -372,6 +373,18 @@ function GeneratorPage({
       const result = await generateLesson({ grade, frameworks: resolvedFrameworks(), code, goal, duration, model });
       setLesson(result);
       onLessonGenerated(result);   // share with the Evaluator
+
+      const { error: saveError } = await supabase.from("lesson_plans").insert([
+        {
+          title:       result.title,
+          grade,
+          api_model:   model,
+          lesson_json: result,
+        },
+      ]);
+      if (saveError) {
+        console.error("Supabase insert error:", saveError);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
     } finally {
