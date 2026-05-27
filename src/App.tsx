@@ -380,6 +380,7 @@ function GeneratorPage({
           grade,
           api_model:   model,
           lesson_json: result,
+          is_demo:     false,
         },
       ]);
       if (saveError) {
