@@ -62,6 +62,7 @@ async function generateLesson(params: {
   grade: string;
   frameworks: string[];
   code: string;
+  topic: string;
   goal: string;
   duration: number;
   model: string;
@@ -343,6 +344,7 @@ function GeneratorPage({
   const [model, setModel]             = useState("claude");
   const [grade, setGrade]             = useState("7");
   const [code, setCode]               = useState("MS-LS1-6");
+  const [topic, setTopic]             = useState("");
   const [goal, setGoal]               = useState("Help students understand how plants produce energy through photosynthesis.");
   const [duration, setDuration]       = useState(60);
   const [loading, setLoading]         = useState(false);
@@ -370,7 +372,7 @@ function GeneratorPage({
     setLoading(true);
     setError(null);
     try {
-      const result = await generateLesson({ grade, frameworks: resolvedFrameworks(), code, goal, duration, model });
+      const result = await generateLesson({ grade, frameworks: resolvedFrameworks(), code, topic, goal, duration, model });
       setLesson(result);
       onLessonGenerated(result);   // share with the Evaluator
 
@@ -522,6 +524,18 @@ function GeneratorPage({
               </div>
             </div>
 
+            {/* Lesson Topic */}
+            <div className="field">
+              <FieldLabel htmlFor="topic">Lesson Topic</FieldLabel>
+              <input
+                id="topic"
+                className="input"
+                value={topic}
+                onChange={(e) => setTopic(e.target.value)}
+                placeholder="e.g. Photosynthesis, The American Revolution, Fractions…"
+              />
+            </div>
+
             {/* Goal */}
             <div className="field">
               <FieldLabel htmlFor="goal">Lesson Goal</FieldLabel>
@@ -671,10 +685,30 @@ type DemoPreset = {
 
 const DEMO_PRESETS: DemoPreset[] = [
   {
-    label: "Strong Example",
-    band: "Classroom-ready",
+    // Score: 19/20 · 0 Low ratings → Classroom Ready
+    label: "Classroom Ready",
+    band: "Classroom Ready",
     summary:
-      "This lesson plan is well-constructed across all dimensions. Objectives are measurable, activities build logically toward assessment, and differentiation is intentional. Minor refinements to timing flexibility and the reflection prompt would complete an already strong plan.",
+      "This lesson plan is well-constructed across all dimensions. Objectives are clearly measurable, activities build logically toward the assessment, standards are tightly aligned, and differentiation is intentional. One minor refinement to the resources list would make this plan complete.",
+    sectionRatings: {
+      "lesson-title":    "high",
+      "objectives":      "high",
+      "standards":       "high",
+      "assessment":      "high",
+      "activities":      "high",
+      "resources":       "medium",
+      "differentiation": "high",
+      "timing":          "high",
+      "opening":         "high",
+      "evaluation":      "high",
+    },
+  },
+  {
+    // Score: 17/20 · 0 Low ratings → Classroom Ready with Teacher Revision
+    label: "Ready with Revision",
+    band: "Classroom Ready with Teacher Revision",
+    summary:
+      "The lesson has strong foundations in title, objectives, and opening, but differentiation, resources, and evaluation reflection need attention before classroom use. With targeted revisions to those three areas this plan will be ready.",
     sectionRatings: {
       "lesson-title":    "high",
       "objectives":      "high",
@@ -689,17 +723,18 @@ const DEMO_PRESETS: DemoPreset[] = [
     },
   },
   {
+    // Score: 9/20 · 3 Low ratings → Needs Revision
     label: "Needs Revision",
-    band: "Needs revision",
+    band: "Needs Revision",
     summary:
-      "The lesson has a solid foundation but requires revision before classroom use. Differentiation strategy and evaluation reflection are underdeveloped, and the assessment criteria need to be more explicit.",
+      "The lesson has identifiable strengths in its title and opening, but objectives lack measurable language, the assessment criteria are unclear, and differentiation strategy is largely absent. A structured revision across at least five criteria is needed before this plan is ready.",
     sectionRatings: {
       "lesson-title":    "high",
-      "objectives":      "medium",
+      "objectives":      "high",
       "standards":       "medium",
       "assessment":      "medium",
       "activities":      "medium",
-      "resources":       "medium",
+      "resources":       "low",
       "differentiation": "low",
       "timing":          "medium",
       "opening":         "medium",
@@ -707,10 +742,11 @@ const DEMO_PRESETS: DemoPreset[] = [
     },
   },
   {
+    // Score: 2/20 · 8 Low ratings → Not Ready
     label: "Not Ready",
-    band: "Not ready",
+    band: "Not Ready",
     summary:
-      "Significant gaps across multiple dimensions. Objectives are not measurable, activities are disconnected from the assessment, differentiation is absent, and the evaluation section provides no structured reflection opportunity.",
+      "Significant gaps exist across nearly every dimension. Objectives are unmeasurable, activities are disconnected from the assessment, standards alignment is missing, and there is no differentiation or structured reflection. This plan requires a full rewrite before it can be used in a classroom.",
     sectionRatings: {
       "lesson-title":    "medium",
       "objectives":      "low",
@@ -720,7 +756,7 @@ const DEMO_PRESETS: DemoPreset[] = [
       "resources":       "low",
       "differentiation": "low",
       "timing":          "low",
-      "opening":         "low",
+      "opening":         "medium",
       "evaluation":      "low",
     },
   },
@@ -855,21 +891,62 @@ function scoreCategory(s: number): ScoreCat {
   return "weak";
 }
 
+/* ── Rubric readiness calculation ────────────────────────────────────────────
+   High = 2 pts · Medium = 1 pt · Low = 0 pts · Max = 20 (10 criteria × 2)
+
+   Classroom Ready              18-20, zero Low ratings
+   Classroom Ready w/ Revision  14-17  OR  18-20 with exactly 1 Low
+   Needs Revision               8-13
+   Not Ready                    0-7
+────────────────────────────────────────────────────────────────────────────── */
+const RATING_POINTS: Record<RubricRating, number> = { high: 2, medium: 1, low: 0 };
+const MAX_SCORE = 20;
+
+type ReadinessResult = {
+  status: string;
+  totalScore: number;
+  maxScore: number;
+  lowCount: number;
+};
+
+function calcReadiness(ratings: RubricRating[]): ReadinessResult {
+  const totalScore = ratings.reduce((sum, r) => sum + RATING_POINTS[r], 0);
+  const lowCount   = ratings.filter((r) => r === "low").length;
+
+  let status: string;
+  if (totalScore >= 18 && lowCount === 0) {
+    status = "Classroom Ready";
+  } else if ((totalScore >= 14 && totalScore <= 17) || (totalScore >= 18 && lowCount === 1)) {
+    status = "Classroom Ready with Teacher Revision";
+  } else if (totalScore >= 8) {
+    status = "Needs Revision";
+  } else {
+    status = "Not Ready";
+  }
+
+  return { status, totalScore, maxScore: MAX_SCORE, lowCount };
+}
+
 
 function EvalSection({
   section,
   isLast,
+  teacherRating,
+  notes,
+  onRatingChange,
+  onNotesChange,
 }: {
   section: EvaluationSection & Partial<SectionTemplate>;
   isLast: boolean;
+  teacherRating: RubricRating | null;
+  notes: string;
+  onRatingChange: (id: string, rating: RubricRating | null) => void;
+  onNotesChange: (id: string, value: string) => void;
 }) {
-  const [notes, setNotes]               = useState("");
-  // null = teacher accepts the AI rating; otherwise their override
-  const [teacherRating, setTeacherRating] = useState<RubricRating | null>(null);
-
   const aiRating     = (section.rating ?? "medium") as RubricRating;
   const activeRating = teacherRating ?? aiRating;
   const isOverridden = teacherRating !== null && teacherRating !== aiRating;
+  const hasNotes     = notes.trim().length > 0;
 
   const activeMeta   = RATING_META[activeRating];
   const template     = SECTION_TEMPLATES.find((t) => t.id === section.id);
@@ -880,7 +957,7 @@ function EvalSection({
       right={
         /* Badge reflects the current active rating (teacher or AI) */
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          {isOverridden && (
+          {(isOverridden || hasNotes) && (
             <span className="override-chip">Edited</span>
           )}
           <span className={`rubric-badge rubric-badge-${activeRating}`}>
@@ -908,7 +985,7 @@ function EvalSection({
               <button
                 type="button"
                 className="rating-reset-btn"
-                onClick={() => setTeacherRating(null)}
+                onClick={() => onRatingChange(section.id, null)}
               >
                 Reset
               </button>
@@ -930,7 +1007,7 @@ function EvalSection({
                   `rating-btn-${r}`,
                   isActive ? `rating-btn-active rating-btn-active-${r}` : "",
                 ].join(" ")}
-                onClick={() => setTeacherRating(r === aiRating && teacherRating === null ? null : r)}
+                onClick={() => onRatingChange(section.id, r === aiRating && teacherRating === null ? null : r)}
                 aria-pressed={isActive}
               >
                 <span className="rating-btn-label">{m.label}</span>
@@ -965,7 +1042,7 @@ function EvalSection({
           className="textarea"
           rows={2}
           value={notes}
-          onChange={(e) => setNotes(e.target.value)}
+          onChange={(e) => onNotesChange(section.id, e.target.value)}
           placeholder="Add context or notes for this section…"
           style={{ background: "var(--background)", fontSize: 13 }}
         />
@@ -974,17 +1051,109 @@ function EvalSection({
   );
 }
 
+/* ── LessonPanel ─────────────────────────────────────────────────────────────
+   Compact read-only view of the generated lesson plan.
+   Toggled by "View lesson plan" in the Evaluator lesson card.
+   Reuses AccordionItem for consistent look; no editing here.
+────────────────────────────────────────────────────────────────────────────── */
+function LessonPanel({ lesson }: { lesson: Lesson }) {
+  return (
+    <div className="lesson-panel">
+      <div className="lesson-panel-header">
+        <p className="lesson-panel-label">Lesson Plan</p>
+        <h3 className="lesson-panel-title">{lesson.title}</h3>
+      </div>
+
+      <AccordionItem title="Learning Objectives" defaultOpen>
+        <ol className="obj-list">
+          {(lesson.objectives || []).map((o, i) => (
+            <li key={i} className="obj-item">
+              <span className="obj-num">{String(i + 1).padStart(2, "0")}</span>
+              <span style={{ lineHeight: 1.55 }}>{o}</span>
+            </li>
+          ))}
+        </ol>
+      </AccordionItem>
+
+      <AccordionItem title="Materials">
+        <ul className="mat-list">
+          {(lesson.materials || []).map((m, i) => (
+            <li key={i} className="mat-item">
+              <span className="mat-dot" />
+              {m}
+            </li>
+          ))}
+        </ul>
+      </AccordionItem>
+
+      <AccordionItem title="Activities">
+        <ol className="act-list">
+          {(lesson.activities || []).map((a, i) => (
+            <li key={i} className="act-item">
+              <span className="act-time">{a.minutes}m</span>
+              <div>
+                <div className="act-name">{a.name}</div>
+                <div className="act-detail">{a.detail}</div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </AccordionItem>
+
+      <AccordionItem title="Assessment" isLast={!lesson.differentiation}>
+        <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
+          {lesson.assessment || "No assessment details provided."}
+        </p>
+      </AccordionItem>
+
+      {lesson.differentiation && (
+        <AccordionItem title="Differentiation" isLast>
+          <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
+            {lesson.differentiation}
+          </p>
+        </AccordionItem>
+      )}
+    </div>
+  );
+}
+
 function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
-  // Real API result — null until a successful /api/evaluate call
   const [evalResult, setEvalResult]   = useState<EvaluationResult | null>(null);
   const [evaluating, setEvaluating]   = useState(false);
   const [evalError, setEvalError]     = useState<string | null>(null);
-
-
-  // Demo fallback — visible only when no real result exists yet
   const [presetIdx, setPresetIdx]     = useState(0);
 
-  // The lesson displayed in the "Reviewing" card
+  // Lifted teacher overrides keyed by section id — shared across all EvalSections
+  const [teacherOverrides, setTeacherOverrides] = useState<Record<string, RubricRating | null>>({});
+  const [teacherNotes, setTeacherNotes]         = useState<Record<string, string>>({});
+
+  // Save state — snapshot of what was last explicitly saved
+  const [savedOverrides, setSavedOverrides] = useState<Record<string, RubricRating | null>>({});
+  const [savedNotes, setSavedNotes]         = useState<Record<string, string>>({});
+  const [saveStatus, setSaveStatus]         = useState<"idle" | "saved">("idle");
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Unsaved = current state differs from last save snapshot
+  const hasUnsaved =
+    JSON.stringify(teacherOverrides) !== JSON.stringify(savedOverrides) ||
+    JSON.stringify(teacherNotes)     !== JSON.stringify(savedNotes);
+
+  function handleRatingChange(id: string, rating: RubricRating | null) {
+    setTeacherOverrides((prev) => ({ ...prev, [id]: rating }));
+  }
+
+  function handleNotesChange(id: string, value: string) {
+    setTeacherNotes((prev) => ({ ...prev, [id]: value }));
+  }
+
+  function handleSave() {
+    setSavedOverrides({ ...teacherOverrides });
+    setSavedNotes({ ...teacherNotes });
+    setSaveStatus("saved");
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => setSaveStatus("idle"), 3000);
+  }
+
   const displayLesson = lesson ?? LESSON_META;
 
   async function handleEvaluate() {
@@ -1000,7 +1169,8 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
     }
   }
 
-  // Derive what to show: real API result takes priority over demo preset
+  const [showLesson, setShowLesson] = useState(false);
+
   const activePreset = DEMO_PRESETS[presetIdx];
 
   const displaySections: EvaluationSection[] = evalResult?.sections
@@ -1009,8 +1179,13 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
         return { ...t, rating };
       });
 
-  const displayBand    = evalResult?.band    ?? activePreset.band;
   const displaySummary = evalResult?.summary ?? activePreset.summary;
+
+  // Active ratings: teacher override wins over AI/demo rating for each section
+  const activeRatings: RubricRating[] = displaySections.map((s) =>
+    teacherOverrides[s.id] ?? (s.rating as RubricRating) ?? "medium"
+  );
+  const readiness = calcReadiness(activeRatings);
 
   return (
     <div style={{ maxWidth: 820, margin: "0 auto", padding: "40px 40px 60px" }}>
@@ -1021,8 +1196,102 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
         <DemoControl presetIdx={presetIdx} onSelect={setPresetIdx} />
       )}
 
+      {/* Overall readiness card */}
+      <div className="card" style={{ marginTop: 0, overflow: "hidden" }}>
+
+        {/* ── Top row: status + stats | divider | AI feedback ── */}
+        <div style={{ padding: "24px 28px", display: "flex", alignItems: "flex-start", gap: 24, flexWrap: "wrap" }}>
+
+          {/* Readiness status + score stats */}
+          <div style={{ flexShrink: 0 }}>
+            <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)", marginBottom: 8 }}>
+              Readiness
+            </p>
+            <span className="eval-band-badge">{readiness.status}</span>
+            <div className="readiness-stats">
+              <div className="readiness-stat">
+                <span className="readiness-stat-value">
+                  {readiness.totalScore}<span className="readiness-stat-max">/{readiness.maxScore}</span>
+                </span>
+                <span className="readiness-stat-label">Total score</span>
+              </div>
+              <div className="readiness-stat-divider" />
+              <div className="readiness-stat">
+                <span
+                  className="readiness-stat-value"
+                  style={readiness.lowCount > 0 ? { color: "var(--score-weak)" } : undefined}
+                >
+                  {readiness.lowCount}
+                </span>
+                <span className="readiness-stat-label">Low ratings</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Vertical divider */}
+          <div style={{ width: 1, alignSelf: "stretch", background: "var(--border)", flexShrink: 0 }} />
+
+          {/* AI Feedback */}
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)" }}>
+              {evalResult ? "AI Feedback" : "AI Feedback · demo"}
+            </p>
+            <p style={{ marginTop: 8, fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.65 }}>
+              {displaySummary}
+            </p>
+          </div>
+        </div>
+
+        {/* ── Scoring rules — full-width footer strip ── */}
+        <details className="scoring-rules">
+          <summary className="scoring-rules-trigger">How scoring works</summary>
+          <div className="scoring-rules-body">
+            <div className="scoring-rules-cols">
+
+              {/* Left: point values */}
+              <div className="scoring-rules-col">
+                <p className="scoring-rules-col-label">Point values</p>
+                <div className="scoring-points">
+                  <span className="scoring-point scoring-point-high">High = 2 pts</span>
+                  <span className="scoring-point scoring-point-medium">Medium = 1 pt</span>
+                  <span className="scoring-point scoring-point-low">Low = 0 pts</span>
+                </div>
+              </div>
+
+              {/* Right: thresholds */}
+              <div className="scoring-rules-col">
+                <p className="scoring-rules-col-label">Readiness thresholds</p>
+                <ol className="scoring-thresholds">
+                  <li>
+                    <span className="scoring-threshold-badge scoring-threshold-ready">Classroom Ready</span>
+                    <span className="scoring-threshold-rule">18–20 pts · no Low ratings</span>
+                  </li>
+                  <li>
+                    <span className="scoring-threshold-badge scoring-threshold-revision">Ready with Revision</span>
+                    <span className="scoring-threshold-rule">14–17 pts · or 18–20 pts with 1 Low</span>
+                  </li>
+                  <li>
+                    <span className="scoring-threshold-badge scoring-threshold-needs">Needs Revision</span>
+                    <span className="scoring-threshold-rule">8–13 pts</span>
+                  </li>
+                  <li>
+                    <span className="scoring-threshold-badge scoring-threshold-not">Not Ready</span>
+                    <span className="scoring-threshold-rule">0–7 pts</span>
+                  </li>
+                </ol>
+              </div>
+
+            </div>
+            <p className="scoring-note">
+              Readiness is calculated automatically based on rubric ratings and the number of Low ratings. Teacher overrides update the result instantly.
+            </p>
+          </div>
+        </details>
+
+      </div>
+
       {/* Lesson card */}
-      <div className="card" style={{ padding: "24px 28px", marginTop: evalResult ? 0 : 24 }}>
+      <div className="card" style={{ padding: "24px 28px", marginTop: 20 }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)" }}>
@@ -1043,8 +1312,20 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
             )}
           </div>
 
-          {/* Evaluate button */}
-          <div style={{ flexShrink: 0, paddingTop: 2 }}>
+          {/* Buttons */}
+          <div style={{ flexShrink: 0, paddingTop: 2, display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
+            {/* View lesson plan toggle */}
+            <button
+              type="button"
+              className="btn-outline-sm"
+              onClick={() => setShowLesson((v) => !v)}
+              style={{ display: "flex", alignItems: "center", gap: 6 }}
+            >
+              <Icon.FileText />
+              {showLesson ? "Hide lesson plan" : "View lesson plan"}
+            </button>
+
+            {/* Evaluate / Re-evaluate */}
             {evalResult ? (
               <button
                 type="button"
@@ -1073,42 +1354,75 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
         )}
       </div>
 
-      {/* Overall summary card */}
-      <div className="card" style={{ padding: "24px 28px", marginTop: 20 }}>
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
-          {/* Status badge */}
-          <div style={{ flexShrink: 0 }}>
-            <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)", marginBottom: 8 }}>
-              Overall
-            </p>
-            <span className="eval-band-badge">{displayBand}</span>
-          </div>
-
-          {/* Divider */}
-          <div style={{ width: 1, alignSelf: "stretch", background: "var(--border)", flexShrink: 0 }} />
-
-          {/* Feedback */}
-          <div style={{ flex: 1, minWidth: 220 }}>
-            <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)" }}>
-              {evalResult ? "AI Feedback" : "AI Feedback · demo"}
-            </p>
-            <p style={{ marginTop: 8, fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.65 }}>
-              {displaySummary}
-            </p>
-          </div>
-        </div>
-      </div>
+      {/* ── Expandable lesson plan panel ── */}
+      {showLesson && (
+        <LessonPanel lesson={displayLesson as Lesson} />
+      )}
 
       {/* Detailed sections */}
       <div style={{ marginTop: 32 }}>
-        <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)", marginBottom: 12 }}>
-          {evalResult ? "Detailed Evaluation" : "Detailed Evaluation · demo"}
-        </p>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 12 }}>
+          <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)", margin: 0 }}>
+            {evalResult ? "Detailed Evaluation" : "Detailed Evaluation · demo"}
+          </p>
+
+          {/* Save controls — only shown when there is something to save */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {saveStatus === "saved" && (
+              <span className="save-confirmation">
+                ✓ Teacher changes saved
+              </span>
+            )}
+            <button
+              type="button"
+              className="btn-outline-sm"
+              onClick={handleSave}
+              disabled={!hasUnsaved}
+              style={{ opacity: hasUnsaved ? 1 : 0.4, cursor: hasUnsaved ? "pointer" : "default" }}
+            >
+              Save evaluation changes
+            </button>
+          </div>
+        </div>
+
         <div className="card" style={{ padding: "0 24px", overflow: "hidden" }}>
           {displaySections.map((s, i) => (
-            <EvalSection key={s.id} section={s} isLast={i === displaySections.length - 1} />
+            <EvalSection
+              key={s.id}
+              section={s}
+              isLast={i === displaySections.length - 1}
+              teacherRating={teacherOverrides[s.id] ?? null}
+              notes={teacherNotes[s.id] ?? ""}
+              onRatingChange={handleRatingChange}
+              onNotesChange={handleNotesChange}
+            />
           ))}
         </div>
+
+        {/* ── Bottom save bar — primary CTA ── */}
+        <div className="eval-save-bar">
+          <div className="eval-save-bar-left">
+            {hasUnsaved ? (
+              <span className="eval-unsaved-label">
+                <span className="eval-unsaved-dot" />
+                Unsaved changes
+              </span>
+            ) : saveStatus === "saved" ? (
+              <span className="eval-saved-label">
+                ✓ Evaluation changes saved
+              </span>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className={`btn-primary eval-save-btn${!hasUnsaved ? " eval-save-btn-dim" : ""}`}
+            onClick={handleSave}
+            disabled={!hasUnsaved}
+          >
+            Save Evaluation Changes
+          </button>
+        </div>
+
       </div>
     </div>
   );
@@ -1166,7 +1480,12 @@ function DemoControl({
    LESSON LIBRARY — mock data + UI
 ════════════════════════════════════════════════════════════ */
 
-type LessonStatus = "classroom-ready" | "needs-revision" | "teacher-edited";
+/* Readiness status values match calcReadiness() on the Evaluator page */
+type LibraryReadiness =
+  | "classroom-ready"
+  | "ready-with-revision"
+  | "needs-revision"
+  | "not-ready";
 
 type LibraryLesson = {
   id: string;
@@ -1174,117 +1493,79 @@ type LibraryLesson = {
   subject: string;
   grade: string;
   model: string;
-  score: number;
-  status: LessonStatus;
-  created: string;   // ISO date string
+  totalScore: number;   // rubric score 0-20 (High=2, Medium=1, Low=0)
+  lowCount: number;     // number of Low ratings
+  readiness: LibraryReadiness;
+  created: string;
   frameworks: string[];
   duration: number;
+};
+
+const READINESS_META: Record<LibraryReadiness, { label: string; cls: string }> = {
+  "classroom-ready":     { label: "Classroom Ready",          cls: "badge-ready"    },
+  "ready-with-revision": { label: "Ready with Revision",      cls: "badge-revision" },
+  "needs-revision":      { label: "Needs Revision",           cls: "badge-needs"    },
+  "not-ready":           { label: "Not Ready",                cls: "badge-not"      },
 };
 
 const LIBRARY_MOCK: LibraryLesson[] = [
   {
     id: "1",
     title: "Modeling Photosynthesis with Everyday Materials",
-    subject: "Science",
-    grade: "7",
-    model: "Claude",
-    score: 88,
-    status: "classroom-ready",
-    created: "2025-05-18",
-    frameworks: ["NGSS"],
-    duration: 60,
+    subject: "Science", grade: "7", model: "Claude",
+    totalScore: 19, lowCount: 0, readiness: "classroom-ready",
+    created: "2025-05-18", frameworks: ["NGSS"], duration: 60,
   },
   {
     id: "2",
     title: "Introduction to Fractions Using Pattern Blocks",
-    subject: "Mathematics",
-    grade: "4",
-    model: "GPT-4",
-    score: 74,
-    status: "needs-revision",
-    created: "2025-05-15",
-    frameworks: ["Common Core"],
-    duration: 45,
+    subject: "Mathematics", grade: "4", model: "GPT-4",
+    totalScore: 11, lowCount: 3, readiness: "needs-revision",
+    created: "2025-05-15", frameworks: ["Common Core"], duration: 45,
   },
   {
     id: "3",
     title: "The Water Cycle: Evaporation & Condensation",
-    subject: "Science",
-    grade: "5",
-    model: "Gemini",
-    score: 91,
-    status: "classroom-ready",
-    created: "2025-05-12",
-    frameworks: ["NGSS"],
-    duration: 60,
+    subject: "Science", grade: "5", model: "Gemini",
+    totalScore: 19, lowCount: 0, readiness: "classroom-ready",
+    created: "2025-05-12", frameworks: ["NGSS"], duration: 60,
   },
   {
     id: "4",
     title: "Writing Persuasive Paragraphs with Evidence",
-    subject: "English",
-    grade: "6",
-    model: "Claude",
-    score: 82,
-    status: "teacher-edited",
-    created: "2025-05-10",
-    frameworks: ["Common Core"],
-    duration: 45,
+    subject: "English", grade: "6", model: "Claude",
+    totalScore: 17, lowCount: 0, readiness: "ready-with-revision",
+    created: "2025-05-10", frameworks: ["Common Core"], duration: 45,
   },
   {
     id: "5",
     title: "Understanding Supply & Demand with Role-Play",
-    subject: "Social Studies",
-    grade: "9",
-    model: "Mistral",
-    score: 55,
-    status: "needs-revision",
-    created: "2025-05-08",
-    frameworks: ["State-specific"],
-    duration: 90,
+    subject: "Social Studies", grade: "9", model: "Mistral",
+    totalScore: 6, lowCount: 6, readiness: "not-ready",
+    created: "2025-05-08", frameworks: ["State-specific"], duration: 90,
   },
   {
     id: "6",
     title: "Cell Division: Mitosis vs. Meiosis Comparison",
-    subject: "Biology",
-    grade: "10",
-    model: "GPT-4",
-    score: 95,
-    status: "classroom-ready",
-    created: "2025-05-05",
-    frameworks: ["NGSS", "Common Core"],
-    duration: 60,
+    subject: "Biology", grade: "10", model: "GPT-4",
+    totalScore: 20, lowCount: 0, readiness: "classroom-ready",
+    created: "2025-05-05", frameworks: ["NGSS", "Common Core"], duration: 60,
   },
   {
     id: "7",
     title: "Colonial America: Primary Source Analysis",
-    subject: "History",
-    grade: "8",
-    model: "Claude",
-    score: 67,
-    status: "teacher-edited",
-    created: "2025-04-30",
-    frameworks: ["Common Core"],
-    duration: 45,
+    subject: "History", grade: "8", model: "Claude",
+    totalScore: 15, lowCount: 0, readiness: "ready-with-revision",
+    created: "2025-04-30", frameworks: ["Common Core"], duration: 45,
   },
   {
     id: "8",
     title: "Graphing Linear Equations on the Coordinate Plane",
-    subject: "Mathematics",
-    grade: "8",
-    model: "Gemini",
-    score: 79,
-    status: "needs-revision",
-    created: "2025-04-25",
-    frameworks: ["Common Core"],
-    duration: 60,
+    subject: "Mathematics", grade: "8", model: "Gemini",
+    totalScore: 13, lowCount: 2, readiness: "needs-revision",
+    created: "2025-04-25", frameworks: ["Common Core"], duration: 60,
   },
 ];
-
-const STATUS_META: Record<LessonStatus, { label: string; cls: string }> = {
-  "classroom-ready": { label: "Classroom Ready", cls: "badge-ready"   },
-  "needs-revision":  { label: "Needs Revision",  cls: "badge-revision"},
-  "teacher-edited":  { label: "Teacher Edited",  cls: "badge-edited"  },
-};
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -1295,18 +1576,17 @@ function LibraryPage() {
   const [statusFlt, setStatusFlt] = useState<string>("all");
   const [sortBy,    setSortBy]    = useState<"recent" | "score">("recent");
 
-  // Filter + sort
   const visible = LIBRARY_MOCK
     .filter((l) => {
       const matchQ = query === "" ||
         l.title.toLowerCase().includes(query.toLowerCase()) ||
         l.subject.toLowerCase().includes(query.toLowerCase());
-      const matchS = statusFlt === "all" || l.status === statusFlt;
+      const matchS = statusFlt === "all" || l.readiness === statusFlt;
       return matchQ && matchS;
     })
     .sort((a, b) =>
       sortBy === "score"
-        ? b.score - a.score
+        ? b.totalScore - a.totalScore
         : new Date(b.created).getTime() - new Date(a.created).getTime()
     );
 
@@ -1340,8 +1620,9 @@ function LibraryPage() {
           >
             <option value="all">All statuses</option>
             <option value="classroom-ready">Classroom Ready</option>
+            <option value="ready-with-revision">Ready with Revision</option>
             <option value="needs-revision">Needs Revision</option>
-            <option value="teacher-edited">Teacher Edited</option>
+            <option value="not-ready">Not Ready</option>
           </select>
         </div>
 
@@ -1384,15 +1665,20 @@ function LibraryPage() {
 }
 
 function LessonCard({ lesson }: { lesson: LibraryLesson }) {
-  const cat    = scoreCategory(lesson.score);
-  const status = STATUS_META[lesson.status];
+  const meta = READINESS_META[lesson.readiness];
 
   return (
     <div className="lib-card">
-      {/* Top row: status badge + score */}
+      {/* Top row: readiness badge + rubric score */}
       <div className="lib-card-top">
-        <span className={`lib-badge ${status.cls}`}>{status.label}</span>
-        <span className={`lib-score score-${cat}`}>{lesson.score}</span>
+        <span className={`lib-badge ${meta.cls}`}>{meta.label}</span>
+        <span className="lib-rubric-score">
+          {lesson.totalScore}
+          <span className="lib-rubric-max">/20</span>
+          {lesson.lowCount > 0 && (
+            <span className="lib-rubric-lows">{lesson.lowCount}L</span>
+          )}
+        </span>
       </div>
 
       {/* Title */}

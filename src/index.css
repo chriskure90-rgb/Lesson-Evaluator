@@ -880,6 +880,158 @@ h1, h2, h3, h4, h5 {
   padding: 9px 12px;
 }
 
+/* ── Scoring rules disclosure ────────────────────────────────
+   Full-width footer strip inside the readiness card.
+   Collapsed by default; expands below the status/feedback row.
+*/
+.scoring-rules {
+  border-top: 1px solid var(--border);
+}
+
+/* Trigger — spans full card width, subtle background */
+.scoring-rules-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 28px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted-fg);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  background: var(--muted);
+  transition: color 120ms;
+}
+.scoring-rules-trigger::-webkit-details-marker { display: none; }
+.scoring-rules-trigger::before {
+  content: "▸";
+  font-size: 10px;
+  color: var(--primary);
+  transition: transform 180ms ease;
+  flex-shrink: 0;
+}
+details[open] .scoring-rules-trigger::before { transform: rotate(90deg); }
+.scoring-rules-trigger:hover { color: var(--foreground); }
+
+/* Body */
+.scoring-rules-body {
+  padding: 16px 28px 18px;
+  background: var(--muted);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Two-column grid: point values | thresholds */
+.scoring-rules-cols {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 24px;
+}
+@media (max-width: 560px) { .scoring-rules-cols { grid-template-columns: 1fr; } }
+
+.scoring-rules-col { display: flex; flex-direction: column; gap: 8px; }
+
+.scoring-rules-col-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-fg);
+}
+
+/* Point pills */
+.scoring-points { display: flex; flex-wrap: wrap; gap: 5px; }
+.scoring-point {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 99px;
+}
+.scoring-point-high   { background: var(--score-strong-bg); color: var(--accent-fg); }
+.scoring-point-medium { background: var(--score-amber-bg);  color: #7a4f00; }
+.scoring-point-low    { background: var(--score-weak-bg);   color: var(--destructive); }
+
+/* Threshold list */
+.scoring-thresholds {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.scoring-thresholds li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.scoring-threshold-badge {
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: 'Space Grotesk', sans-serif;
+  white-space: nowrap;
+}
+.scoring-threshold-rule {
+  font-size: 11.5px;
+  color: var(--muted-fg);
+}
+.scoring-threshold-ready    { color: var(--score-strong); }
+.scoring-threshold-revision { color: var(--score-amber);  }
+.scoring-threshold-needs    { color: #b07000;              }
+.scoring-threshold-not      { color: var(--score-weak);   }
+
+/* Footer note */
+.scoring-note {
+  font-size: 11.5px;
+  color: var(--muted-fg);
+  line-height: 1.55;
+  font-style: italic;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin: 0;
+}
+
+/* ── Readiness score stats ───────────────────────────────────
+   Row of two stats under the band badge: "16/20" and "2 Lows"
+*/
+.readiness-stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+.readiness-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.readiness-stat-value {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--foreground);
+  letter-spacing: -0.02em;
+}
+.readiness-stat-max {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted-fg);
+}
+.readiness-stat-label {
+  font-size: 11px;
+  color: var(--muted-fg);
+  white-space: nowrap;
+}
+.readiness-stat-divider {
+  width: 1px;
+  height: 32px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
 /* ── Evaluator overall band badge ───────────────────────────
    Replaces the numeric score — shows "Classroom-ready" etc.
    with a calm pill using the existing accent palette.
@@ -1088,7 +1240,126 @@ h1, h2, h3, h4, h5 {
   color: var(--destructive);
 }
 
-/* ── Teacher override ────────────────────────────────────── */
+/* ── Lesson panel (evaluator page) ──────────────────────────
+   Collapsible read-only lesson plan view.
+   Appears between the lesson card and readiness card when toggled.
+*/
+.lesson-panel {
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 2px);
+  background: var(--card);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  margin-top: 12px;
+  margin-bottom: 4px;
+  animation: slideDown 160ms ease;
+}
+
+.lesson-panel-header {
+  padding: 16px 24px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--muted);
+}
+
+.lesson-panel-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-fg);
+  margin-bottom: 4px;
+}
+
+.lesson-panel-title {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  color: var(--foreground);
+  line-height: 1.3;
+}
+
+/* Accordion items inside the panel get tighter padding */
+.lesson-panel .accordion-trigger { padding: 12px 24px; }
+.lesson-panel .accordion-content { padding: 0 24px 16px; }
+
+/* ── Bottom save bar ─────────────────────────────────────────
+   Primary CTA strip that sits below the rubric sections card.
+   Full width, matches the card width, visually grounded.
+*/
+.eval-save-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 16px;
+  padding: 16px 20px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 2px);
+  box-shadow: var(--shadow-card);
+}
+
+.eval-save-bar-left {
+  display: flex;
+  align-items: center;
+  min-height: 20px;   /* prevent layout jump when empty */
+}
+
+/* "● Unsaved changes" */
+.eval-unsaved-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--score-amber);
+}
+.eval-unsaved-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--score-amber);
+  flex-shrink: 0;
+}
+
+/* "✓ Evaluation changes saved" */
+.eval-saved-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--primary);
+  animation: fadeInOut 3s ease forwards;
+}
+
+/* Primary save button — not full width; auto-sized */
+.eval-save-btn {
+  width: auto;
+  padding: 0 24px;
+  flex-shrink: 0;
+}
+.eval-save-btn-dim {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ── Save confirmation message (top-right small version) ─── */
+.save-confirmation {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  animation: fadeInOut 3s ease forwards;
+}
+@keyframes fadeInOut {
+  0%   { opacity: 0; transform: translateY(2px); }
+  10%  { opacity: 1; transform: translateY(0);   }
+  75%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ── Teacher override ───────────────────────────────────────────── */
 .override-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid rgb(228 224 216 / 0.6); }
 .override-label { font-size: 12px; font-weight: 500; color: var(--muted-fg); margin-bottom: 6px; }
 
@@ -1211,20 +1482,37 @@ h1, h2, h3, h4, h5 {
   border-radius: 99px;
   white-space: nowrap;
 }
-.badge-ready    { background: var(--score-strong-bg); color: var(--accent-fg);   }
-.badge-revision { background: var(--score-amber-bg);  color: #7a4f00;            }
-.badge-edited   { background: var(--muted);           color: var(--muted-fg);    border: 1px solid var(--border); }
+/* Four readiness badge variants — same palette as Evaluator page */
+.badge-ready    { background: var(--score-strong-bg); color: var(--accent-fg);  }
+.badge-revision { background: var(--score-amber-bg);  color: #7a4f00;           }
+.badge-needs    { background: rgb(160 106 0 / 0.12);  color: #7a4f00;           border: 1px solid rgb(160 106 0 / 0.25); }
+.badge-not      { background: var(--score-weak-bg);   color: var(--destructive); }
 
-/* Score number on card */
-.lib-score {
+/* Rubric score display — "19/20  2L" */
+.lib-rubric-score {
   font-family: 'Space Grotesk', sans-serif;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
-  tabular-nums: true;
+  color: var(--foreground);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
 }
-.lib-score.score-strong { color: var(--score-strong); }
-.lib-score.score-amber  { color: var(--score-amber);  }
-.lib-score.score-weak   { color: var(--score-weak);   }
+.lib-rubric-max {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted-fg);
+}
+.lib-rubric-lows {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--score-weak);
+  background: var(--score-weak-bg);
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: 2px;
+  line-height: 1.6;
+}
 
 /* Title */
 .lib-card-title {
