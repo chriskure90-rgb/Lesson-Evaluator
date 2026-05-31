@@ -883,14 +883,6 @@ const SECTION_TEMPLATES: SectionTemplate[] = [
   },
 ];
 
-type ScoreCat = "strong" | "amber" | "weak";
-
-function scoreCategory(s: number): ScoreCat {
-  if (s >= 80) return "strong";
-  if (s >= 60) return "amber";
-  return "weak";
-}
-
 /* ── Rubric readiness calculation ────────────────────────────────────────────
    High = 2 pts · Medium = 1 pt · Low = 0 pts · Max = 20 (10 criteria × 2)
 
