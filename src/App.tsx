@@ -1146,7 +1146,8 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
   // Save state — snapshot of what was last explicitly saved
   const [savedOverrides, setSavedOverrides] = useState<Record<string, RubricRating | null>>({});
   const [savedNotes, setSavedNotes]         = useState<Record<string, string>>({});
-  const [saveStatus, setSaveStatus]         = useState<"idle" | "saved">("idle");
+  const [saveStatus, setSaveStatus]         = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveError, setSaveErrorMsg]        = useState<string | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Unsaved = current state differs from last save snapshot
@@ -1162,7 +1163,71 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
     setTeacherNotes((prev) => ({ ...prev, [id]: value }));
   }
 
-  function handleSave() {
+  async function handleSave() {
+    setSaveStatus("saving");
+    setSaveErrorMsg(null);
+
+    // ── Build rubric_json ───────────────────────────────────────────────────
+    // Each section gets its AI rating, teacher override, and resolved final rating.
+    const rubricJson: Record<string, {
+      title: string;
+      ai_rating: RubricRating;
+      teacher_rating: RubricRating | null;
+      final_rating: RubricRating;
+    }> = {};
+
+    displaySections.forEach((s) => {
+      const aiRating     = (s.rating ?? "medium") as RubricRating;
+      const teacherRating = teacherOverrides[s.id] ?? null;
+      const finalRating  = teacherRating ?? aiRating;
+      rubricJson[s.id] = {
+        title:          s.title,
+        ai_rating:      aiRating,
+        teacher_rating: teacherRating,
+        final_rating:   finalRating,
+      };
+    });
+
+    // ── Build teacher_notes_json ────────────────────────────────────────────
+    // Include every section even if empty so the schema is always complete.
+    const teacherNotesJson: Record<string, string> = {};
+    displaySections.forEach((s) => {
+      teacherNotesJson[s.id] = teacherNotes[s.id] ?? "";
+    });
+
+    // ── Insert to Supabase ──────────────────────────────────────────────────
+    const payload = {
+      lesson_id:        null,          // wire up once lesson ids are persisted
+      readiness_status: readiness.status,
+      total_score:      readiness.totalScore,
+      low_count:        readiness.lowCount,
+      rubric_json:      rubricJson,
+      teacher_notes_json: teacherNotesJson,
+      is_demo:          false,
+    };
+
+    const { data: savedData, error: supaError } = await supabase
+      .from("lesson_evaluations")
+      .insert([payload])
+      .select();
+
+    if (supaError) {
+      console.error("[Supabase] lesson_evaluations insert error:", supaError);
+      setSaveErrorMsg("Save failed. Please try again.");
+      setSaveStatus("error");
+      return;
+    }
+
+    if (!savedData || savedData.length === 0) {
+      console.warn("[Supabase] lesson_evaluations insert returned no rows. Possible RLS block.");
+      setSaveErrorMsg("Save may have been blocked. Check Supabase RLS policies.");
+      setSaveStatus("error");
+      return;
+    }
+
+    console.debug("[Supabase] lesson_evaluations insert succeeded:", savedData);
+
+    // Update frontend snapshot so unsaved indicator clears
     setSavedOverrides({ ...teacherOverrides });
     setSavedNotes({ ...teacherNotes });
     setSaveStatus("saved");
@@ -1393,10 +1458,10 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
               type="button"
               className="btn-outline-sm"
               onClick={handleSave}
-              disabled={!hasUnsaved}
-              style={{ opacity: hasUnsaved ? 1 : 0.4, cursor: hasUnsaved ? "pointer" : "default" }}
+              disabled={saveStatus === "saving" || (!hasUnsaved && saveStatus !== "error")}
+              style={{ opacity: (hasUnsaved || saveStatus === "error") ? 1 : 0.4 }}
             >
-              Save evaluation changes
+              {saveStatus === "saving" ? "Saving…" : "Save evaluation changes"}
             </button>
           </div>
         </div>
@@ -1418,7 +1483,12 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
         {/* ── Bottom save bar — primary CTA ── */}
         <div className="eval-save-bar">
           <div className="eval-save-bar-left">
-            {hasUnsaved ? (
+            {saveStatus === "error" ? (
+              <span className="eval-unsaved-label" style={{ color: "var(--score-weak)" }}>
+                <span className="eval-unsaved-dot" style={{ background: "var(--score-weak)" }} />
+                {saveError}
+              </span>
+            ) : hasUnsaved ? (
               <span className="eval-unsaved-label">
                 <span className="eval-unsaved-dot" />
                 Unsaved changes
@@ -1431,11 +1501,11 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
           </div>
           <button
             type="button"
-            className={`btn-primary eval-save-btn${!hasUnsaved ? " eval-save-btn-dim" : ""}`}
+            className={`btn-primary eval-save-btn${(!hasUnsaved && saveStatus !== "error") ? " eval-save-btn-dim" : ""}`}
             onClick={handleSave}
-            disabled={!hasUnsaved}
+            disabled={saveStatus === "saving" || (!hasUnsaved && saveStatus !== "error")}
           >
-            Save Evaluation Changes
+            {saveStatus === "saving" ? <><Icon.Loader /> Saving…</> : "Save Evaluation Changes"}
           </button>
         </div>
 
