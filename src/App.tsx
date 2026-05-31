@@ -376,23 +376,40 @@ function GeneratorPage({
       setLesson(result);
       onLessonGenerated(result);   // share with the Evaluator
 
-      const { error: saveError } = await supabase
-  .from("lesson_generation")
-  .insert([
-    {
-      lesson_topic: topic,
-      api_model: model,
-      grade_level: String(grade),
-      standards_framework: resolvedFrameworks().join(", "),
-      standard_code: code,
-      lesson_goal: goal,
-      duration: String(duration),
-      lesson_json: result,
-      is_demo: false,
-    },
-  ]);
+      // ── Supabase save ──────────────────────────────────────────────────
+      // DEBUG: log the exact payload before sending so you can compare
+      // it against the Supabase table columns in the dashboard.
+      const insertPayload = {
+        lesson_topic:        topic,
+        api_model:           model,
+        grade_level:         String(grade),
+        standards_framework: resolvedFrameworks().join(", "),
+        standard_code:       code,
+        lesson_goal:         goal,
+        duration:            String(duration),
+        lesson_json:         result,
+        is_demo:             false,
+      };
+      console.debug("[Supabase] inserting into lesson_generation:", insertPayload);
+
+      const { data: insertData, error: saveError } = await supabase
+        .from("lesson_generation")
+        .insert([insertPayload])
+        .select();   // .select() forces Supabase to return the inserted row(s)
+                     // If RLS blocks the insert, data will be [] and error may
+                     // still be null — this makes silent failures visible.
+
       if (saveError) {
-        console.error("Supabase insert error:", saveError);
+        // Logs the full PostgrestError: message, code, details, hint
+        console.error("[Supabase] insert error:", saveError);
+      } else if (!insertData || insertData.length === 0) {
+        // No error thrown but nothing was inserted — almost always an RLS issue.
+        // Fix: go to Supabase dashboard → Table Editor → lesson_generation
+        //      → RLS Policies and either disable RLS for testing or add an
+        //      INSERT policy that allows anon/authenticated role.
+        console.warn("[Supabase] insert returned no rows. Possible RLS block. Check: Dashboard > Authentication > Policies > lesson_generation. Quickest test: disable RLS temporarily on this table and retry.");
+      } else {
+        console.debug("[Supabase] insert succeeded:", insertData);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
@@ -888,6 +905,14 @@ const SECTION_TEMPLATES: SectionTemplate[] = [
     feedback: "The labeled diagram exit ticket is structured and task-based. Adding a written reflection prompt ('What surprised you?') would deepen metacognitive engagement.",
   },
 ];
+
+type ScoreCat = "strong" | "amber" | "weak";
+
+function scoreCategory(s: number): ScoreCat {
+  if (s >= 80) return "strong";
+  if (s >= 60) return "amber";
+  return "weak";
+}
 
 /* ── Rubric readiness calculation ────────────────────────────────────────────
    High = 2 pts · Medium = 1 pt · Low = 0 pts · Max = 20 (10 criteria × 2)
