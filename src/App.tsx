@@ -376,15 +376,21 @@ function GeneratorPage({
       setLesson(result);
       onLessonGenerated(result);   // share with the Evaluator
 
-      const { error: saveError } = await supabase.from("lesson_plans").insert([
-        {
-          title:       result.title,
-          grade,
-          api_model:   model,
-          lesson_json: result,
-          is_demo:     false,
-        },
-      ]);
+      const { error: saveError } = await supabase
+  .from("lesson_generation")
+  .insert([
+    {
+      lesson_topic: topic,
+      api_model: model,
+      grade_level: String(grade),
+      standards_framework: resolvedFrameworks().join(", "),
+      standard_code: code,
+      lesson_goal: goal,
+      duration: String(duration),
+      lesson_json: result,
+      is_demo: false,
+    },
+  ]);
       if (saveError) {
         console.error("Supabase insert error:", saveError);
       }
