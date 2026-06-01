@@ -1881,32 +1881,30 @@ function LessonCard({ row, onOpen }: { row: LibraryRow; onOpen: (r: LibraryRow) 
 
 /* ── LessonDetailDrawer ── */
 function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => void }) {
-  const rKey   = readinessKey(row.readiness_status);
-  const rMeta  = READINESS_META[rKey];
-  const lesson = row.lesson_json;
+  const rKey    = readinessKey(row.readiness_status);
+  const rMeta   = READINESS_META[rKey];
+  const lesson  = row.lesson_json;
   const hasEval = row.eval_id !== null;
 
-  // Rubric items that need attention: final_rating is "medium" or "low"
-  const flaggedItems = row.rubric_json
-    ? Object.entries(row.rubric_json).filter(([, v]) => v.final_rating !== "high")
-    : [];
+  // Partition rubric items by final_rating
+  const rubricEntries = row.rubric_json ? Object.entries(row.rubric_json) : [];
+  const goodItems      = rubricEntries.filter(([, v]) => v.final_rating === "high");
+  const attentionItems = rubricEntries.filter(([, v]) => v.final_rating !== "high");
 
-  // Teacher notes that are non-empty
+  // Non-empty teacher notes
   const noteEntries = row.teacher_notes_json
     ? Object.entries(row.teacher_notes_json).filter(([, v]) => v.trim() !== "")
     : [];
 
   return (
     <>
-      {/* Backdrop */}
       <div className="drawer-backdrop" onClick={onClose} />
-
-      {/* Panel */}
       <div className="drawer-panel">
-        {/* Header */}
+
+        {/* ── Header ── */}
         <div className="drawer-header">
           <div style={{ flex: 1, minWidth: 0 }}>
-            <p className="drawer-eyebrow">Lesson Plan</p>
+            <p className="drawer-eyebrow">Lesson Detail</p>
             <h2 className="drawer-title">{row.title}</h2>
             <div className="lib-card-meta" style={{ marginTop: 6 }}>
               <span>Grade {row.grade_level}</span>
@@ -1925,73 +1923,119 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
 
         <div className="drawer-body">
 
-          {/* ── Evaluation summary ── */}
-          <section className="drawer-section">
-            <h3 className="drawer-section-title">Evaluation</h3>
+          {/* ── 1. Evaluation Summary ── */}
+          <section className="drawer-section" style={{ paddingTop: 20, borderTop: "none", marginTop: 0 }}>
+            <h3 className="drawer-section-title">Evaluation Summary</h3>
             {hasEval ? (
-              <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-                <span className={"lib-badge " + rMeta.cls} style={{ fontSize: 12.5, padding: "3px 12px" }}>
-                  {rMeta.label}
-                </span>
-                <span style={{ fontSize: 14, color: "var(--foreground)" }}>
-                  <strong style={{ fontFamily: "Space Grotesk, sans-serif" }}>{row.total_score}/20</strong>
-                  <span style={{ color: "var(--muted-fg)", marginLeft: 6 }}>total score</span>
-                </span>
-                {(row.low_count ?? 0) > 0 && (
-                  <span style={{ fontSize: 13, color: "var(--score-weak)", fontWeight: 500 }}>
-                    {row.low_count} Low {(row.low_count ?? 0) === 1 ? "rating" : "ratings"}
+              <div className="drawer-eval-summary">
+                <div className="drawer-eval-badge-wrap">
+                  <span className={"lib-badge " + rMeta.cls} style={{ fontSize: 12.5, padding: "4px 14px" }}>
+                    {rMeta.label}
                   </span>
-                )}
+                </div>
+                <div className="drawer-eval-stats">
+                  <div className="drawer-eval-stat">
+                    <span className="drawer-eval-stat-value">{row.total_score}<span className="drawer-eval-stat-denom">/20</span></span>
+                    <span className="drawer-eval-stat-label">Total score</span>
+                  </div>
+                  <div className="drawer-eval-stat-div" />
+                  <div className="drawer-eval-stat">
+                    <span
+                      className="drawer-eval-stat-value"
+                      style={(row.low_count ?? 0) > 0 ? { color: "var(--score-weak)" } : undefined}
+                    >
+                      {row.low_count ?? 0}
+                    </span>
+                    <span className="drawer-eval-stat-label">
+                      {(row.low_count ?? 0) === 1 ? "Low rating" : "Low ratings"}
+                    </span>
+                  </div>
+                </div>
               </div>
             ) : (
-              <p style={{ fontSize: 14, color: "var(--muted-fg)" }}>No evaluation saved yet.</p>
+              <div className="drawer-no-eval">
+                <p>No evaluation has been saved for this lesson yet.</p>
+              </div>
             )}
           </section>
 
-          {/* ── Rubric items needing attention ── */}
-          {hasEval && flaggedItems.length > 0 && (
+          {/* ── 2. What's Good ── */}
+          {hasEval && (
             <section className="drawer-section">
-              <h3 className="drawer-section-title">Rubric Items Needing Attention</h3>
-              <div className="drawer-rubric-list">
-                {flaggedItems.map(([id, item]) => (
-                  <div key={id} className="drawer-rubric-item">
-                    <div className="drawer-rubric-item-title">{item.title}</div>
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
-                      <span className={"rubric-badge rubric-badge-" + item.final_rating}>
-                        Final: {RATING_META[item.final_rating].label}
-                      </span>
-                      <span style={{ fontSize: 11.5, color: "var(--muted-fg)", alignSelf: "center" }}>
-                        AI: {RATING_META[item.ai_rating].label}
-                        {item.teacher_rating && item.teacher_rating !== item.ai_rating
-                          ? " → Teacher: " + RATING_META[item.teacher_rating].label
-                          : ""}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <h3 className="drawer-section-title drawer-section-title-good">
+                <span className="drawer-section-icon">✓</span> What’s Good
+              </h3>
+              {goodItems.length > 0 ? (
+                <ul className="drawer-good-list">
+                  {goodItems.map(([id, item]) => (
+                    <li key={id} className="drawer-good-item">
+                      <span className="drawer-good-dot" />
+                      <span className="drawer-good-title">{item.title}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="drawer-empty-note">No criteria rated High.</p>
+              )}
             </section>
           )}
 
-          {/* ── Teacher comments ── */}
-          {hasEval && noteEntries.length > 0 && (
+          {/* ── 3. Needs Attention ── */}
+          {hasEval && (
             <section className="drawer-section">
-              <h3 className="drawer-section-title">Teacher Comments</h3>
-              <div className="drawer-notes-list">
-                {noteEntries.map(([id, note]) => {
-                  const rubricTitle = row.rubric_json?.[id]?.title ?? id;
-                  return (
-                    <div key={id} className="drawer-note-item">
-                      <span className="drawer-note-label">{rubricTitle}</span>
-                      <p className="drawer-note-text">{note}</p>
+              <h3 className="drawer-section-title drawer-section-title-attention">
+                <span className="drawer-section-icon">⚠</span> Needs Attention
+              </h3>
+              {attentionItems.length > 0 ? (
+                <div className="drawer-rubric-list">
+                  {attentionItems.map(([id, item]) => (
+                    <div key={id} className="drawer-rubric-item">
+                      <div className="drawer-rubric-item-header">
+                        <span className="drawer-rubric-item-title">{item.title}</span>
+                        <span className={"rubric-badge rubric-badge-" + item.final_rating}>
+                          {RATING_META[item.final_rating].label}
+                        </span>
+                      </div>
+                      <div className="drawer-rubric-item-meta">
+                        <span>AI rating: <strong>{RATING_META[item.ai_rating].label}</strong></span>
+                        {item.teacher_rating && item.teacher_rating !== item.ai_rating && (
+                          <span className="drawer-rubric-override">
+                            → Teacher: <strong>{RATING_META[item.teacher_rating].label}</strong>
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  );
-                })}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="drawer-empty-note">All criteria are rated High.</p>
+              )}
             </section>
           )}
 
-          {/* ── Full lesson plan ── */}
+          {/* ── 4. Saved Comments ── */}
+          {hasEval && (
+            <section className="drawer-section">
+              <h3 className="drawer-section-title">Saved Comments</h3>
+              {noteEntries.length > 0 ? (
+                <div className="drawer-notes-list">
+                  {noteEntries.map(([id, note]) => {
+                    const rubricTitle = row.rubric_json?.[id]?.title ?? id;
+                    return (
+                      <div key={id} className="drawer-note-item">
+                        <span className="drawer-note-label">{rubricTitle}</span>
+                        <p className="drawer-note-text">{note}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="drawer-empty-note">No teacher comments saved.</p>
+              )}
+            </section>
+          )}
+
+          {/* ── 5. Lesson Plan ── */}
           {lesson && (
             <section className="drawer-section">
               <h3 className="drawer-section-title">Lesson Plan</h3>

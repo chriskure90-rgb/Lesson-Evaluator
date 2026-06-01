@@ -1721,6 +1721,128 @@ details[open] .scoring-rules-trigger::before { transform: rotate(90deg); }
   line-height: 1.55;
 }
 
+/* ── Evaluation summary block ────────────────────────────────
+   Badge + two stat cells in a card-like row.
+*/
+.drawer-eval-summary {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding: 16px 18px;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.drawer-eval-badge-wrap { flex-shrink: 0; }
+.drawer-eval-stats {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.drawer-eval-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.drawer-eval-stat-value {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--foreground);
+}
+.drawer-eval-stat-denom {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted-fg);
+}
+.drawer-eval-stat-label {
+  font-size: 11px;
+  color: var(--muted-fg);
+  white-space: nowrap;
+}
+.drawer-eval-stat-div {
+  width: 1px;
+  height: 30px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+/* No-eval placeholder */
+.drawer-no-eval {
+  padding: 14px 16px;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 14px;
+  color: var(--muted-fg);
+}
+
+/* ── Section title variants ─────────────────────────────────── */
+.drawer-section-icon {
+  margin-right: 5px;
+}
+.drawer-section-title-good {
+  color: var(--score-strong);
+}
+.drawer-section-title-attention {
+  color: var(--score-amber);
+}
+
+/* ── What's Good list ─────────────────────────────────────── */
+.drawer-good-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.drawer-good-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 14px;
+  color: var(--foreground);
+}
+.drawer-good-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--score-strong);
+  flex-shrink: 0;
+}
+.drawer-good-title { font-weight: 500; }
+
+/* ── Needs Attention items ───────────────────────────────────
+   Same .drawer-rubric-item card but with a header row layout.
+*/
+.drawer-rubric-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.drawer-rubric-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--muted-fg);
+  flex-wrap: wrap;
+}
+.drawer-rubric-override {
+  color: var(--score-amber);
+}
+
+/* ── Empty state note ────────────────────────────────────── */
+.drawer-empty-note {
+  font-size: 13.5px;
+  color: var(--muted-fg);
+  font-style: italic;
+}
+
 /* Lesson plan panel inside the drawer — no outer card border */
 .drawer-panel .lesson-panel {
   border: none;
