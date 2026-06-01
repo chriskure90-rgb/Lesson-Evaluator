@@ -1566,115 +1566,162 @@ function DemoControl({
    LESSON LIBRARY — mock data + UI
 ════════════════════════════════════════════════════════════ */
 
-/* Readiness status values match calcReadiness() on the Evaluator page */
+/* ════════════════════════════════════════════════════════════
+   LESSON LIBRARY — Supabase-powered
+════════════════════════════════════════════════════════════ */
+
+/* ── Types ── */
 type LibraryReadiness =
   | "classroom-ready"
   | "ready-with-revision"
   | "needs-revision"
-  | "not-ready";
+  | "not-ready"
+  | "not-evaluated";
 
-type LibraryLesson = {
-  id: string;
-  title: string;
-  subject: string;
-  grade: string;
-  model: string;
-  totalScore: number;   // rubric score 0-20 (High=2, Medium=1, Low=0)
-  lowCount: number;     // number of Low ratings
-  readiness: LibraryReadiness;
-  created: string;
-  frameworks: string[];
-  duration: number;
+// Raw row from lesson_generation joined with latest lesson_evaluations
+type LibraryRow = {
+  id: number;
+  title: string;            // lesson_json.title ?? lesson_topic
+  lesson_topic: string;
+  api_model: string;
+  grade_level: string;
+  standards_framework: string;
+  duration: string;
+  created_at: string;
+  lesson_json: Lesson | null;
+  // from lesson_evaluations (may be absent)
+  eval_id: number | null;
+  readiness_status: string | null;
+  total_score: number | null;
+  low_count: number | null;
+  rubric_json: Record<string, {
+    title: string;
+    ai_rating: RubricRating;
+    teacher_rating: RubricRating | null;
+    final_rating: RubricRating;
+  }> | null;
+  teacher_notes_json: Record<string, string> | null;
 };
 
 const READINESS_META: Record<LibraryReadiness, { label: string; cls: string }> = {
-  "classroom-ready":     { label: "Classroom Ready",          cls: "badge-ready"    },
-  "ready-with-revision": { label: "Ready with Revision",      cls: "badge-revision" },
-  "needs-revision":      { label: "Needs Revision",           cls: "badge-needs"    },
-  "not-ready":           { label: "Not Ready",                cls: "badge-not"      },
+  "classroom-ready":     { label: "Classroom Ready",     cls: "badge-ready"    },
+  "ready-with-revision": { label: "Ready with Revision", cls: "badge-revision" },
+  "needs-revision":      { label: "Needs Revision",      cls: "badge-needs"    },
+  "not-ready":           { label: "Not Ready",           cls: "badge-not"      },
+  "not-evaluated":       { label: "Not Evaluated Yet",   cls: "badge-edited"   },
 };
 
-const LIBRARY_MOCK: LibraryLesson[] = [
-  {
-    id: "1",
-    title: "Modeling Photosynthesis with Everyday Materials",
-    subject: "Science", grade: "7", model: "Claude",
-    totalScore: 19, lowCount: 0, readiness: "classroom-ready",
-    created: "2025-05-18", frameworks: ["NGSS"], duration: 60,
-  },
-  {
-    id: "2",
-    title: "Introduction to Fractions Using Pattern Blocks",
-    subject: "Mathematics", grade: "4", model: "GPT-4",
-    totalScore: 11, lowCount: 3, readiness: "needs-revision",
-    created: "2025-05-15", frameworks: ["Common Core"], duration: 45,
-  },
-  {
-    id: "3",
-    title: "The Water Cycle: Evaporation & Condensation",
-    subject: "Science", grade: "5", model: "Gemini",
-    totalScore: 19, lowCount: 0, readiness: "classroom-ready",
-    created: "2025-05-12", frameworks: ["NGSS"], duration: 60,
-  },
-  {
-    id: "4",
-    title: "Writing Persuasive Paragraphs with Evidence",
-    subject: "English", grade: "6", model: "Claude",
-    totalScore: 17, lowCount: 0, readiness: "ready-with-revision",
-    created: "2025-05-10", frameworks: ["Common Core"], duration: 45,
-  },
-  {
-    id: "5",
-    title: "Understanding Supply & Demand with Role-Play",
-    subject: "Social Studies", grade: "9", model: "Mistral",
-    totalScore: 6, lowCount: 6, readiness: "not-ready",
-    created: "2025-05-08", frameworks: ["State-specific"], duration: 90,
-  },
-  {
-    id: "6",
-    title: "Cell Division: Mitosis vs. Meiosis Comparison",
-    subject: "Biology", grade: "10", model: "GPT-4",
-    totalScore: 20, lowCount: 0, readiness: "classroom-ready",
-    created: "2025-05-05", frameworks: ["NGSS", "Common Core"], duration: 60,
-  },
-  {
-    id: "7",
-    title: "Colonial America: Primary Source Analysis",
-    subject: "History", grade: "8", model: "Claude",
-    totalScore: 15, lowCount: 0, readiness: "ready-with-revision",
-    created: "2025-04-30", frameworks: ["Common Core"], duration: 45,
-  },
-  {
-    id: "8",
-    title: "Graphing Linear Equations on the Coordinate Plane",
-    subject: "Mathematics", grade: "8", model: "Gemini",
-    totalScore: 13, lowCount: 2, readiness: "needs-revision",
-    created: "2025-04-25", frameworks: ["Common Core"], duration: 60,
-  },
-];
+function readinessKey(status: string | null): LibraryReadiness {
+  const map: Record<string, LibraryReadiness> = {
+    "Classroom Ready":                "classroom-ready",
+    "Classroom Ready with Teacher Revision": "ready-with-revision",
+    "Needs Revision":                 "needs-revision",
+    "Not Ready":                      "not-ready",
+  };
+  return (status && map[status]) ? map[status] : "not-evaluated";
+}
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
+/* ── Fetch helper ── */
+async function fetchLibrary(): Promise<LibraryRow[]> {
+  // Fetch lessons ordered newest first
+  const { data: lessons, error: lessonErr } = await supabase
+    .from("lesson_generation")
+    .select("id, lesson_topic, api_model, grade_level, standards_framework, duration, created_at, lesson_json")
+    .order("created_at", { ascending: false });
+
+  if (lessonErr) {
+    console.error("[Supabase] lesson_generation fetch error:", lessonErr);
+    throw lessonErr;
+  }
+  if (!lessons || lessons.length === 0) return [];
+
+  // Fetch all evaluations whose lesson_id is in our result set
+  const ids = lessons.map((l: { id: number }) => l.id);
+  const { data: evals, error: evalErr } = await supabase
+    .from("lesson_evaluations")
+    .select("id, lesson_id, readiness_status, total_score, low_count, rubric_json, teacher_notes_json")
+    .in("lesson_id", ids);
+
+  if (evalErr) {
+    console.error("[Supabase] lesson_evaluations fetch error:", evalErr);
+    // Non-fatal: continue without eval data
+  }
+
+  // Build a map: lesson_id → latest evaluation
+  const evalMap: Record<number, typeof evals extends Array<infer T> ? T : never> = {};
+  (evals ?? []).forEach((e: { lesson_id: number; id: number }) => {
+    // keep the latest (highest id) evaluation per lesson
+    if (!evalMap[e.lesson_id] || e.id > evalMap[e.lesson_id].id) {
+      evalMap[e.lesson_id] = e as any;
+    }
+  });
+
+  return lessons.map((l: {
+    id: number; lesson_topic: string; api_model: string; grade_level: string;
+    standards_framework: string; duration: string; created_at: string; lesson_json: Lesson | null;
+  }) => {
+    const ev = evalMap[l.id] ?? null;
+    const lessonTitle = (l.lesson_json as Lesson | null)?.title || l.lesson_topic;
+    return {
+      id:                   l.id,
+      title:                lessonTitle,
+      lesson_topic:         l.lesson_topic,
+      api_model:            l.api_model,
+      grade_level:          l.grade_level,
+      standards_framework:  l.standards_framework,
+      duration:             l.duration,
+      created_at:           l.created_at,
+      lesson_json:          l.lesson_json,
+      eval_id:              ev?.id ?? null,
+      readiness_status:     ev?.readiness_status ?? null,
+      total_score:          ev?.total_score ?? null,
+      low_count:            ev?.low_count ?? null,
+      rubric_json:          ev?.rubric_json ?? null,
+      teacher_notes_json:   ev?.teacher_notes_json ?? null,
+    };
+  });
+}
+
+/* ── LibraryPage ── */
 function LibraryPage() {
+  const [rows,      setRows]      = useState<LibraryRow[]>([]);
+  const [loading,   setLoading]   = useState(true);
+  const [fetchErr,  setFetchErr]  = useState<string | null>(null);
   const [query,     setQuery]     = useState("");
   const [statusFlt, setStatusFlt] = useState<string>("all");
   const [sortBy,    setSortBy]    = useState<"recent" | "score">("recent");
+  const [selected,  setSelected]  = useState<LibraryRow | null>(null);
 
-  const visible = LIBRARY_MOCK
-    .filter((l) => {
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setFetchErr(null);
+    fetchLibrary()
+      .then((data) => { if (!cancelled) { setRows(data); setLoading(false); } })
+      .catch((err) => { if (!cancelled) { setFetchErr(err?.message ?? "Failed to load lessons."); setLoading(false); } });
+    return () => { cancelled = true; };
+  }, []);
+
+  const visible = rows
+    .filter((r) => {
       const matchQ = query === "" ||
-        l.title.toLowerCase().includes(query.toLowerCase()) ||
-        l.subject.toLowerCase().includes(query.toLowerCase());
-      const matchS = statusFlt === "all" || l.readiness === statusFlt;
+        r.title.toLowerCase().includes(query.toLowerCase()) ||
+        r.lesson_topic.toLowerCase().includes(query.toLowerCase()) ||
+        r.standards_framework?.toLowerCase().includes(query.toLowerCase());
+      const rKey = readinessKey(r.readiness_status);
+      const matchS = statusFlt === "all" || rKey === statusFlt;
       return matchQ && matchS;
     })
-    .sort((a, b) =>
-      sortBy === "score"
-        ? b.totalScore - a.totalScore
-        : new Date(b.created).getTime() - new Date(a.created).getTime()
-    );
+    .sort((a, b) => {
+      if (sortBy === "score") {
+        return (b.total_score ?? -1) - (a.total_score ?? -1);
+      }
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
 
   return (
     <div style={{ maxWidth: 960, margin: "0 auto", padding: "40px 40px 60px" }}>
@@ -1685,19 +1732,17 @@ function LibraryPage() {
 
       {/* ── Toolbar ── */}
       <div className="lib-toolbar">
-        {/* Search */}
         <div className="lib-search-wrap">
           <span className="lib-search-icon"><Icon.Search /></span>
           <input
             className="input lib-search-input"
             type="search"
-            placeholder="Search lessons or subjects…"
+            placeholder="Search lessons or topics…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
 
-        {/* Filter by status */}
         <div className="lib-select-wrap">
           <select
             className="select lib-select"
@@ -1709,91 +1754,238 @@ function LibraryPage() {
             <option value="ready-with-revision">Ready with Revision</option>
             <option value="needs-revision">Needs Revision</option>
             <option value="not-ready">Not Ready</option>
+            <option value="not-evaluated">Not Evaluated Yet</option>
           </select>
         </div>
 
-        {/* Sort */}
         <div className="lib-sort-group">
           {([["recent", "Recent"], ["score", "Highest score"]] as const).map(([v, label]) => (
             <button
               key={v}
               type="button"
-              className={`lib-sort-btn${sortBy === v ? " lib-sort-btn-active" : ""}`}
+              className={"lib-sort-btn" + (sortBy === v ? " lib-sort-btn-active" : "")}
               onClick={() => setSortBy(v)}
-            >
-              {label}
-            </button>
+            >{label}</button>
           ))}
         </div>
       </div>
 
-      {/* ── Results count ── */}
-      <p className="lib-count">
-        {visible.length} {visible.length === 1 ? "lesson" : "lessons"}
-        {statusFlt !== "all" || query ? " matching filters" : ""}
-      </p>
+      {/* ── States ── */}
+      {loading && (
+        <div style={{ textAlign: "center", padding: "60px 0", color: "var(--muted-fg)", fontSize: 14 }}>
+          <Icon.Loader /> Loading lessons…
+        </div>
+      )}
 
-      {/* ── Cards grid ── */}
-      {visible.length === 0 ? (
-        <div className="lib-empty">
-          <p className="lib-empty-title">No lessons found</p>
-          <p className="lib-empty-sub">Try adjusting your search or filters.</p>
-        </div>
-      ) : (
-        <div className="lib-grid">
-          {visible.map((lesson) => (
-            <LessonCard key={lesson.id} lesson={lesson} />
-          ))}
-        </div>
+      {fetchErr && !loading && (
+        <p className="error-box" style={{ marginTop: 8 }}>{fetchErr}</p>
+      )}
+
+      {!loading && !fetchErr && (
+        <>
+          <p className="lib-count">
+            {visible.length} {visible.length === 1 ? "lesson" : "lessons"}
+            {statusFlt !== "all" || query ? " matching filters" : ""}
+          </p>
+
+          {visible.length === 0 ? (
+            <div className="lib-empty">
+              <p className="lib-empty-title">No lessons found</p>
+              <p className="lib-empty-sub">
+                {rows.length === 0
+                  ? "Generate your first lesson plan to see it here."
+                  : "Try adjusting your search or filters."}
+              </p>
+            </div>
+          ) : (
+            <div className="lib-grid">
+              {visible.map((row) => (
+                <LessonCard key={row.id} row={row} onOpen={setSelected} />
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── Detail drawer ── */}
+      {selected && (
+        <LessonDetailDrawer row={selected} onClose={() => setSelected(null)} />
       )}
     </div>
   );
 }
 
-function LessonCard({ lesson }: { lesson: LibraryLesson }) {
-  const meta = READINESS_META[lesson.readiness];
+/* ── LessonCard ── */
+function LessonCard({ row, onOpen }: { row: LibraryRow; onOpen: (r: LibraryRow) => void }) {
+  const rKey = readinessKey(row.readiness_status);
+  const meta = READINESS_META[rKey];
+  const hasEval = row.eval_id !== null;
 
   return (
     <div className="lib-card">
-      {/* Top row: readiness badge + rubric score */}
+      {/* Top row: badge + score */}
       <div className="lib-card-top">
-        <span className={`lib-badge ${meta.cls}`}>{meta.label}</span>
-        <span className="lib-rubric-score">
-          {lesson.totalScore}
-          <span className="lib-rubric-max">/20</span>
-          {lesson.lowCount > 0 && (
-            <span className="lib-rubric-lows">{lesson.lowCount}L</span>
-          )}
-        </span>
+        <span className={"lib-badge " + meta.cls}>{meta.label}</span>
+        {hasEval ? (
+          <span className="lib-rubric-score">
+            {row.total_score}
+            <span className="lib-rubric-max">/20</span>
+            {(row.low_count ?? 0) > 0 && (
+              <span className="lib-rubric-lows">{row.low_count}L</span>
+            )}
+          </span>
+        ) : (
+          <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>No score</span>
+        )}
       </div>
 
-      {/* Title */}
-      <h3 className="lib-card-title">{lesson.title}</h3>
+      <h3 className="lib-card-title">{row.title}</h3>
 
-      {/* Meta row */}
       <div className="lib-card-meta">
-        <span>{lesson.subject}</span>
+        <span>Grade {row.grade_level}</span>
         <span className="lib-meta-dot">·</span>
-        <span>Grade {lesson.grade}</span>
+        <span>{row.duration} min</span>
         <span className="lib-meta-dot">·</span>
-        <span>{lesson.duration} min</span>
+        <span>{row.api_model}</span>
       </div>
 
-      {/* Secondary meta */}
       <div className="lib-card-meta" style={{ marginTop: 4 }}>
-        <span>{lesson.frameworks.join(", ")}</span>
-        <span className="lib-meta-dot">·</span>
-        <span>{lesson.model}</span>
+        <span>{row.standards_framework || "No framework"}</span>
       </div>
 
-      {/* Footer: date + open button */}
       <div className="lib-card-footer">
-        <span className="lib-card-date">{formatDate(lesson.created)}</span>
-        <button type="button" className="lib-open-btn">
+        <span className="lib-card-date">{formatDate(row.created_at)}</span>
+        <button type="button" className="lib-open-btn" onClick={() => onOpen(row)}>
           Open <Icon.ArrowUpRight />
         </button>
       </div>
     </div>
+  );
+}
+
+/* ── LessonDetailDrawer ── */
+function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => void }) {
+  const rKey   = readinessKey(row.readiness_status);
+  const rMeta  = READINESS_META[rKey];
+  const lesson = row.lesson_json;
+  const hasEval = row.eval_id !== null;
+
+  // Rubric items that need attention: final_rating is "medium" or "low"
+  const flaggedItems = row.rubric_json
+    ? Object.entries(row.rubric_json).filter(([, v]) => v.final_rating !== "high")
+    : [];
+
+  // Teacher notes that are non-empty
+  const noteEntries = row.teacher_notes_json
+    ? Object.entries(row.teacher_notes_json).filter(([, v]) => v.trim() !== "")
+    : [];
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div className="drawer-backdrop" onClick={onClose} />
+
+      {/* Panel */}
+      <div className="drawer-panel">
+        {/* Header */}
+        <div className="drawer-header">
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p className="drawer-eyebrow">Lesson Plan</p>
+            <h2 className="drawer-title">{row.title}</h2>
+            <div className="lib-card-meta" style={{ marginTop: 6 }}>
+              <span>Grade {row.grade_level}</span>
+              <span className="lib-meta-dot">·</span>
+              <span>{row.duration} min</span>
+              <span className="lib-meta-dot">·</span>
+              <span>{row.api_model}</span>
+              <span className="lib-meta-dot">·</span>
+              <span>{formatDate(row.created_at)}</span>
+            </div>
+          </div>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="Close">
+            ✕
+          </button>
+        </div>
+
+        <div className="drawer-body">
+
+          {/* ── Evaluation summary ── */}
+          <section className="drawer-section">
+            <h3 className="drawer-section-title">Evaluation</h3>
+            {hasEval ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                <span className={"lib-badge " + rMeta.cls} style={{ fontSize: 12.5, padding: "3px 12px" }}>
+                  {rMeta.label}
+                </span>
+                <span style={{ fontSize: 14, color: "var(--foreground)" }}>
+                  <strong style={{ fontFamily: "Space Grotesk, sans-serif" }}>{row.total_score}/20</strong>
+                  <span style={{ color: "var(--muted-fg)", marginLeft: 6 }}>total score</span>
+                </span>
+                {(row.low_count ?? 0) > 0 && (
+                  <span style={{ fontSize: 13, color: "var(--score-weak)", fontWeight: 500 }}>
+                    {row.low_count} Low {(row.low_count ?? 0) === 1 ? "rating" : "ratings"}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <p style={{ fontSize: 14, color: "var(--muted-fg)" }}>No evaluation saved yet.</p>
+            )}
+          </section>
+
+          {/* ── Rubric items needing attention ── */}
+          {hasEval && flaggedItems.length > 0 && (
+            <section className="drawer-section">
+              <h3 className="drawer-section-title">Rubric Items Needing Attention</h3>
+              <div className="drawer-rubric-list">
+                {flaggedItems.map(([id, item]) => (
+                  <div key={id} className="drawer-rubric-item">
+                    <div className="drawer-rubric-item-title">{item.title}</div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+                      <span className={"rubric-badge rubric-badge-" + item.final_rating}>
+                        Final: {RATING_META[item.final_rating].label}
+                      </span>
+                      <span style={{ fontSize: 11.5, color: "var(--muted-fg)", alignSelf: "center" }}>
+                        AI: {RATING_META[item.ai_rating].label}
+                        {item.teacher_rating && item.teacher_rating !== item.ai_rating
+                          ? " → Teacher: " + RATING_META[item.teacher_rating].label
+                          : ""}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* ── Teacher comments ── */}
+          {hasEval && noteEntries.length > 0 && (
+            <section className="drawer-section">
+              <h3 className="drawer-section-title">Teacher Comments</h3>
+              <div className="drawer-notes-list">
+                {noteEntries.map(([id, note]) => {
+                  const rubricTitle = row.rubric_json?.[id]?.title ?? id;
+                  return (
+                    <div key={id} className="drawer-note-item">
+                      <span className="drawer-note-label">{rubricTitle}</span>
+                      <p className="drawer-note-text">{note}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {/* ── Full lesson plan ── */}
+          {lesson && (
+            <section className="drawer-section">
+              <h3 className="drawer-section-title">Lesson Plan</h3>
+              <LessonPanel lesson={lesson} />
+            </section>
+          )}
+
+        </div>
+      </div>
+    </>
   );
 }
 
