@@ -27,26 +27,48 @@ type Lesson = {
 function normaliseLesson(raw: unknown): Lesson {
   const r = (raw ?? {}) as Record<string, unknown>;
   const ensureArr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
-  const ensureStr = (v: unknown): string  => (typeof v === "string" ? v : "");
+
+  // ensureStr: handles both plain strings AND arrays (Mistral sometimes returns
+  // assessment/differentiation as string[] even when prompted for a string).
+  // Fix 4: join arrays into a single readable string instead of returning "".
+  const ensureStr = (v: unknown): string => {
+    if (typeof v === "string") return v;
+    if (Array.isArray(v))      return v.filter(Boolean).join(" ");
+    return "";
+  };
 
   const rawActivities = ensureArr(r.activities);
   const activities: Activity[] = rawActivities.map((a) => {
     const act = (a ?? {}) as Record<string, unknown>;
-    return {
-      name:    ensureStr(act.name),
-      minutes: typeof act.minutes === "number" ? act.minutes : 0,
-      detail:  ensureStr(act.detail),
-    };
+
+    // Fix 3 (belt-and-suspenders): accept both the correct schema (name/minutes/detail)
+    // AND the old schema (title/time/description) in case an older response slips through.
+    const name   = ensureStr(act.name   ?? act.title);
+    const detail = ensureStr(act.detail ?? act.description);
+    const rawMin = act.minutes ?? act.time;
+    const minutes = typeof rawMin === "number"
+      ? rawMin
+      : typeof rawMin === "string"
+        ? parseInt(rawMin, 10) || 0
+        : 0;
+
+    return { name, minutes, detail };
   });
 
-  return {
-    title:           ensureStr(r.title),
-    objectives:      ensureArr(r.objectives).map(ensureStr),
-    materials:       ensureArr(r.materials).map(ensureStr),
+  const lesson: Lesson = {
+    title:      ensureStr(r.title),
+    objectives: ensureArr(r.objectives).map(ensureStr),
+    materials:  ensureArr(r.materials).map(ensureStr),
     activities,
-    assessment:      ensureStr(r.assessment),
-    differentiation: r.differentiation !== undefined ? ensureStr(r.differentiation) : undefined,
+    assessment: ensureStr(r.assessment),
   };
+
+  if (r.differentiation !== undefined) {
+    lesson.differentiation = ensureStr(r.differentiation);
+  }
+
+  console.debug("[normaliseLesson] result:", JSON.stringify(lesson, null, 2));
+  return lesson;
 }
 
 /* ════════════════════════════════════════════════════════════

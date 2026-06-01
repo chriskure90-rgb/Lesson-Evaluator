@@ -5,39 +5,56 @@ const mistral = new Mistral({
 });
 
 export async function generateLessonWithMistral({
+  // Fix 1: use the exact field names the frontend sends
   grade,
-  standard,
-  standardCode,
-  lessonGoal,
+  frameworks,   // was: standard   (frontend sends frameworks array)
+  code,         // was: standardCode
+  topic,        // was: missing entirely
+  goal,         // was: lessonGoal
   duration,
 }) {
+  // Fix 2: include topic as the primary lesson subject
+  const frameworkLine = Array.isArray(frameworks) && frameworks.length > 0
+    ? `Standards framework: ${frameworks.join(", ")}${code ? ` (${code})` : ""}`
+    : code ? `Standard code: ${code}` : "No specific framework provided.";
+
   const prompt = `
-Create a ${duration}-minute lesson plan for ${grade}.
+You are an expert K-12 curriculum designer.
+Create a ${duration}-minute lesson plan for Grade ${grade}.
 
-Standard framework: ${standard}
-Standard code: ${standardCode}
-Lesson goal: ${lessonGoal}
+Lesson topic: ${topic || "(not specified)"}
+Lesson goal: ${goal || "(not specified)"}
+${frameworkLine}
 
-Return VALID JSON only. Do not use markdown.
+Return VALID JSON only. No markdown, no code fences, no extra text.
 
 The JSON must follow this exact structure:
 {
-  "title": "string",
-  "grade": "Grade ${grade}",
-  "duration": "${duration} min",
+  "title": "string — specific lesson title that reflects the topic",
   "objectives": ["string", "string"],
   "materials": ["string", "string"],
   "activities": [
     {
-      "time": "10m",
-      "title": "string",
-      "description": "string"
+      "name": "string — activity name",
+      "minutes": 10,
+      "detail": "string — what teacher and students do"
     }
   ],
-  "assessment": ["string", "string"],
-  "differentiation": ["string", "string"]
+  "assessment": "string — describe the assessment strategy",
+  "differentiation": "string — describe supports and extensions for diverse learners"
 }
-`;
+
+Important:
+- activities[].name is a string (the activity name)
+- activities[].minutes is a number (integer, not a string like "10m")
+- activities[].detail is a string
+- assessment is a plain string, not an array
+- differentiation is a plain string, not an array
+- All activity minutes must sum to exactly ${duration}
+`.trim();
+
+  // Fix 2 (cont.): log the full prompt so you can verify all inputs appear
+  console.debug("[Mistral] prompt sent:\n", prompt);
 
   const result = await mistral.chat.complete({
     model: "mistral-small-latest",
@@ -46,10 +63,14 @@ The JSON must follow this exact structure:
 
   let text = result.choices[0].message.content.trim();
 
+  // Strip any accidental markdown fences
   text = text
     .replace(/^```json\s*/i, "")
     .replace(/^```\s*/i, "")
-    .replace(/```$/i, "");
+    .replace(/```$/i, "")
+    .trim();
 
-  return JSON.parse(text);
+  const parsed = JSON.parse(text);
+  console.debug("[Mistral] raw response parsed:", JSON.stringify(parsed, null, 2));
+  return parsed;
 }
