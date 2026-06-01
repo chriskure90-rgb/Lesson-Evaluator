@@ -1626,8 +1626,30 @@ function formatDate(iso: string) {
 }
 
 /* ── Fetch helper ── */
+
+// Explicit types for the raw Supabase rows avoid inference issues
+type RawLesson = {
+  id: number;
+  lesson_topic: string;
+  api_model: string;
+  grade_level: string;
+  standards_framework: string;
+  duration: string;
+  created_at: string;
+  lesson_json: Lesson | null;
+};
+
+type RawEval = {
+  id: number;
+  lesson_id: number;
+  readiness_status: string | null;
+  total_score: number | null;
+  low_count: number | null;
+  rubric_json: LibraryRow["rubric_json"];
+  teacher_notes_json: Record<string, string> | null;
+};
+
 async function fetchLibrary(): Promise<LibraryRow[]> {
-  // Fetch lessons ordered newest first
   const { data: lessons, error: lessonErr } = await supabase
     .from("lesson_generation")
     .select("id, lesson_topic, api_model, grade_level, standards_framework, duration, created_at, lesson_json")
@@ -1639,8 +1661,7 @@ async function fetchLibrary(): Promise<LibraryRow[]> {
   }
   if (!lessons || lessons.length === 0) return [];
 
-  // Fetch all evaluations whose lesson_id is in our result set
-  const ids = lessons.map((l: { id: number }) => l.id);
+  const ids: number[] = (lessons as RawLesson[]).map((l) => l.id);
   const { data: evals, error: evalErr } = await supabase
     .from("lesson_evaluations")
     .select("id, lesson_id, readiness_status, total_score, low_count, rubric_json, teacher_notes_json")
@@ -1648,40 +1669,35 @@ async function fetchLibrary(): Promise<LibraryRow[]> {
 
   if (evalErr) {
     console.error("[Supabase] lesson_evaluations fetch error:", evalErr);
-    // Non-fatal: continue without eval data
   }
 
-  // Build a map: lesson_id → latest evaluation
-  const evalMap: Record<number, typeof evals extends Array<infer T> ? T : never> = {};
-  (evals ?? []).forEach((e: { lesson_id: number; id: number }) => {
-    // keep the latest (highest id) evaluation per lesson
+  // Map: lesson_id → latest evaluation (highest id wins)
+  const evalMap: Record<number, RawEval> = {};
+  ((evals ?? []) as RawEval[]).forEach((e) => {
     if (!evalMap[e.lesson_id] || e.id > evalMap[e.lesson_id].id) {
-      evalMap[e.lesson_id] = e as any;
+      evalMap[e.lesson_id] = e;
     }
   });
 
-  return lessons.map((l: {
-    id: number; lesson_topic: string; api_model: string; grade_level: string;
-    standards_framework: string; duration: string; created_at: string; lesson_json: Lesson | null;
-  }) => {
-    const ev = evalMap[l.id] ?? null;
-    const lessonTitle = (l.lesson_json as Lesson | null)?.title || l.lesson_topic;
+  return (lessons as RawLesson[]).map((l) => {
+    const ev: RawEval | null = evalMap[l.id] ?? null;
+    const lessonTitle = l.lesson_json?.title || l.lesson_topic;
     return {
-      id:                   l.id,
-      title:                lessonTitle,
-      lesson_topic:         l.lesson_topic,
-      api_model:            l.api_model,
-      grade_level:          l.grade_level,
-      standards_framework:  l.standards_framework,
-      duration:             l.duration,
-      created_at:           l.created_at,
-      lesson_json:          l.lesson_json,
-      eval_id:              ev?.id ?? null,
-      readiness_status:     ev?.readiness_status ?? null,
-      total_score:          ev?.total_score ?? null,
-      low_count:            ev?.low_count ?? null,
-      rubric_json:          ev?.rubric_json ?? null,
-      teacher_notes_json:   ev?.teacher_notes_json ?? null,
+      id:                  l.id,
+      title:               lessonTitle,
+      lesson_topic:        l.lesson_topic,
+      api_model:           l.api_model,
+      grade_level:         l.grade_level,
+      standards_framework: l.standards_framework,
+      duration:            l.duration,
+      created_at:          l.created_at,
+      lesson_json:         l.lesson_json,
+      eval_id:             ev?.id ?? null,
+      readiness_status:    ev?.readiness_status ?? null,
+      total_score:         ev?.total_score ?? null,
+      low_count:           ev?.low_count ?? null,
+      rubric_json:         ev?.rubric_json ?? null,
+      teacher_notes_json:  ev?.teacher_notes_json ?? null,
     };
   });
 }
