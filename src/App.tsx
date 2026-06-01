@@ -334,9 +334,11 @@ const FRAMEWORKS = [
 function GeneratorPage({
   sharedLesson,
   onLessonGenerated,
+  onLessonSaved,
 }: {
   sharedLesson: Lesson | null;
   onLessonGenerated: (l: Lesson) => void;
+  onLessonSaved: (id: number) => void;
 }) {
   // Standards: multi-select list of framework ids + optional custom text
   const [selectedFws, setSelectedFws] = useState<string[]>(["ngss"]);
@@ -377,8 +379,6 @@ function GeneratorPage({
       onLessonGenerated(result);   // share with the Evaluator
 
       // ── Supabase save ──────────────────────────────────────────────────
-      // DEBUG: log the exact payload before sending so you can compare
-      // it against the Supabase table columns in the dashboard.
       const insertPayload = {
         lesson_topic:        topic,
         api_model:           model,
@@ -390,26 +390,22 @@ function GeneratorPage({
         lesson_json:         result,
         is_demo:             false,
       };
-      console.debug("[Supabase] inserting into lesson_generation:", insertPayload);
 
-      const { data: insertData, error: saveError } = await supabase
+      // .select("id").single() returns exactly the inserted row's id.
+      // If RLS blocks the insert, data will be null and error will be set.
+      const { data: savedLesson, error: saveError } = await supabase
         .from("lesson_generation")
         .insert([insertPayload])
-        .select();   // .select() forces Supabase to return the inserted row(s)
-                     // If RLS blocks the insert, data will be [] and error may
-                     // still be null — this makes silent failures visible.
+        .select("id")
+        .single();
 
       if (saveError) {
-        // Logs the full PostgrestError: message, code, details, hint
-        console.error("[Supabase] insert error:", saveError);
-      } else if (!insertData || insertData.length === 0) {
-        // No error thrown but nothing was inserted — almost always an RLS issue.
-        // Fix: go to Supabase dashboard → Table Editor → lesson_generation
-        //      → RLS Policies and either disable RLS for testing or add an
-        //      INSERT policy that allows anon/authenticated role.
-        console.warn("[Supabase] insert returned no rows. Possible RLS block. Check: Dashboard > Authentication > Policies > lesson_generation. Quickest test: disable RLS temporarily on this table and retry.");
+        console.error("[Supabase] lesson_generation insert error:", saveError);
+      } else if (!savedLesson?.id) {
+        console.warn("[Supabase] lesson_generation insert returned no id. Possible RLS block.");
       } else {
-        console.debug("[Supabase] insert succeeded:", insertData);
+        console.debug("[Supabase] lesson_generation saved, id:", savedLesson.id);
+        onLessonSaved(savedLesson.id);   // bubble id up to App for the Evaluator
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
@@ -1133,7 +1129,7 @@ function LessonPanel({ lesson }: { lesson: Lesson }) {
   );
 }
 
-function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
+function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: number | null }) {
   const [evalResult, setEvalResult]   = useState<EvaluationResult | null>(null);
   const [evaluating, setEvaluating]   = useState(false);
   const [evalError, setEvalError]     = useState<string | null>(null);
@@ -1196,8 +1192,12 @@ function EvaluatorPage({ lesson }: { lesson: Lesson | null }) {
     });
 
     // ── Insert to Supabase ──────────────────────────────────────────────────
+    if (!lessonId) {
+      console.warn("[Supabase] lesson_evaluations: lessonId is null. Saving evaluation without a linked lesson_generation row.");
+    }
+
     const payload = {
-      lesson_id:        null,          // wire up once lesson ids are persisted
+      lesson_id:        lessonId,     // id from lesson_generation table
       readiness_status: readiness.status,
       total_score:      readiness.totalScore,
       low_count:        readiness.lowCount,
@@ -1922,6 +1922,8 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
 export default function App() {
   const [page, setPage] = useState<Page>("login");
   const [sharedLesson, setSharedLesson] = useState<Lesson | null>(null);
+  // Id of the lesson_generation row — set after a successful Supabase insert
+  const [generatedLessonId, setGeneratedLessonId] = useState<number | null>(null);
 
   function handleLogin() {
     setPage("generator");
@@ -1937,9 +1939,13 @@ export default function App() {
           <Sidebar page={page} setPage={setPage} />
           <main className="main-content">
             {page === "generator"
-              ? <GeneratorPage sharedLesson={sharedLesson} onLessonGenerated={setSharedLesson} />
+              ? <GeneratorPage
+                  sharedLesson={sharedLesson}
+                  onLessonGenerated={setSharedLesson}
+                  onLessonSaved={setGeneratedLessonId}
+                />
               : page === "evaluator"
-              ? <EvaluatorPage lesson={sharedLesson} />
+              ? <EvaluatorPage lesson={sharedLesson} lessonId={generatedLessonId} />
               : <LibraryPage />}
           </main>
         </div>
