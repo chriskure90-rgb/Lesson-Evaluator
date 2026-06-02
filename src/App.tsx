@@ -712,96 +712,6 @@ const LESSON_META = {
   overview: "A 60-minute investigation where students model photosynthesis using elodea sprigs, then translate their observations into a labeled diagram that ties evidence to the photosynthesis equation.",
 };
 
-/* ── Demo presets ─────────────────────────────────────────────────────────────
-   Three canned scenarios that let you preview all three score-color states
-   before the real API is wired up. Each preset overrides the overall score,
-   badge label, feedback summary, and every section score.
-────────────────────────────────────────────────────────────────────────────── */
-type DemoPreset = {
-  label: string;
-  band: string;
-  summary: string;
-  sectionRatings: Record<string, RubricRating>;
-};
-
-const DEMO_PRESETS: DemoPreset[] = [
-  {
-    // Score: 19/20 · 0 Low ratings → Classroom Ready
-    label: "Classroom Ready",
-    band: "Classroom Ready",
-    summary:
-      "This lesson plan is well-constructed across all dimensions. Objectives are clearly measurable, activities build logically toward the assessment, standards are tightly aligned, and differentiation is intentional. One minor refinement to the resources list would make this plan complete.",
-    sectionRatings: {
-      "lesson-title":    "high",
-      "objectives":      "high",
-      "standards":       "high",
-      "assessment":      "high",
-      "activities":      "high",
-      "resources":       "medium",
-      "differentiation": "high",
-      "timing":          "high",
-      "opening":         "high",
-      "evaluation":      "high",
-    },
-  },
-  {
-    // Score: 17/20 · 0 Low ratings → Classroom Ready with Teacher Revision
-    label: "Ready with Revision",
-    band: "Classroom Ready with Teacher Revision",
-    summary:
-      "The lesson has strong foundations in title, objectives, and opening, but differentiation, resources, and evaluation reflection need attention before classroom use. With targeted revisions to those three areas this plan will be ready.",
-    sectionRatings: {
-      "lesson-title":    "high",
-      "objectives":      "high",
-      "standards":       "high",
-      "assessment":      "high",
-      "activities":      "high",
-      "resources":       "medium",
-      "differentiation": "medium",
-      "timing":          "high",
-      "opening":         "high",
-      "evaluation":      "medium",
-    },
-  },
-  {
-    // Score: 9/20 · 3 Low ratings → Needs Revision
-    label: "Needs Revision",
-    band: "Needs Revision",
-    summary:
-      "The lesson has identifiable strengths in its title and opening, but objectives lack measurable language, the assessment criteria are unclear, and differentiation strategy is largely absent. A structured revision across at least five criteria is needed before this plan is ready.",
-    sectionRatings: {
-      "lesson-title":    "high",
-      "objectives":      "high",
-      "standards":       "medium",
-      "assessment":      "medium",
-      "activities":      "medium",
-      "resources":       "low",
-      "differentiation": "low",
-      "timing":          "medium",
-      "opening":         "medium",
-      "evaluation":      "low",
-    },
-  },
-  {
-    // Score: 2/20 · 8 Low ratings → Not Ready
-    label: "Not Ready",
-    band: "Not Ready",
-    summary:
-      "Significant gaps exist across nearly every dimension. Objectives are unmeasurable, activities are disconnected from the assessment, standards alignment is missing, and there is no differentiation or structured reflection. This plan requires a full rewrite before it can be used in a classroom.",
-    sectionRatings: {
-      "lesson-title":    "medium",
-      "objectives":      "low",
-      "standards":       "low",
-      "assessment":      "low",
-      "activities":      "low",
-      "resources":       "low",
-      "differentiation": "low",
-      "timing":          "low",
-      "opening":         "medium",
-      "evaluation":      "low",
-    },
-  },
-];
 
 type SectionTemplate = {
   id: string;
@@ -1155,7 +1065,6 @@ function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: 
   const [evalResult, setEvalResult]   = useState<EvaluationResult | null>(null);
   const [evaluating, setEvaluating]   = useState(false);
   const [evalError, setEvalError]     = useState<string | null>(null);
-  const [presetIdx, setPresetIdx]     = useState(0);
 
   // Lifted teacher overrides keyed by section id — shared across all EvalSections
   const [teacherOverrides, setTeacherOverrides] = useState<Record<string, RubricRating | null>>({});
@@ -1282,15 +1191,11 @@ function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: 
 
   const [showLesson, setShowLesson] = useState(false);
 
-  const activePreset = DEMO_PRESETS[presetIdx];
-
+  // Show real evaluation sections when available; neutral placeholder otherwise
   const displaySections: EvaluationSection[] = evalResult?.sections
-    ?? SECTION_TEMPLATES.map((t) => {
-        const rating = activePreset.sectionRatings[t.id] ?? "medium";
-        return { ...t, rating };
-      });
+    ?? SECTION_TEMPLATES.map((t) => ({ ...t, rating: "medium" as RubricRating }));
 
-  const displaySummary = evalResult?.summary ?? activePreset.summary;
+  const displaySummary = evalResult?.summary ?? "";
 
   // Active ratings: teacher override wins over AI/demo rating for each section
   const activeRatings: RubricRating[] = displaySections.map((s) =>
@@ -1301,11 +1206,6 @@ function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: 
   return (
     <div style={{ maxWidth: 820, margin: "0 auto", padding: "40px 40px 60px" }}>
       <PageHeader title="Lesson Evaluator" subtitle="AI assessment with teacher review." />
-
-      {/* ── Demo switcher — hidden once real results arrive ── */}
-      {!evalResult && (
-        <DemoControl presetIdx={presetIdx} onSelect={setPresetIdx} />
-      )}
 
       {/* Overall readiness card */}
       <div className="card" style={{ marginTop: 0, overflow: "hidden" }}>
@@ -1345,7 +1245,7 @@ function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: 
           {/* AI Feedback */}
           <div style={{ flex: 1, minWidth: 200 }}>
             <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)" }}>
-              {evalResult ? "AI Feedback" : "AI Feedback · demo"}
+              "AI Feedback"
             </p>
             <p style={{ marginTop: 8, fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.65 }}>
               {displaySummary}
@@ -1474,7 +1374,7 @@ function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: 
       <div style={{ marginTop: 32 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 12 }}>
           <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)", margin: 0 }}>
-            {evalResult ? "Detailed Evaluation" : "Detailed Evaluation · demo"}
+            "Detailed Evaluation"
           </p>
 
           {/* Save controls — only shown when there is something to save */}
@@ -1548,53 +1448,7 @@ function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: 
   );
 }
 
-/* ── Demo switcher ─────────────────────────────────────────────────────────── */
-function presetCat(p: DemoPreset): "strong" | "amber" | "weak" {
-  const ratings = Object.values(p.sectionRatings);
-  const counts = { high: 0, medium: 0, low: 0 };
-  ratings.forEach((r) => counts[r]++);
-  if (counts.low > counts.high && counts.low > counts.medium) return "weak";
-  if (counts.medium >= counts.high) return "amber";
-  return "strong";
-}
 
-function DemoControl({
-  presetIdx,
-  onSelect,
-}: {
-  presetIdx: number;
-  onSelect: (i: number) => void;
-}) {
-  return (
-    <div className="demo-strip">
-      <div className="demo-strip-label">
-        <span className="demo-strip-tag">Demo</span>
-        <span className="demo-strip-hint">Preview rating states</span>
-      </div>
-
-      <div className="demo-strip-btns">
-        {DEMO_PRESETS.map((p, i) => {
-          const cat = presetCat(p);
-          const isActive = presetIdx === i;
-          return (
-            <button
-              key={i}
-              type="button"
-              className={`demo-state-btn demo-state-btn-${cat}${isActive ? " demo-state-btn-active" : ""}`}
-              onClick={() => onSelect(i)}
-            >
-              <span
-                className="demo-state-dot"
-                style={{ background: isActive ? `var(--score-${cat}-dot)` : undefined }}
-              />
-              <span className="demo-state-name">{p.label}</span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 /* ════════════════════════════════════════════════════════════
    LESSON LIBRARY — mock data + UI
