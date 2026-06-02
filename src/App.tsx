@@ -1483,7 +1483,7 @@ function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: 
               disabled={saveStatus === "saving" || (!hasUnsaved && saveStatus !== "error")}
               style={{ opacity: (hasUnsaved || saveStatus === "error") ? 1 : 0.4 }}
             >
-              {saveStatus === "saving" ? "Saving…" : "Save evaluation changes"}
+              {saveStatus === "saving" ? "Saving…" : "Confirm Evaluation"}
             </button>
           </div>
         </div>
@@ -1527,7 +1527,7 @@ function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: 
             onClick={handleSave}
             disabled={saveStatus === "saving" || (!hasUnsaved && saveStatus !== "error")}
           >
-            {saveStatus === "saving" ? <><Icon.Loader /> Saving…</> : "Save Evaluation Changes"}
+            {saveStatus === "saving" ? <><Icon.Loader /> Saving…</> : "Confirm Evaluation"}
           </button>
         </div>
 
