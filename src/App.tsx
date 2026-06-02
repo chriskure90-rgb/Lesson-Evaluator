@@ -1168,10 +1168,15 @@ function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: 
   const [saveError, setSaveErrorMsg]        = useState<string | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Unsaved = current state differs from last save snapshot
+  // hasUnsaved: teacher has made changes since the last save
   const hasUnsaved =
     JSON.stringify(teacherOverrides) !== JSON.stringify(savedOverrides) ||
     JSON.stringify(teacherNotes)     !== JSON.stringify(savedNotes);
+
+  // canSave: button is enabled whenever a real evaluation result exists,
+  // regardless of whether the teacher changed anything — they can confirm
+  // the AI evaluation as-is without needing to make edits first.
+  const canSave = evalResult !== null && saveStatus !== "saving";
 
   function handleRatingChange(id: string, rating: RubricRating | null) {
     setTeacherOverrides((prev) => ({ ...prev, [id]: rating }));
@@ -1480,8 +1485,8 @@ function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: 
               type="button"
               className="btn-outline-sm"
               onClick={handleSave}
-              disabled={saveStatus === "saving" || (!hasUnsaved && saveStatus !== "error")}
-              style={{ opacity: (hasUnsaved || saveStatus === "error") ? 1 : 0.4 }}
+              disabled={!canSave}
+              style={{ opacity: canSave ? 1 : 0.4 }}
             >
               {saveStatus === "saving" ? "Saving…" : "Confirm Evaluation"}
             </button>
@@ -1517,15 +1522,19 @@ function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: 
               </span>
             ) : saveStatus === "saved" ? (
               <span className="eval-saved-label">
-                ✓ Evaluation changes saved
+                ✓ Evaluation confirmed and saved
+              </span>
+            ) : evalResult ? (
+              <span style={{ fontSize: 13, color: "var(--muted-fg)" }}>
+                Ready to confirm
               </span>
             ) : null}
           </div>
           <button
             type="button"
-            className={`btn-primary eval-save-btn${(!hasUnsaved && saveStatus !== "error") ? " eval-save-btn-dim" : ""}`}
+            className={`btn-primary eval-save-btn${!canSave ? " eval-save-btn-dim" : ""}`}
             onClick={handleSave}
-            disabled={saveStatus === "saving" || (!hasUnsaved && saveStatus !== "error")}
+            disabled={!canSave}
           >
             {saveStatus === "saving" ? <><Icon.Loader /> Saving…</> : "Confirm Evaluation"}
           </button>
