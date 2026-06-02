@@ -6,7 +6,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Receives a fully-built prompt string from generate.js.
 // Responsible only for calling the Gemini API and returning parsed JSON.
 export async function generateLessonWithGemini(prompt) {
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
 
   const result = await model.generateContent(prompt);
   let text = result.response.text().trim();
