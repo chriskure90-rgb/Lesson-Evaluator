@@ -1541,6 +1541,7 @@ async function fetchLibrary(): Promise<LibraryRow[]> {
   const { data: lessons, error: lessonErr } = await supabase
     .from("lesson_generation")
     .select("id, lesson_topic, api_model, grade_level, standards_framework, duration, created_at, lesson_json")
+    .eq("is_demo", false)
     .order("created_at", { ascending: false });
 
   if (lessonErr) {
