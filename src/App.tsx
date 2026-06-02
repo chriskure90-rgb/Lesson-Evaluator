@@ -1176,7 +1176,10 @@ function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: 
   // canSave: button is enabled whenever a real evaluation result exists,
   // regardless of whether the teacher changed anything — they can confirm
   // the AI evaluation as-is without needing to make edits first.
-  const canSave = evalResult !== null && saveStatus !== "saving";
+  // Button is enabled whenever the page has evaluation data to save
+  // (real API result OR demo preset) and is not currently mid-save.
+  // Teachers should be able to confirm without needing to change anything.
+  const canSave = saveStatus !== "saving";
 
   function handleRatingChange(id: string, rating: RubricRating | null) {
     setTeacherOverrides((prev) => ({ ...prev, [id]: rating }));
