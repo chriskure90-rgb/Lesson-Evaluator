@@ -1,4 +1,5 @@
 import { generateLessonWithMistral } from "./providers/mistral.js";
+import { generateLessonWithGemini  } from "./providers/gemini.js";
 
 // ── Prompt builder ───────────────────────────────────────────────────────────
 // Builds the full structured lesson-generation prompt from user inputs.
@@ -89,6 +90,11 @@ export default async function handler(req, res) {
 
     if (model === "mistral" || model === "Mistral") {
       const lesson = await generateLessonWithMistral(prompt);
+      return res.status(200).json(lesson);
+    }
+
+    if (model === "gemini" || model === "Gemini") {
+      const lesson = await generateLessonWithGemini(prompt);
       return res.status(200).json(lesson);
     }
 
