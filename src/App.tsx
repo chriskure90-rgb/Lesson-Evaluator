@@ -1365,6 +1365,17 @@ function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: 
         )}
       </div>
 
+      {/* ── Post-evaluation notice ── */}
+      {evalResult && saveStatus !== "saved" && (
+        <div className="eval-notice">
+          <span className="eval-notice-icon">💡</span>
+          <span>
+            Evaluation complete. Review the results below and adjust any ratings if needed —
+            then click <strong>Confirm Evaluation</strong> to save your assessment.
+          </span>
+        </div>
+      )}
+
       {/* ── Expandable lesson plan panel ── */}
       {showLesson && (
         <LessonPanel lesson={displayLesson as Lesson} />
