@@ -161,6 +161,9 @@ h1, h2, h3, h4, h5 {
 .sidebar-footer {
   padding: 12px;
   border-top: 1px solid var(--sidebar-border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .sidebar-user {
@@ -168,6 +171,25 @@ h1, h2, h3, h4, h5 {
   align-items: center;
   gap: 10px;
   padding: 0 4px;
+  min-width: 0;
+}
+
+.sidebar-logout-btn {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--sidebar-border);
+  background: transparent;
+  color: rgb(221 218 210 / 0.55);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: background 150ms, color 150ms;
+}
+.sidebar-logout-btn:hover {
+  background: var(--sidebar-accent);
+  color: rgb(221 218 210 / 0.9);
 }
 
 .sidebar-avatar {

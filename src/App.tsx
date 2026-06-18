@@ -286,7 +286,7 @@ function AccordionItem({
    SIDEBAR
 ════════════════════════════════════════════════════════════ */
 
-function Sidebar({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
+function Sidebar({ page, setPage, userEmail, onLogout }: { page: Page; setPage: (p: Page) => void; userEmail?: string; onLogout: () => void }) {
   const nav = [
     { id: "generator" as Page, label: "Generator", Icon: Icon.Sparkles },
     { id: "evaluator" as Page, label: "Evaluator", Icon: Icon.FileCheck },
@@ -321,12 +321,18 @@ function Sidebar({ page, setPage }: { page: Page; setPage: (p: Page) => void }) 
 
       <div className="sidebar-footer">
         <div className="sidebar-user">
-          <div className="sidebar-avatar">MR</div>
-          <div>
-            <div className="sidebar-user-name">Ms. Rivera</div>
-            <div className="sidebar-user-sub">7th Grade · Science</div>
+          <div className="sidebar-avatar">
+            {userEmail ? userEmail[0].toUpperCase() : "?"}
+          </div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div className="sidebar-user-name" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {userEmail ?? "Teacher"}
+            </div>
           </div>
         </div>
+        <button type="button" className="sidebar-logout-btn" onClick={onLogout}>
+          Sign out
+        </button>
       </div>
     </nav>
   );
@@ -357,10 +363,12 @@ function GeneratorPage({
   sharedLesson,
   onLessonGenerated,
   onLessonSaved,
+  userId,
 }: {
   sharedLesson: Lesson | null;
   onLessonGenerated: (l: Lesson) => void;
   onLessonSaved: (id: number) => void;
+  userId: string;
 }) {
   // Standards: multi-select list of framework ids + optional custom text
   const [selectedFws, setSelectedFws] = useState<string[]>(["ngss"]);
@@ -411,6 +419,7 @@ function GeneratorPage({
         duration:            String(duration),
         lesson_json:         result,
         is_demo:             false,
+        user_id:             userId,
       };
 
       // .select("id").single() returns exactly the inserted row's id.
@@ -1061,7 +1070,7 @@ function LessonPanel({ lesson }: { lesson: Lesson }) {
   );
 }
 
-function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: number | null }) {
+function EvaluatorPage({ lesson, lessonId, userId }: { lesson: Lesson | null; lessonId: number | null; userId: string }) {
   const [evalResult, setEvalResult]   = useState<EvaluationResult | null>(null);
   const [evaluating, setEvaluating]   = useState(false);
   const [evalError, setEvalError]     = useState<string | null>(null);
@@ -1136,13 +1145,14 @@ function EvaluatorPage({ lesson, lessonId }: { lesson: Lesson | null; lessonId: 
     }
 
     const payload = {
-      lesson_id:        lessonId,     // id from lesson_generation table
-      readiness_status: readiness.status,
-      total_score:      readiness.totalScore,
-      low_count:        readiness.lowCount,
-      rubric_json:      rubricJson,
+      lesson_id:          lessonId,
+      readiness_status:   readiness.status,
+      total_score:        readiness.totalScore,
+      low_count:          readiness.lowCount,
+      rubric_json:        rubricJson,
       teacher_notes_json: teacherNotesJson,
-      is_demo:          false,
+      is_demo:            false,
+      user_id:            userId,
     };
 
     const { data: savedData, error: supaError } = await supabase
@@ -1548,11 +1558,12 @@ type RawEval = {
   teacher_notes_json: Record<string, string> | null;
 };
 
-async function fetchLibrary(): Promise<LibraryRow[]> {
+async function fetchLibrary(userId: string): Promise<LibraryRow[]> {
   const { data: lessons, error: lessonErr } = await supabase
     .from("lesson_generation")
     .select("id, lesson_topic, api_model, grade_level, standards_framework, duration, created_at, lesson_json")
     .eq("is_demo", false)
+    .eq("user_id", userId)
     .order("created_at", { ascending: false });
 
   if (lessonErr) {
@@ -1603,7 +1614,7 @@ async function fetchLibrary(): Promise<LibraryRow[]> {
 }
 
 /* ── LibraryPage ── */
-function LibraryPage() {
+function LibraryPage({ userId }: { userId: string }) {
   const [rows,      setRows]      = useState<LibraryRow[]>([]);
   const [loading,   setLoading]   = useState(true);
   const [fetchErr,  setFetchErr]  = useState<string | null>(null);
@@ -1616,11 +1627,11 @@ function LibraryPage() {
     let cancelled = false;
     setLoading(true);
     setFetchErr(null);
-    fetchLibrary()
+    fetchLibrary(userId)
       .then((data) => { if (!cancelled) { setRows(data); setLoading(false); } })
       .catch((err) => { if (!cancelled) { setFetchErr(err?.message ?? "Failed to load lessons."); setLoading(false); } });
     return () => { cancelled = true; };
-  }, []);
+  }, [userId]);
 
   const visible = rows
     .filter((r) => {
@@ -1709,7 +1720,7 @@ function LibraryPage() {
               <p className="lib-empty-title">No lessons found</p>
               <p className="lib-empty-sub">
                 {rows.length === 0
-                  ? "Generate your first lesson plan to see it here."
+                  ? "You haven't generated any lessons yet. Head to the Generator to create your first one."
                   : "Try adjusting your search or filters."}
               </p>
             </div>
@@ -1953,24 +1964,25 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
    LOGIN PAGE
 ════════════════════════════════════════════════════════════ */
 
-function LoginPage({ onLogin }: { onLogin: () => void }) {
+function LoginPage() {
   const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState<string | null>(null);
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (!email.trim() || !password) {
       setError("Please enter your email and password.");
       return;
     }
     setError(null);
     setLoading(true);
-    // Mock auth delay — replace with real call when ready
-    setTimeout(() => {
+    const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
+    if (authError) {
+      setError(authError.message);
       setLoading(false);
-      onLogin();
-    }, 900);
+    }
+    // On success, App's onAuthStateChange listener handles navigation
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -2046,20 +2058,6 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
             {loading ? <><Icon.Loader /> Signing in…</> : "Sign in"}
           </button>
 
-          {/* Divider */}
-          <div className="login-divider">
-            <span className="login-divider-line" />
-            <span className="login-divider-text">or</span>
-            <span className="login-divider-line" />
-          </div>
-
-          <button
-            type="button"
-            className="btn-outline-sm login-demo-btn"
-            onClick={onLogin}
-          >
-            Continue as demo
-          </button>
         </div>
 
       </div>
@@ -2071,34 +2069,62 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
    APP ROOT
 ════════════════════════════════════════════════════════════ */
 
+type AuthUser = { id: string; email?: string };
+
 export default function App() {
   const [page, setPage] = useState<Page>("login");
   const [sharedLesson, setSharedLesson] = useState<Lesson | null>(null);
-  // Id of the lesson_generation row — set after a successful Supabase insert
   const [generatedLessonId, setGeneratedLessonId] = useState<number | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
 
-  function handleLogin() {
-    setPage("generator");
+  useEffect(() => {
+    // Restore existing session on mount
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const u = session?.user ?? null;
+      setUser(u ? { id: u.id, email: u.email } : null);
+      setPage(u ? "generator" : "login");
+      setAuthChecked(true);
+    });
+
+    // Listen for sign-in / sign-out events
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      const u = session?.user ?? null;
+      setUser(u ? { id: u.id, email: u.email } : null);
+      if (event === "SIGNED_IN") setPage("generator");
+      if (event === "SIGNED_OUT") setPage("login");
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  async function handleLogout() {
+    setSharedLesson(null);
+    setGeneratedLessonId(null);
+    await supabase.auth.signOut();
   }
+
+  if (!authChecked) return null;
 
   return (
     <>
       <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
       {page === "login" ? (
-        <LoginPage onLogin={handleLogin} />
+        <LoginPage />
       ) : (
         <div className="app-shell">
-          <Sidebar page={page} setPage={setPage} />
+          <Sidebar page={page} setPage={setPage} userEmail={user?.email} onLogout={handleLogout} />
           <main className="main-content">
             {page === "generator"
               ? <GeneratorPage
                   sharedLesson={sharedLesson}
                   onLessonGenerated={setSharedLesson}
                   onLessonSaved={setGeneratedLessonId}
+                  userId={user!.id}
                 />
               : page === "evaluator"
-              ? <EvaluatorPage lesson={sharedLesson} lessonId={generatedLessonId} />
-              : <LibraryPage />}
+              ? <EvaluatorPage lesson={sharedLesson} lessonId={generatedLessonId} userId={user!.id} />
+              : <LibraryPage userId={user!.id} />}
           </main>
         </div>
       )}
