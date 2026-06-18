@@ -1965,16 +1965,52 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
 ════════════════════════════════════════════════════════════ */
 
 function LoginPage() {
-  const [email, setEmail]       = useState("");
-  const [password, setPassword] = useState("");
-  const [loading, setLoading]   = useState(false);
-  const [error, setError]       = useState<string | null>(null);
+  const [mode, setMode]                       = useState<"signin" | "signup">("signin");
+  const [email, setEmail]                     = useState("");
+  const [password, setPassword]               = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [loading, setLoading]                 = useState(false);
+  const [error, setError]                     = useState<string | null>(null);
+  const [success, setSuccess]                 = useState<string | null>(null);
+
+  function switchMode(next: "signin" | "signup") {
+    setMode(next);
+    setError(null);
+    setSuccess(null);
+    setPassword("");
+    setConfirmPassword("");
+  }
 
   async function handleSubmit() {
     if (!email.trim() || !password) {
       setError("Please enter your email and password.");
       return;
     }
+
+    if (mode === "signup") {
+      if (password.length < 6) {
+        setError("Password must be at least 6 characters.");
+        return;
+      }
+      if (password !== confirmPassword) {
+        setError("Passwords do not match.");
+        return;
+      }
+      setError(null);
+      setLoading(true);
+      const { data, error: authError } = await supabase.auth.signUp({ email, password });
+      if (authError) {
+        setError(authError.message);
+        setLoading(false);
+      } else if (!data.session) {
+        // Email confirmation is required — session is null until confirmed
+        setSuccess("Account created! Check your inbox to confirm your email, then sign in here.");
+        setLoading(false);
+      }
+      // If a session was returned immediately, onAuthStateChange navigates automatically
+      return;
+    }
+
     setError(null);
     setLoading(true);
     const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
@@ -1988,6 +2024,8 @@ function LoginPage() {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter") handleSubmit();
   }
+
+  const isSignUp = mode === "signup";
 
   return (
     <div className="login-shell">
@@ -2006,13 +2044,16 @@ function LoginPage() {
 
         {/* ── Heading ── */}
         <div className="login-heading">
-          <h1 className="login-title">Welcome back</h1>
-          <p className="login-subtitle">Sign in to your teacher account</p>
+          <h1 className="login-title">{isSignUp ? "Create an account" : "Welcome back"}</h1>
+          <p className="login-subtitle">
+            {isSignUp ? "Sign up to start building lesson plans." : "Sign in to your teacher account"}
+          </p>
         </div>
 
         {/* ── Form ── */}
         <div className="login-form">
-          {error && <p className="error-box" style={{ marginBottom: 16 }}>{error}</p>}
+          {error   && <p className="error-box login-feedback-box">{error}</p>}
+          {success && <p className="login-success-box">{success}</p>}
 
           <div className="field">
             <FieldLabel htmlFor="login-email">Email address</FieldLabel>
@@ -2032,9 +2073,11 @@ function LoginPage() {
           <div className="field" style={{ marginTop: 14 }}>
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 6 }}>
               <label htmlFor="login-password" className="field-label">Password</label>
-              <button type="button" className="login-forgot" onClick={() => {}}>
-                Forgot password?
-              </button>
+              {!isSignUp && (
+                <button type="button" className="login-forgot" onClick={() => {}}>
+                  Forgot password?
+                </button>
+              )}
             </div>
             <input
               id="login-password"
@@ -2044,9 +2087,25 @@ function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               onKeyDown={handleKeyDown}
-              autoComplete="current-password"
+              autoComplete={isSignUp ? "new-password" : "current-password"}
             />
           </div>
+
+          {isSignUp && (
+            <div className="field" style={{ marginTop: 14 }}>
+              <FieldLabel htmlFor="login-confirm">Confirm password</FieldLabel>
+              <input
+                id="login-confirm"
+                type="password"
+                className="input"
+                placeholder="••••••••"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                onKeyDown={handleKeyDown}
+                autoComplete="new-password"
+              />
+            </div>
+          )}
 
           <button
             type="button"
@@ -2055,9 +2114,22 @@ function LoginPage() {
             onClick={handleSubmit}
             disabled={loading}
           >
-            {loading ? <><Icon.Loader /> Signing in…</> : "Sign in"}
+            {loading
+              ? <><Icon.Loader /> {isSignUp ? "Creating account…" : "Signing in…"}</>
+              : isSignUp ? "Create account" : "Sign in"}
           </button>
 
+          <p className="login-switch">
+            {isSignUp ? "Already have an account?" : "Don't have an account?"}
+            {" "}
+            <button
+              type="button"
+              className="login-switch-btn"
+              onClick={() => switchMode(isSignUp ? "signin" : "signup")}
+            >
+              {isSignUp ? "Sign in" : "Create account"}
+            </button>
+          </p>
         </div>
 
       </div>
