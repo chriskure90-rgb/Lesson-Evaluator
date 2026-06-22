@@ -484,6 +484,7 @@ function GeneratorPage({
   onLessonSaved,
   onLessonMetaGenerated,
   onEvaluateLesson,
+  lessonId,
   userId,
 }: {
   sharedLesson: Lesson | null;
