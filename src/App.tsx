@@ -2361,25 +2361,32 @@ export default function App() {
   const [authChecked, setAuthChecked] = useState(false);
 
   useEffect(() => {
-    // Restore existing session on mount.
-    // Always call setAuthChecked(true) even if profile loading fails,
-    // otherwise the app stays blank forever.
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      const u = session?.user ?? null;
-      setUser(u ? { id: u.id, email: u.email } : null);
-      setPage(u ? "generator" : "login");
+    // Safety net: if getSession() hangs (e.g. token refresh on a slow/paused
+    // Supabase project), force the login page after 3 s so the app is never blank.
+    const authFallback = setTimeout(() => {
+      setPage("login");
       setAuthChecked(true);
-      if (u) {
-        loadOrCreateProfile(u.id, u.email ?? "")
-          .then(setProfile)
-          .catch(err => console.error("[Profile] load failed:", err));
-      }
-    }).catch(err => {
-      console.error("[Auth] getSession failed:", err);
-      setAuthChecked(true); // still show the login page
-    });
+    }, 3000);
 
-    // onAuthStateChange must stay synchronous — fire-and-forget the profile load
+    supabase.auth.getSession()
+      .then(({ data: { session } }) => {
+        clearTimeout(authFallback);
+        const u = session?.user ?? null;
+        setUser(u ? { id: u.id, email: u.email } : null);
+        setPage(u ? "generator" : "login");
+        setAuthChecked(true);
+        if (u) {
+          loadOrCreateProfile(u.id, u.email ?? "")
+            .then(setProfile)
+            .catch(() => {}); // profile failure is non-fatal
+        }
+      })
+      .catch(() => {
+        clearTimeout(authFallback);
+        setPage("login");
+        setAuthChecked(true);
+      });
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       const u = session?.user ?? null;
       setUser(u ? { id: u.id, email: u.email } : null);
@@ -2387,7 +2394,7 @@ export default function App() {
         setPage("generator");
         loadOrCreateProfile(u.id, u.email ?? "")
           .then(setProfile)
-          .catch(err => console.error("[Profile] load failed:", err));
+          .catch(() => {});
       }
       if (event === "SIGNED_OUT") {
         setPage("login");
@@ -2395,7 +2402,10 @@ export default function App() {
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      clearTimeout(authFallback);
+      subscription.unsubscribe();
+    };
   }, []);
 
   async function handleLogout() {
@@ -2405,7 +2415,11 @@ export default function App() {
     await supabase.auth.signOut();
   }
 
-  if (!authChecked) return null;
+  if (!authChecked) return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#f9f7f4" }}>
+      <Icon.Loader />
+    </div>
+  );
 
   return (
     <>
