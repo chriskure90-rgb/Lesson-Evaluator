@@ -1651,23 +1651,11 @@ function EvaluatorPage({
             "Detailed Evaluation"
           </p>
 
-          {/* Save controls — only shown when there is something to save */}
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {saveStatus === "saved" && (
-              <span className="save-confirmation">
-                ✓ Teacher changes saved
-              </span>
-            )}
-            <button
-              type="button"
-              className="btn-outline-sm"
-              onClick={handleSave}
-              disabled={!canSave}
-              style={{ opacity: canSave ? 1 : 0.4 }}
-            >
-              {saveStatus === "saving" ? "Saving…" : "Confirm Evaluation"}
-            </button>
-          </div>
+          {saveStatus === "saved" && (
+            <span className="save-confirmation">
+              ✓ Teacher changes saved
+            </span>
+          )}
         </div>
 
         <div className="card" style={{ padding: "0 24px", overflow: "hidden" }}>
