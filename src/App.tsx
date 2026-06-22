@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import "./index.css";
 import { supabase } from "./lib/supabase";
 
@@ -416,6 +417,7 @@ function GeneratorPage({
   const [error, setError]             = useState<string | null>(null);
   const [editing, setEditing]         = useState(false);
   const [draft, setDraft]             = useState<Lesson | null>(null);
+  const navigate                      = useNavigate();
 
   // ── Edit helpers ──────────────────────────────────────────
   function handleStartEdit() {
@@ -885,6 +887,18 @@ function GeneratorPage({
                       </p>
                     </AccordionItem>
                   )}
+                </div>
+
+                {/* Evaluate Lesson CTA */}
+                <div className="preview-evaluate-strip">
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    style={{ width: "auto", padding: "0 22px", height: 38, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}
+                    onClick={() => navigate("/evaluate-lesson", { state: { lesson } })}
+                  >
+                    <Icon.FileCheck /> Evaluate Lesson
+                  </button>
                 </div>
               </>
             )}

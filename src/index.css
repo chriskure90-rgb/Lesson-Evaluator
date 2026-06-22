@@ -647,6 +647,15 @@ h1, h2, h3, h4, h5 {
 }
 .preview-body { padding: 0 28px; }
 
+/* Evaluate Lesson button strip at the bottom of the preview card */
+.preview-evaluate-strip {
+  display: flex;
+  justify-content: flex-end;
+  padding: 16px 28px 24px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
 /* ── Lesson edit form ────────────────────────────────────── */
 .lesson-edit-form {
   padding: 20px 28px 28px;
