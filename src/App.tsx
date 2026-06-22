@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
 import "./index.css";
 import { supabase } from "./lib/supabase";
 
@@ -19,6 +18,8 @@ type Lesson = {
   assessment: string;
   differentiation?: string;   // optional — API may include this
 };
+
+type LessonMeta = { model: string; grade: string; standards: string; duration: number };
 
 /**
  * Coerce a raw API response into a safe Lesson.
@@ -396,11 +397,15 @@ function GeneratorPage({
   sharedLesson,
   onLessonGenerated,
   onLessonSaved,
+  onLessonMetaGenerated,
+  onEvaluateLesson,
   userId,
 }: {
   sharedLesson: Lesson | null;
   onLessonGenerated: (l: Lesson) => void;
   onLessonSaved: (id: number) => void;
+  onLessonMetaGenerated?: (meta: LessonMeta) => void;
+  onEvaluateLesson: () => void;
   userId: string;
 }) {
   // Standards: multi-select list of framework ids + optional custom text
@@ -417,7 +422,6 @@ function GeneratorPage({
   const [error, setError]             = useState<string | null>(null);
   const [editing, setEditing]         = useState(false);
   const [draft, setDraft]             = useState<Lesson | null>(null);
-  const navigate                      = useNavigate();
 
   // ── Edit helpers ──────────────────────────────────────────
   function handleStartEdit() {
@@ -488,6 +492,7 @@ function GeneratorPage({
       const result = await generateLesson({ grade, frameworks: resolvedFrameworks(), code, topic, goal, duration, model });
       setLesson(result);
       onLessonGenerated(result);   // share with the Evaluator
+      onLessonMetaGenerated?.({ model, grade, standards: resolvedFrameworks().join(", "), duration });
 
       // ── Supabase save ──────────────────────────────────────────────────
       const insertPayload = {
@@ -895,7 +900,7 @@ function GeneratorPage({
                     type="button"
                     className="btn-primary"
                     style={{ width: "auto", padding: "0 22px", height: 38, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}
-                    onClick={() => navigate("/evaluate-lesson", { state: { lesson } })}
+                    onClick={() => onEvaluateLesson()}
                   >
                     <Icon.FileCheck /> Evaluate Lesson
                   </button>
@@ -1284,7 +1289,21 @@ function LessonPanel({ lesson }: { lesson: Lesson }) {
   );
 }
 
-function EvaluatorPage({ lesson, lessonId, userId }: { lesson: Lesson | null; lessonId: number | null; userId: string }) {
+function EvaluatorPage({
+  lesson,
+  lessonId,
+  userId,
+  lessonMeta,
+  autoEvaluate,
+  onAutoEvaluateDone,
+}: {
+  lesson: Lesson | null;
+  lessonId: number | null;
+  userId: string;
+  lessonMeta?: LessonMeta | null;
+  autoEvaluate?: boolean;
+  onAutoEvaluateDone?: () => void;
+}) {
   const [evalResult, setEvalResult]   = useState<EvaluationResult | null>(null);
   const [evaluating, setEvaluating]   = useState(false);
   const [evalError, setEvalError]     = useState<string | null>(null);
@@ -1415,6 +1434,14 @@ function EvaluatorPage({ lesson, lessonId, userId }: { lesson: Lesson | null; le
 
   const [showLesson, setShowLesson] = useState(false);
 
+  // When arriving via the "Evaluate Lesson" button, start AI evaluation immediately
+  useEffect(() => {
+    if (autoEvaluate && lesson && !evaluating && !evalResult) {
+      handleEvaluate();
+      onAutoEvaluateDone?.();
+    }
+  }, []); // mount-only: EvaluatorPage remounts fresh on each navigation
+
   // Show real evaluation sections when available; neutral placeholder otherwise
   const displaySections: EvaluationSection[] = evalResult?.sections
     ?? SECTION_TEMPLATES.map((t) => ({ ...t, rating: "medium" as RubricRating }));
@@ -1536,11 +1563,23 @@ function EvaluatorPage({ lesson, lessonId, userId }: { lesson: Lesson | null; le
               {(displayLesson as typeof LESSON_META).title}
             </h2>
             <div className="meta-row">
-              <span>Grade {(displayLesson as typeof LESSON_META).grade}</span>
+              {(lessonMeta?.model ?? (displayLesson as typeof LESSON_META).model) && (
+                <>
+                  <span>{lessonMeta?.model ?? (displayLesson as typeof LESSON_META).model}</span>
+                  <span className="meta-dot">·</span>
+                </>
+              )}
+              <span>Grade {lessonMeta?.grade ?? (displayLesson as typeof LESSON_META).grade}</span>
               <span className="meta-dot">·</span>
-              <span>{(displayLesson as typeof LESSON_META).duration} min</span>
+              <span>{lessonMeta?.duration ?? (displayLesson as typeof LESSON_META).duration} min</span>
+              {lessonMeta?.standards && (
+                <>
+                  <span className="meta-dot">·</span>
+                  <span>{lessonMeta.standards}</span>
+                </>
+              )}
             </div>
-            {(displayLesson as typeof LESSON_META).overview && (
+            {!lesson && (displayLesson as typeof LESSON_META).overview && (
               <p style={{ marginTop: 12, fontSize: 14, color: "rgb(48 44 39 / 0.8)", lineHeight: 1.65, maxWidth: 620 }}>
                 {(displayLesson as typeof LESSON_META).overview}
               </p>
@@ -2369,7 +2408,9 @@ type AuthUser = { id: string; email?: string };
 export default function App() {
   const [page, setPage] = useState<Page>("login");
   const [sharedLesson, setSharedLesson] = useState<Lesson | null>(null);
+  const [sharedLessonMeta, setSharedLessonMeta] = useState<LessonMeta | null>(null);
   const [generatedLessonId, setGeneratedLessonId] = useState<number | null>(null);
+  const [autoEvaluate, setAutoEvaluate] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -2424,7 +2465,9 @@ export default function App() {
 
   async function handleLogout() {
     setSharedLesson(null);
+    setSharedLessonMeta(null);
     setGeneratedLessonId(null);
+    setAutoEvaluate(false);
     setProfile(null);
     await supabase.auth.signOut();
   }
@@ -2449,10 +2492,19 @@ export default function App() {
                   sharedLesson={sharedLesson}
                   onLessonGenerated={setSharedLesson}
                   onLessonSaved={setGeneratedLessonId}
+                  onLessonMetaGenerated={setSharedLessonMeta}
+                  onEvaluateLesson={() => { setAutoEvaluate(true); setPage("evaluator"); }}
                   userId={user!.id}
                 />
               : page === "evaluator"
-              ? <EvaluatorPage lesson={sharedLesson} lessonId={generatedLessonId} userId={user!.id} />
+              ? <EvaluatorPage
+                  lesson={sharedLesson}
+                  lessonId={generatedLessonId}
+                  userId={user!.id}
+                  lessonMeta={sharedLessonMeta}
+                  autoEvaluate={autoEvaluate}
+                  onAutoEvaluateDone={() => setAutoEvaluate(false)}
+                />
               : <LibraryPage userId={user!.id} />}
           </main>
         </div>
