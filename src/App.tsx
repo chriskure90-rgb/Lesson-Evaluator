@@ -137,6 +137,32 @@ async function evaluateLesson(lesson: Lesson): Promise<EvaluationResult> {
   return res.json() as Promise<EvaluationResult>;
 }
 
+/* ── Profile helpers ─────────────────────────────────────────────────────────
+   Loads the profiles row for the given user.
+   If none exists yet (e.g. email-confirmed signup), creates one first.
+────────────────────────────────────────────────────────────────────────────── */
+type UserProfile = { id: number; user_id: string; email: string; created_at: string };
+
+async function loadOrCreateProfile(userId: string, email: string): Promise<UserProfile | null> {
+  // Try to load an existing profile
+  const { data: existing } = await supabase
+    .from("profiles")
+    .select("*")
+    .eq("user_id", userId)
+    .single();
+
+  if (existing) return existing as UserProfile;
+
+  // No profile yet — create one (handles email-confirmed signups on first login)
+  const { data: created } = await supabase
+    .from("profiles")
+    .insert({ user_id: userId, email })
+    .select()
+    .single();
+
+  return (created as UserProfile) ?? null;
+}
+
 /* ════════════════════════════════════════════════════════════
    ICONS (inline SVG, no lucide dependency)
 ════════════════════════════════════════════════════════════ */
@@ -2002,12 +2028,21 @@ function LoginPage() {
       if (authError) {
         setError(authError.message);
         setLoading(false);
-      } else if (!data.session) {
-        // Email confirmation is required — session is null until confirmed
+      } else if (data.user && data.session) {
+        // Email confirmation is disabled — session is available immediately.
+        // Insert profile now; App's onAuthStateChange will also call loadOrCreateProfile,
+        // which will find this row and return it without creating a duplicate.
+        await supabase.from("profiles").insert({
+          user_id: data.user.id,
+          email:   data.user.email ?? email,
+        });
+        // onAuthStateChange navigates automatically
+      } else {
+        // Email confirmation required — session is null until the user confirms.
+        // Profile will be created by loadOrCreateProfile on first sign-in.
         setSuccess("Account created! Check your inbox to confirm your email, then sign in here.");
         setLoading(false);
       }
-      // If a session was returned immediately, onAuthStateChange navigates automatically
       return;
     }
 
@@ -2148,23 +2183,31 @@ export default function App() {
   const [sharedLesson, setSharedLesson] = useState<Lesson | null>(null);
   const [generatedLessonId, setGeneratedLessonId] = useState<number | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
   useEffect(() => {
     // Restore existing session on mount
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       const u = session?.user ?? null;
       setUser(u ? { id: u.id, email: u.email } : null);
+      if (u) setProfile(await loadOrCreateProfile(u.id, u.email ?? ""));
       setPage(u ? "generator" : "login");
       setAuthChecked(true);
     });
 
     // Listen for sign-in / sign-out events
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       const u = session?.user ?? null;
       setUser(u ? { id: u.id, email: u.email } : null);
-      if (event === "SIGNED_IN") setPage("generator");
-      if (event === "SIGNED_OUT") setPage("login");
+      if (event === "SIGNED_IN" && u) {
+        setPage("generator");
+        setProfile(await loadOrCreateProfile(u.id, u.email ?? ""));
+      }
+      if (event === "SIGNED_OUT") {
+        setPage("login");
+        setProfile(null);
+      }
     });
 
     return () => subscription.unsubscribe();
@@ -2173,6 +2216,7 @@ export default function App() {
   async function handleLogout() {
     setSharedLesson(null);
     setGeneratedLessonId(null);
+    setProfile(null);
     await supabase.auth.signOut();
   }
 
@@ -2185,7 +2229,7 @@ export default function App() {
         <LoginPage />
       ) : (
         <div className="app-shell">
-          <Sidebar page={page} setPage={setPage} userEmail={user?.email} onLogout={handleLogout} />
+          <Sidebar page={page} setPage={setPage} userEmail={profile?.email ?? user?.email} onLogout={handleLogout} />
           <main className="main-content">
             {page === "generator"
               ? <GeneratorPage
