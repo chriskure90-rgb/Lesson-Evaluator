@@ -165,6 +165,91 @@ async function loadOrCreateProfile(userId: string, email: string): Promise<UserP
   return (created as UserProfile) ?? null;
 }
 
+/* ── Audit log helpers ───────────────────────────────────────────────────────
+   Fire-and-forget inserts into generator_log / evaluator_log.
+
+   Run the SQL below once in the Supabase SQL editor to create both tables.
+
+   ── generator_log ─────────────────────────────────────────────────────────
+   CREATE TABLE generator_log (
+     id             BIGSERIAL    PRIMARY KEY,
+     lesson_id      BIGINT       REFERENCES lesson_generation(id) ON DELETE SET NULL,
+     user_id        UUID         REFERENCES auth.users(id)        ON DELETE SET NULL,
+     action_type    TEXT         NOT NULL,
+     previous_data  JSONB,
+     new_data       JSONB,
+     changed_fields JSONB,
+     api_model      TEXT,
+     note           TEXT,
+     created_at     TIMESTAMPTZ  DEFAULT NOW()
+   );
+   ALTER TABLE generator_log ENABLE ROW LEVEL SECURITY;
+   CREATE POLICY "Users manage own generator logs"
+     ON generator_log FOR ALL USING (auth.uid() = user_id);
+
+   ── evaluator_log ─────────────────────────────────────────────────────────
+   CREATE TABLE evaluator_log (
+     id                   BIGSERIAL    PRIMARY KEY,
+     evaluation_id        BIGINT       REFERENCES lesson_evaluations(id) ON DELETE SET NULL,
+     lesson_id            BIGINT       REFERENCES lesson_generation(id)  ON DELETE SET NULL,
+     user_id              UUID         REFERENCES auth.users(id)         ON DELETE SET NULL,
+     action_type          TEXT         NOT NULL,
+     previous_rubric_json JSONB,
+     new_rubric_json      JSONB,
+     previous_notes_json  JSONB,
+     new_notes_json       JSONB,
+     previous_status      TEXT,
+     new_status           TEXT,
+     previous_score       INTEGER,
+     new_score            INTEGER,
+     created_at           TIMESTAMPTZ  DEFAULT NOW()
+   );
+   ALTER TABLE evaluator_log ENABLE ROW LEVEL SECURITY;
+   CREATE POLICY "Users manage own evaluator logs"
+     ON evaluator_log FOR ALL USING (auth.uid() = user_id);
+   ─────────────────────────────────────────────────────── */
+
+type GeneratorActionType = "lesson_created" | "lesson_edited" | "lesson_regenerated";
+type EvaluatorActionType = "evaluation_confirmed";
+
+async function logGeneratorAction(entry: {
+  lesson_id: number | null;
+  user_id: string;
+  action_type: GeneratorActionType;
+  previous_data?: unknown;
+  new_data?: unknown;
+  changed_fields?: unknown;
+  api_model?: string;
+  note?: string;
+}): Promise<void> {
+  const { error } = await supabase.from("generator_log").insert([entry]);
+  if (error) console.warn("[generator_log]", error.message);
+}
+
+async function logEvaluatorAction(entry: {
+  evaluation_id?: number | null;
+  lesson_id: number | null;
+  user_id: string;
+  action_type: EvaluatorActionType;
+  previous_rubric_json?: unknown;
+  new_rubric_json?: unknown;
+  previous_notes_json?: unknown;
+  new_notes_json?: unknown;
+  previous_status?: string | null;
+  new_status?: string;
+  previous_score?: number | null;
+  new_score?: number;
+}): Promise<void> {
+  const { error } = await supabase.from("evaluator_log").insert([entry]);
+  if (error) console.warn("[evaluator_log]", error.message);
+}
+
+function diffLessonFields(prev: Lesson, next: Lesson): string[] {
+  return (Object.keys(next) as (keyof Lesson)[]).filter(
+    k => JSON.stringify(prev[k]) !== JSON.stringify(next[k])
+  );
+}
+
 /* ════════════════════════════════════════════════════════════
    ICONS (inline SVG, no lucide dependency)
 ════════════════════════════════════════════════════════════ */
@@ -406,6 +491,7 @@ function GeneratorPage({
   onLessonSaved: (id: number) => void;
   onLessonMetaGenerated?: (meta: LessonMeta) => void;
   onEvaluateLesson: () => void;
+  lessonId?: number | null;
   userId: string;
 }) {
   // Standards: multi-select list of framework ids + optional custom text
@@ -432,10 +518,31 @@ function GeneratorPage({
   function handleCancelEdit() { setEditing(false); setDraft(null); }
   function handleSaveEdit() {
     if (!draft) return;
-    setLesson(draft);
-    onLessonGenerated(draft);
+    const savedDraft     = draft;      // capture before state changes
+    const previousLesson = lesson;     // capture before state changes
+    setLesson(savedDraft);
+    onLessonGenerated(savedDraft);
     setEditing(false);
     setDraft(null);
+    // Persist the edited lesson_json to Supabase and log the change (fire-and-forget)
+    if (lessonId != null) {
+      const lid = lessonId;
+      supabase
+        .from("lesson_generation")
+        .update({ lesson_json: savedDraft })
+        .eq("id", lid)
+        .then(({ error }) => {
+          if (error) { console.error("[lesson_generation] update:", error); return; }
+          logGeneratorAction({
+            lesson_id:      lid,
+            user_id:        userId,
+            action_type:    "lesson_edited",
+            previous_data:  previousLesson,
+            new_data:       savedDraft,
+            changed_fields: previousLesson ? diffLessonFields(previousLesson, savedDraft) : [],
+          });
+        });
+    }
   }
   function setDraftField<K extends keyof Lesson>(key: K, value: Lesson[K]) {
     setDraft(prev => prev ? { ...prev, [key]: value } : prev);
@@ -486,6 +593,7 @@ function GeneratorPage({
   }
 
   async function handleGenerate() {
+    const previousLesson = lesson; // capture before generation (null = first-time creation)
     setLoading(true);
     setError(null);
     try {
@@ -523,6 +631,15 @@ function GeneratorPage({
       } else {
         console.debug("[Supabase] lesson_generation saved, id:", savedLesson.id);
         onLessonSaved(savedLesson.id);   // bubble id up to App for the Evaluator
+        logGeneratorAction({
+          lesson_id:      savedLesson.id,
+          user_id:        userId,
+          action_type:    previousLesson !== null ? "lesson_regenerated" : "lesson_created",
+          previous_data:  previousLesson,
+          new_data:       result,
+          changed_fields: previousLesson ? diffLessonFields(previousLesson, result) : [],
+          api_model:      model,
+        });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
@@ -1408,6 +1525,30 @@ function EvaluatorPage({
     }
 
     console.debug("[Supabase] lesson_evaluations insert succeeded:", savedData);
+
+    // ── Audit log ────────────────────────────────────────────────────────────
+    const savedEvalId: number | null = (savedData as Array<{ id: number }>)[0]?.id ?? null;
+    // AI-only baseline: ratings before any teacher overrides
+    const aiOnlyRatings = displaySections.map(s => s.rating as RubricRating);
+    const aiReadiness   = calcReadiness(aiOnlyRatings);
+    const previousRubric: Record<string, { title: string; ai_rating: string }> = {};
+    displaySections.forEach(s => {
+      previousRubric[s.id] = { title: s.title, ai_rating: s.rating as string };
+    });
+    logEvaluatorAction({
+      evaluation_id:        savedEvalId,
+      lesson_id:            lessonId,
+      user_id:              userId,
+      action_type:          "evaluation_confirmed",
+      previous_rubric_json: evalResult ? previousRubric : null,
+      new_rubric_json:      rubricJson,
+      previous_notes_json:  {},
+      new_notes_json:       teacherNotesJson,
+      previous_status:      evalResult ? aiReadiness.status : null,
+      new_status:           payload.readiness_status,
+      previous_score:       evalResult ? aiReadiness.totalScore : null,
+      new_score:            payload.total_score,
+    });
 
     // Update frontend snapshot so unsaved indicator clears
     setSavedOverrides({ ...teacherOverrides });
@@ -2482,6 +2623,7 @@ export default function App() {
                   onLessonSaved={setGeneratedLessonId}
                   onLessonMetaGenerated={setSharedLessonMeta}
                   onEvaluateLesson={() => { setAutoEvaluate(true); setPage("evaluator"); }}
+                  lessonId={generatedLessonId}
                   userId={user!.id}
                 />
               : page === "evaluator"
