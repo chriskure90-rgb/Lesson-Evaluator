@@ -2361,22 +2361,33 @@ export default function App() {
   const [authChecked, setAuthChecked] = useState(false);
 
   useEffect(() => {
-    // Restore existing session on mount
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
+    // Restore existing session on mount.
+    // Always call setAuthChecked(true) even if profile loading fails,
+    // otherwise the app stays blank forever.
+    supabase.auth.getSession().then(({ data: { session } }) => {
       const u = session?.user ?? null;
       setUser(u ? { id: u.id, email: u.email } : null);
-      if (u) setProfile(await loadOrCreateProfile(u.id, u.email ?? ""));
       setPage(u ? "generator" : "login");
       setAuthChecked(true);
+      if (u) {
+        loadOrCreateProfile(u.id, u.email ?? "")
+          .then(setProfile)
+          .catch(err => console.error("[Profile] load failed:", err));
+      }
+    }).catch(err => {
+      console.error("[Auth] getSession failed:", err);
+      setAuthChecked(true); // still show the login page
     });
 
-    // Listen for sign-in / sign-out events
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+    // onAuthStateChange must stay synchronous — fire-and-forget the profile load
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       const u = session?.user ?? null;
       setUser(u ? { id: u.id, email: u.email } : null);
       if (event === "SIGNED_IN" && u) {
         setPage("generator");
-        setProfile(await loadOrCreateProfile(u.id, u.email ?? ""));
+        loadOrCreateProfile(u.id, u.email ?? "")
+          .then(setProfile)
+          .catch(err => console.error("[Profile] load failed:", err));
       }
       if (event === "SIGNED_OUT") {
         setPage("login");
