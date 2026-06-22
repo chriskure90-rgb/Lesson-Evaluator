@@ -222,8 +222,9 @@ async function logGeneratorAction(entry: {
   api_model?: string;
   note?: string;
 }): Promise<void> {
-  const { error } = await supabase.from("generator_log").insert([entry]);
-  if (error) console.warn("[generator_log]", error.message);
+  console.debug("[generation_logs] inserting:", entry.action_type, "lesson_id:", entry.lesson_id);
+  const { error } = await supabase.from("generation_logs").insert([entry]);
+  if (error) console.error("[generation_logs] insert failed:", error.message, error);
 }
 
 async function logEvaluatorAction(entry: {
@@ -240,8 +241,9 @@ async function logEvaluatorAction(entry: {
   previous_score?: number | null;
   new_score?: number;
 }): Promise<void> {
-  const { error } = await supabase.from("evaluator_log").insert([entry]);
-  if (error) console.warn("[evaluator_log]", error.message);
+  console.debug("[evaluation_logs] inserting:", entry.action_type, "lesson_id:", entry.lesson_id, "eval_id:", entry.evaluation_id);
+  const { error } = await supabase.from("evaluation_logs").insert([entry]);
+  if (error) console.error("[evaluation_logs] insert failed:", error.message, error);
 }
 
 function diffLessonFields(prev: Lesson, next: Lesson): string[] {
