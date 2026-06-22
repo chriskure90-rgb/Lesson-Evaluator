@@ -218,6 +218,12 @@ const Icon = {
       <polyline points="6 9 12 15 18 9"/>
     </svg>
   ),
+  Edit: () => (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+    </svg>
+  ),
 };
 
 /* ════════════════════════════════════════════════════════════
@@ -408,6 +414,53 @@ function GeneratorPage({
   const [loading, setLoading]         = useState(false);
   const [lesson, setLesson]           = useState<Lesson | null>(sharedLesson);
   const [error, setError]             = useState<string | null>(null);
+  const [editing, setEditing]         = useState(false);
+  const [draft, setDraft]             = useState<Lesson | null>(null);
+
+  // ── Edit helpers ──────────────────────────────────────────
+  function handleStartEdit() {
+    if (!lesson) return;
+    setDraft(JSON.parse(JSON.stringify(lesson)));
+    setEditing(true);
+  }
+  function handleCancelEdit() { setEditing(false); setDraft(null); }
+  function handleSaveEdit() {
+    if (!draft) return;
+    setLesson(draft);
+    onLessonGenerated(draft);
+    setEditing(false);
+    setDraft(null);
+  }
+  function setDraftField<K extends keyof Lesson>(key: K, value: Lesson[K]) {
+    setDraft(prev => prev ? { ...prev, [key]: value } : prev);
+  }
+  function updateObjective(i: number, v: string) {
+    setDraft(prev => { if (!prev) return prev; const a = [...prev.objectives]; a[i] = v; return { ...prev, objectives: a }; });
+  }
+  function removeObjective(i: number) {
+    setDraft(prev => prev ? { ...prev, objectives: prev.objectives.filter((_, j) => j !== i) } : prev);
+  }
+  function addObjective() {
+    setDraft(prev => prev ? { ...prev, objectives: [...prev.objectives, ""] } : prev);
+  }
+  function updateMaterial(i: number, v: string) {
+    setDraft(prev => { if (!prev) return prev; const a = [...prev.materials]; a[i] = v; return { ...prev, materials: a }; });
+  }
+  function removeMaterial(i: number) {
+    setDraft(prev => prev ? { ...prev, materials: prev.materials.filter((_, j) => j !== i) } : prev);
+  }
+  function addMaterial() {
+    setDraft(prev => prev ? { ...prev, materials: [...prev.materials, ""] } : prev);
+  }
+  function updateActivity(i: number, field: keyof Activity, value: string | number) {
+    setDraft(prev => { if (!prev) return prev; const a = [...prev.activities]; a[i] = { ...a[i], [field]: value }; return { ...prev, activities: a }; });
+  }
+  function removeActivity(i: number) {
+    setDraft(prev => prev ? { ...prev, activities: prev.activities.filter((_, j) => j !== i) } : prev);
+  }
+  function addActivity() {
+    setDraft(prev => prev ? { ...prev, activities: [...prev.activities, { name: "", minutes: 10, detail: "" }] } : prev);
+  }
 
   const CUSTOM_ID = "custom";
   const hasCustom = selectedFws.includes(CUSTOM_ID);
@@ -659,61 +712,182 @@ function GeneratorPage({
         {/* ── Preview ────────────────────────────── */}
         {lesson ? (
           <div className="card" style={{ overflow: "hidden" }}>
-            <div className="preview-header">
-              <p className="preview-breadcrumb">{breadcrumb}</p>
-              <h2 className="preview-title">{lesson.title}</h2>
-            </div>
-            <div className="preview-body">
-              <AccordionItem title="Learning Objectives" defaultOpen>
-                <ol className="obj-list">
-                  {(lesson.objectives || []).map((o, i) => (
-                    <li key={i} className="obj-item">
-                      <span className="obj-num">{String(i + 1).padStart(2, "0")}</span>
-                      <span style={{ lineHeight: 1.55 }}>{o}</span>
-                    </li>
-                  ))}
-                </ol>
-              </AccordionItem>
+            {editing && draft ? (
+              /* ── Edit mode ── */
+              <>
+                <div className="preview-header">
+                  <p className="preview-breadcrumb">{breadcrumb}</p>
+                  <input
+                    className="input"
+                    value={draft.title}
+                    onChange={e => setDraftField("title", e.target.value)}
+                    style={{ marginTop: 6, fontSize: "1.05rem", fontWeight: 600 }}
+                    placeholder="Lesson title"
+                  />
+                </div>
 
-              <AccordionItem title="Materials">
-                <ul className="mat-list">
-                  {(lesson.materials || []).map((m, i) => (
-                    <li key={i} className="mat-item">
-                      <span className="mat-dot" />
-                      {m}
-                    </li>
-                  ))}
-                </ul>
-              </AccordionItem>
+                <div className="lesson-edit-form">
 
-              <AccordionItem title="Activities" defaultOpen>
-                <ol className="act-list">
-                  {(lesson.activities || []).map((a, i) => (
-                    <li key={i} className="act-item">
-                      <span className="act-time">{a.minutes}m</span>
-                      <div>
-                        <div className="act-name">{a.name}</div>
-                        <div className="act-detail">{a.detail}</div>
+                  {/* Objectives */}
+                  <div>
+                    <p className="lesson-edit-section-title">Learning Objectives</p>
+                    {draft.objectives.map((o, i) => (
+                      <div key={i} className="lesson-edit-item-row">
+                        <textarea className="textarea" rows={2} value={o}
+                          onChange={e => updateObjective(i, e.target.value)} />
+                        <button type="button" className="lesson-edit-remove-btn"
+                          onClick={() => removeObjective(i)} aria-label="Remove objective">×</button>
                       </div>
-                    </li>
-                  ))}
-                </ol>
-              </AccordionItem>
+                    ))}
+                    <button type="button" className="lesson-edit-add-btn" onClick={addObjective}>
+                      + Add objective
+                    </button>
+                  </div>
 
-              <AccordionItem title="Assessment" isLast={!lesson.differentiation}>
-                <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
-                  {lesson.assessment || "No assessment details provided."}
-                </p>
-              </AccordionItem>
+                  {/* Materials */}
+                  <div>
+                    <p className="lesson-edit-section-title">Materials</p>
+                    {draft.materials.map((m, i) => (
+                      <div key={i} className="lesson-edit-item-row">
+                        <input className="input" value={m}
+                          onChange={e => updateMaterial(i, e.target.value)} />
+                        <button type="button" className="lesson-edit-remove-btn"
+                          onClick={() => removeMaterial(i)} aria-label="Remove material">×</button>
+                      </div>
+                    ))}
+                    <button type="button" className="lesson-edit-add-btn" onClick={addMaterial}>
+                      + Add material
+                    </button>
+                  </div>
 
-              {lesson.differentiation && (
-                <AccordionItem title="Differentiation" isLast>
-                  <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
-                    {lesson.differentiation}
-                  </p>
-                </AccordionItem>
-              )}
-            </div>
+                  {/* Activities */}
+                  <div>
+                    <p className="lesson-edit-section-title">Activities</p>
+                    {draft.activities.map((a, i) => (
+                      <div key={i} className="lesson-edit-activity">
+                        <div className="lesson-edit-activity-header">
+                          <span className="lesson-edit-activity-label">Activity {i + 1}</span>
+                          <button type="button" className="lesson-edit-remove-btn"
+                            onClick={() => removeActivity(i)} aria-label="Remove activity">×</button>
+                        </div>
+                        <div className="lesson-edit-dur-row">
+                          <input className="input" style={{ flex: 1 }} placeholder="Activity name"
+                            value={a.name} onChange={e => updateActivity(i, "name", e.target.value)} />
+                          <input className="input" type="number" style={{ width: 68 }} placeholder="0"
+                            value={a.minutes} min={1}
+                            onChange={e => updateActivity(i, "minutes", parseInt(e.target.value) || 0)} />
+                          <span style={{ fontSize: 12, color: "var(--muted-fg)", flexShrink: 0 }}>min</span>
+                        </div>
+                        <textarea className="textarea" rows={2} placeholder="Description"
+                          value={a.detail} onChange={e => updateActivity(i, "detail", e.target.value)} />
+                      </div>
+                    ))}
+                    <button type="button" className="lesson-edit-add-btn" onClick={addActivity}>
+                      + Add activity
+                    </button>
+                  </div>
+
+                  {/* Assessment */}
+                  <div>
+                    <p className="lesson-edit-section-title">Assessment</p>
+                    <textarea className="textarea" rows={3} value={draft.assessment}
+                      onChange={e => setDraftField("assessment", e.target.value)} />
+                  </div>
+
+                  {/* Differentiation */}
+                  <div>
+                    <p className="lesson-edit-section-title">
+                      Differentiation
+                      <span style={{ fontWeight: 400, textTransform: "none", fontSize: 11, marginLeft: 6 }}>
+                        (optional)
+                      </span>
+                    </p>
+                    <textarea className="textarea" rows={3}
+                      value={draft.differentiation ?? ""}
+                      placeholder="Leave blank to omit this section"
+                      onChange={e => setDraftField("differentiation", e.target.value || undefined)} />
+                  </div>
+
+                  {/* Actions */}
+                  <div className="lesson-edit-actions">
+                    <button type="button" className="btn-outline-sm" onClick={handleCancelEdit}>
+                      Cancel
+                    </button>
+                    <button type="button" className="btn-primary"
+                      style={{ width: "auto", padding: "0 20px", height: 36, fontSize: 13 }}
+                      onClick={handleSaveEdit}>
+                      Save changes
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              /* ── Read-only view ── */
+              <>
+                <div className="preview-header">
+                  <p className="preview-breadcrumb">{breadcrumb}</p>
+                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+                    <h2 className="preview-title">{lesson.title}</h2>
+                    <button type="button" className="btn-outline-sm"
+                      onClick={handleStartEdit}
+                      style={{ flexShrink: 0, marginTop: 4, display: "flex", alignItems: "center", gap: 5 }}>
+                      <Icon.Edit /> Edit
+                    </button>
+                  </div>
+                </div>
+                <div className="preview-body">
+                  <AccordionItem title="Learning Objectives" defaultOpen>
+                    <ol className="obj-list">
+                      {(lesson.objectives || []).map((o, i) => (
+                        <li key={i} className="obj-item">
+                          <span className="obj-num">{String(i + 1).padStart(2, "0")}</span>
+                          <span style={{ lineHeight: 1.55 }}>{o}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  </AccordionItem>
+
+                  <AccordionItem title="Materials">
+                    <ul className="mat-list">
+                      {(lesson.materials || []).map((m, i) => (
+                        <li key={i} className="mat-item">
+                          <span className="mat-dot" />
+                          {m}
+                        </li>
+                      ))}
+                    </ul>
+                  </AccordionItem>
+
+                  <AccordionItem title="Activities" defaultOpen>
+                    <ol className="act-list">
+                      {(lesson.activities || []).map((a, i) => (
+                        <li key={i} className="act-item">
+                          <span className="act-time">{a.minutes}m</span>
+                          <div>
+                            <div className="act-name">{a.name}</div>
+                            <div className="act-detail">{a.detail}</div>
+                          </div>
+                        </li>
+                      ))}
+                    </ol>
+                  </AccordionItem>
+
+                  <AccordionItem title="Assessment" isLast={!lesson.differentiation}>
+                    <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
+                      {lesson.assessment || "No assessment details provided."}
+                    </p>
+                  </AccordionItem>
+
+                  {lesson.differentiation && (
+                    <AccordionItem title="Differentiation" isLast>
+                      <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
+                        {lesson.differentiation}
+                      </p>
+                    </AccordionItem>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         ) : (
           <div className="empty-state">
