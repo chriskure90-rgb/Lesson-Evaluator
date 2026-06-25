@@ -2092,7 +2092,6 @@ function LibraryPage({ userId }: { userId: string }) {
             onChange={(e) => setGradeFlt(e.target.value)}
           >
             <option value="all">All grade bands</option>
-            <option value="K">K</option>
             <option value="1-2">1–2</option>
             <option value="3-5">3–5</option>
             <option value="6-8">6–8</option>
