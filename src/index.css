@@ -390,24 +390,16 @@ h1, h2, h3, h4, h5 {
   on any card wider than ~340px.
 */
 .grade-row {
-  /*
-    Grid layout: [K auto] [sep 5px] [1 .. 12  each 1fr]
-    - K takes its natural content width (never squeezed)
-    - Separator is a fixed 5px gutter rendered as a thin line
-    - Numeric grades share all remaining space equally via 1fr,
-      so they never wrap regardless of card width
-  */
-  display: grid;
-  grid-template-columns: auto 5px repeat(12, minmax(0, 1fr));
+  display: flex;
   gap: 3px;
   align-items: center;
 }
 
 .grade-btn {
-  /* Fill the full grid cell so buttons grow/shrink together */
-  width: 100%;
+  flex: 1;
+  min-width: 64px;
   height: 30px;
-  padding: 0 4px;
+  padding: 0 8px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--background);
@@ -419,6 +411,10 @@ h1, h2, h3, h4, h5 {
   transition: border-color 120ms, color 120ms, background 120ms;
   line-height: 1;
   text-align: center;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .grade-btn:hover {
   border-color: rgb(58 107 82 / 0.4);
