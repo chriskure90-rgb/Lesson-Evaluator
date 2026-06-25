@@ -463,7 +463,12 @@ function Sidebar({ page, setPage, userEmail, onLogout }: { page: Page; setPage: 
    GENERATOR PAGE
 ════════════════════════════════════════════════════════════ */
 
-const GRADES = ["K","1","2","3","4","5","6","7","8","9","10","11","12"];
+const GRADE_BANDS = [
+  { value: "K-2",  label: "K–2",  hint: "Kindergarten–2nd grade" },
+  { value: "3-5",  label: "3–5",  hint: "3rd–5th grade"          },
+  { value: "6-8",  label: "6–8",  hint: "6th–8th grade"          },
+  { value: "9-12", label: "9–12", hint: "9th–12th grade"         },
+];
 const DURATIONS = [30, 45, 60, 90];
 
 const MODELS = [
@@ -501,7 +506,7 @@ function GeneratorPage({
   const [selectedFws, setSelectedFws] = useState<string[]>(["ngss"]);
   const [customFw, setCustomFw]       = useState("");
   const [model, setModel]             = useState("claude");
-  const [grade, setGrade]             = useState("7");
+  const [grade, setGrade]             = useState("6-8");
   const [code, setCode]               = useState("MS-LS1-6");
   const [topic, setTopic]             = useState("");
   const [goal, setGoal]               = useState("Help students understand how plants produce energy through photosynthesis.");
@@ -651,8 +656,9 @@ function GeneratorPage({
     }
   }
 
-  const modelLabel = MODELS.find((m) => m.value === model)?.label ?? model;
-  const breadcrumb = [modelLabel, ...resolvedFrameworks(), code, `Grade ${grade}`, `${duration} min`].filter(Boolean).join(" · ");
+  const modelLabel    = MODELS.find((m) => m.value === model)?.label ?? model;
+  const gradeBandLabel = GRADE_BANDS.find((b) => b.value === grade)?.label ?? grade;
+  const breadcrumb = [modelLabel, ...resolvedFrameworks(), code, `Grades ${gradeBandLabel}`, `${duration} min`].filter(Boolean).join(" · ");
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: "40px 40px 60px" }}>
@@ -688,32 +694,19 @@ function GeneratorPage({
               </div>
             </div>
 
-            {/* Grade */}
+            {/* Grade Band */}
             <div className="field">
-              <FieldLabel>Grade Level</FieldLabel>
+              <FieldLabel>Grade Band</FieldLabel>
               <div className="grade-row">
-                {/* Kindergarten — visually separated */}
-                <button
-                  type="button"
-                  className={`grade-btn grade-k${grade === "K" ? " active-k" : ""}`}
-                  onClick={() => setGrade("K")}
-                  title="Kindergarten"
-                >
-                  K
-                </button>
-
-                {/* Thin separator */}
-                <span className="grade-sep" aria-hidden="true" />
-
-                {/* Numeric grades 1–12 */}
-                {GRADES.slice(1).map((g) => (
+                {GRADE_BANDS.map((b) => (
                   <button
-                    key={g}
+                    key={b.value}
                     type="button"
-                    className={`grade-btn${grade === g ? " active" : ""}`}
-                    onClick={() => setGrade(g)}
+                    className={`grade-btn${grade === b.value ? " active" : ""}`}
+                    onClick={() => setGrade(b.value)}
+                    title={b.hint}
                   >
-                    {g}
+                    {b.label}
                   </button>
                 ))}
               </div>
@@ -1713,7 +1706,7 @@ function EvaluatorPage({
                   <span className="meta-dot">·</span>
                 </>
               )}
-              <span>Grade {lessonMeta?.grade ?? (displayLesson as typeof LESSON_META).grade}</span>
+              <span>{gradeDisplay(String(lessonMeta?.grade ?? (displayLesson as typeof LESSON_META).grade))}</span>
               <span className="meta-dot">·</span>
               <span>{lessonMeta?.duration ?? (displayLesson as typeof LESSON_META).duration} min</span>
               {lessonMeta?.standards && (
@@ -1998,6 +1991,26 @@ async function fetchLibrary(userId: string): Promise<LibraryRow[]> {
   });
 }
 
+/* Maps an individual grade value ("7") or a band value ("6-8") to a band key */
+function gradeToDisplayBand(gradeLevel: string): string {
+  if (["K-2", "3-5", "6-8", "9-12"].includes(gradeLevel)) return gradeLevel;
+  const map: Record<string, string> = {
+    K: "K-2", "1": "K-2", "2": "K-2",
+    "3": "3-5", "4": "3-5", "5": "3-5",
+    "6": "6-8", "7": "6-8", "8": "6-8",
+    "9": "9-12", "10": "9-12", "11": "9-12", "12": "9-12",
+  };
+  return map[gradeLevel] ?? gradeLevel;
+}
+
+/* Produces a human-readable grade string for display in cards and drawers */
+function gradeDisplay(gradeLevel: string): string {
+  if (["K-2", "3-5", "6-8", "9-12"].includes(gradeLevel)) {
+    return `Grades ${gradeLevel.replace("-", "–")}`;
+  }
+  return `Grade ${gradeLevel}`;
+}
+
 /* ── LibraryPage ── */
 function LibraryPage({ userId }: { userId: string }) {
   const [rows,      setRows]      = useState<LibraryRow[]>([]);
@@ -2005,6 +2018,7 @@ function LibraryPage({ userId }: { userId: string }) {
   const [fetchErr,  setFetchErr]  = useState<string | null>(null);
   const [query,     setQuery]     = useState("");
   const [statusFlt, setStatusFlt] = useState<string>("all");
+  const [gradeFlt,  setGradeFlt]  = useState<string>("all");
   const [sortBy,    setSortBy]    = useState<"recent" | "score">("recent");
   const [selected,  setSelected]  = useState<LibraryRow | null>(null);
 
@@ -2026,7 +2040,8 @@ function LibraryPage({ userId }: { userId: string }) {
         r.standards_framework?.toLowerCase().includes(query.toLowerCase());
       const rKey = readinessKey(r.readiness_status);
       const matchS = statusFlt === "all" || rKey === statusFlt;
-      return matchQ && matchS;
+      const matchG = gradeFlt === "all" || gradeToDisplayBand(r.grade_level) === gradeFlt;
+      return matchQ && matchS && matchG;
     })
     .sort((a, b) => {
       if (sortBy === "score") {
@@ -2053,6 +2068,20 @@ function LibraryPage({ userId }: { userId: string }) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
+        </div>
+
+        <div className="lib-select-wrap">
+          <select
+            className="select lib-select"
+            value={gradeFlt}
+            onChange={(e) => setGradeFlt(e.target.value)}
+          >
+            <option value="all">All grade bands</option>
+            <option value="K-2">K–2</option>
+            <option value="3-5">3–5</option>
+            <option value="6-8">6–8</option>
+            <option value="9-12">9–12</option>
+          </select>
         </div>
 
         <div className="lib-select-wrap">
@@ -2154,7 +2183,7 @@ function LessonCard({ row, onOpen }: { row: LibraryRow; onOpen: (r: LibraryRow) 
       <h3 className="lib-card-title">{row.title}</h3>
 
       <div className="lib-card-meta">
-        <span>Grade {row.grade_level}</span>
+        <span>{gradeDisplay(row.grade_level)}</span>
         <span className="lib-meta-dot">·</span>
         <span>{row.duration} min</span>
         <span className="lib-meta-dot">·</span>
@@ -2203,7 +2232,7 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
             <p className="drawer-eyebrow">Lesson Detail</p>
             <h2 className="drawer-title">{row.title}</h2>
             <div className="lib-card-meta" style={{ marginTop: 6 }}>
-              <span>Grade {row.grade_level}</span>
+              <span>{gradeDisplay(row.grade_level)}</span>
               <span className="lib-meta-dot">·</span>
               <span>{row.duration} min</span>
               <span className="lib-meta-dot">·</span>
