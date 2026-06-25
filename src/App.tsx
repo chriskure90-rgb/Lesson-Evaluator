@@ -84,6 +84,7 @@ function normaliseLesson(raw: unknown): Lesson {
 
 async function generateLesson(params: {
   grade: string;
+  subject: string;
   frameworks: string[];
   code: string;
   topic: string;
@@ -463,6 +464,8 @@ function Sidebar({ page, setPage, userEmail, onLogout }: { page: Page; setPage: 
    GENERATOR PAGE
 ════════════════════════════════════════════════════════════ */
 
+const SUBJECTS = ["Science", "Math", "English", "Social Studies"];
+
 const GRADE_BANDS = [
   { value: "1-2",  label: "1–2",  hint: "1st–2nd grade"  },
   { value: "3-5",  label: "3–5",  hint: "3rd–5th grade"  },
@@ -507,6 +510,7 @@ function GeneratorPage({
   const [customFw, setCustomFw]       = useState("");
   const [model, setModel]             = useState("claude");
   const [grade, setGrade]             = useState("6-8");
+  const [subject, setSubject]         = useState("Science");
   const [code, setCode]               = useState("MS-LS1-6");
   const [topic, setTopic]             = useState("");
   const [goal, setGoal]               = useState("Help students understand how plants produce energy through photosynthesis.");
@@ -605,7 +609,7 @@ function GeneratorPage({
     setLoading(true);
     setError(null);
     try {
-      const result = await generateLesson({ grade, frameworks: resolvedFrameworks(), code, topic, goal, duration, model });
+      const result = await generateLesson({ grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model });
       setLesson(result);
       onLessonGenerated(result);   // share with the Evaluator
       onLessonMetaGenerated?.({ model, grade, standards: resolvedFrameworks().join(", "), duration });
@@ -615,6 +619,7 @@ function GeneratorPage({
         lesson_topic:        topic,
         api_model:           model,
         grade_level:         String(grade),
+        subject:             subject,
         standards_framework: resolvedFrameworks().join(", "),
         standard_code:       code,
         lesson_goal:         goal,
@@ -658,7 +663,7 @@ function GeneratorPage({
 
   const modelLabel    = MODELS.find((m) => m.value === model)?.label ?? model;
   const gradeBandLabel = grade === "K" ? "Kindergarten" : `Grades ${GRADE_BANDS.find((b) => b.value === grade)?.label ?? grade}`;
-  const breadcrumb = [modelLabel, ...resolvedFrameworks(), code, gradeBandLabel, `${duration} min`].filter(Boolean).join(" · ");
+  const breadcrumb = [modelLabel, subject, ...resolvedFrameworks(), code, gradeBandLabel, `${duration} min`].filter(Boolean).join(" · ");
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: "40px 40px 60px" }}>
@@ -719,6 +724,23 @@ function GeneratorPage({
                     title={b.hint}
                   >
                     {b.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Subject */}
+            <div className="field">
+              <FieldLabel>Subject</FieldLabel>
+              <div className="grade-row">
+                {SUBJECTS.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    className={`grade-btn${subject === s ? " active" : ""}`}
+                    onClick={() => setSubject(s)}
+                  >
+                    {s}
                   </button>
                 ))}
               </div>
@@ -1884,6 +1906,7 @@ type LibraryRow = {
   lesson_topic: string;
   api_model: string;
   grade_level: string;
+  subject: string | null;
   standards_framework: string;
   duration: string;
   created_at: string;
@@ -1932,6 +1955,7 @@ type RawLesson = {
   lesson_topic: string;
   api_model: string;
   grade_level: string;
+  subject: string | null;
   standards_framework: string;
   duration: string;
   created_at: string;
@@ -1951,7 +1975,7 @@ type RawEval = {
 async function fetchLibrary(userId: string): Promise<LibraryRow[]> {
   const { data: lessons, error: lessonErr } = await supabase
     .from("lesson_generation")
-    .select("id, lesson_topic, api_model, grade_level, standards_framework, duration, created_at, lesson_json")
+    .select("id, lesson_topic, api_model, grade_level, subject, standards_framework, duration, created_at, lesson_json")
     .eq("is_demo", false)
     .eq("user_id", userId)
     .order("created_at", { ascending: false });
@@ -1989,6 +2013,7 @@ async function fetchLibrary(userId: string): Promise<LibraryRow[]> {
       lesson_topic:        l.lesson_topic,
       api_model:           l.api_model,
       grade_level:         l.grade_level,
+      subject:             l.subject ?? null,
       standards_framework: l.standards_framework,
       duration:            l.duration,
       created_at:          l.created_at,
@@ -2034,6 +2059,7 @@ function LibraryPage({ userId }: { userId: string }) {
   const [query,     setQuery]     = useState("");
   const [statusFlt, setStatusFlt] = useState<string>("all");
   const [gradeFlt,  setGradeFlt]  = useState<string>("all");
+  const [subjectFlt, setSubjectFlt] = useState<string>("all");
   const [sortBy,    setSortBy]    = useState<"recent" | "score">("recent");
   const [selected,  setSelected]  = useState<LibraryRow | null>(null);
 
@@ -2056,7 +2082,8 @@ function LibraryPage({ userId }: { userId: string }) {
       const rKey = readinessKey(r.readiness_status);
       const matchS = statusFlt === "all" || rKey === statusFlt;
       const matchG = gradeFlt === "all" || gradeToDisplayBand(r.grade_level) === gradeFlt;
-      return matchQ && matchS && matchG;
+      const matchSub = subjectFlt === "all" || (r.subject ?? "") === subjectFlt;
+      return matchQ && matchS && matchG && matchSub;
     })
     .sort((a, b) => {
       if (sortBy === "score") {
@@ -2096,6 +2123,19 @@ function LibraryPage({ userId }: { userId: string }) {
             <option value="3-5">3–5</option>
             <option value="6-8">6–8</option>
             <option value="9-12">9–12</option>
+          </select>
+        </div>
+
+        <div className="lib-select-wrap">
+          <select
+            className="select lib-select"
+            value={subjectFlt}
+            onChange={(e) => setSubjectFlt(e.target.value)}
+          >
+            <option value="all">All subjects</option>
+            {SUBJECTS.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
           </select>
         </div>
 
@@ -2206,6 +2246,7 @@ function LessonCard({ row, onOpen }: { row: LibraryRow; onOpen: (r: LibraryRow) 
       </div>
 
       <div className="lib-card-meta" style={{ marginTop: 4 }}>
+        {row.subject && <><span>{row.subject}</span><span className="lib-meta-dot">·</span></>}
         <span>{row.standards_framework || "No framework"}</span>
       </div>
 
@@ -2252,6 +2293,7 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
               <span>{row.duration} min</span>
               <span className="lib-meta-dot">·</span>
               <span>{row.api_model}</span>
+              {row.subject && <><span className="lib-meta-dot">·</span><span>{row.subject}</span></>}
               <span className="lib-meta-dot">·</span>
               <span>{formatDate(row.created_at)}</span>
             </div>

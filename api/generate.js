@@ -4,7 +4,7 @@ import { generateLessonWithGemini  } from "./providers/gemini.js";
 // ── Prompt builder ───────────────────────────────────────────────────────────
 // Builds the full structured lesson-generation prompt from user inputs.
 // Lives here so all prompt logic is in one place, independent of provider.
-function buildLessonPrompt({ grade, frameworks, code, topic, goal, duration }) {
+function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration }) {
   const standardsLine =
     Array.isArray(frameworks) && frameworks.length > 0
       ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
@@ -15,11 +15,12 @@ function buildLessonPrompt({ grade, frameworks, code, topic, goal, duration }) {
     "You are an experienced K-12 instructional designer. Your task is to create a classroom-ready lesson plan for teachers.",
     "",
     "CONTEXT:",
-    "Teachers will provide key information about the class, learning standards, lesson topic, lesson goal, and duration. Use this information to create a clear, practical, standards-aligned lesson plan that can be realistically delivered in a classroom.",
+    "Teachers will provide key information about the class, subject area, learning standards, lesson topic, lesson goal, and duration. Use this information to create a clear, practical, standards-aligned lesson plan that can be realistically delivered in a classroom.",
     "",
     "INPUTS:",
     "Teachers will provide:",
     `- Grade level: ${grade}`,
+    `- Subject: ${subject || "Not specified"}`,
     `- Standards framework: ${standardsLine}`,
     `- Lesson topic: ${topic || "(not specified)"}`,
     `- Lesson goal: ${goal || "(not specified)"}`,
@@ -30,6 +31,7 @@ function buildLessonPrompt({ grade, frameworks, code, topic, goal, duration }) {
     "- Use vocabulary appropriate for the grade level.",
     "- Keep each section concise and readable.",
     "- All activities must align with the lesson topic and lesson goal.",
+    `- All content must be appropriate for the subject area: ${subject || "general"}.`,
     "- The assessment must measure the lesson goal.",
     "- Include realistic classroom activities.",
     "- Ensure the lesson aligns with the provided standard when available.",
@@ -79,13 +81,13 @@ function buildLessonPrompt({ grade, frameworks, code, topic, goal, duration }) {
 // ── Route handler ────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
   try {
-    const { grade, frameworks, code, topic, goal, duration, model } = req.body;
+    const { grade, subject, frameworks, code, topic, goal, duration, model } = req.body;
 
     // Build the prompt here — providers receive the finished prompt string,
     // not the raw inputs. They are only responsible for calling the LLM.
-    const prompt = buildLessonPrompt({ grade, frameworks, code, topic, goal, duration });
+    const prompt = buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration });
 
-    console.debug("[Generate] inputs:", { grade, frameworks, code, topic, goal, duration, model });
+    console.debug("[Generate] inputs:", { grade, subject, frameworks, code, topic, goal, duration, model });
     console.debug("[Generate] prompt:", prompt);
 
     if (model === "mistral" || model === "Mistral") {
