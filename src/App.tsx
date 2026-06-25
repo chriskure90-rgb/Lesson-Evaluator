@@ -464,10 +464,10 @@ function Sidebar({ page, setPage, userEmail, onLogout }: { page: Page; setPage: 
 ════════════════════════════════════════════════════════════ */
 
 const GRADE_BANDS = [
-  { value: "K-2",  label: "K–2",  hint: "Kindergarten–2nd grade" },
-  { value: "3-5",  label: "3–5",  hint: "3rd–5th grade"          },
-  { value: "6-8",  label: "6–8",  hint: "6th–8th grade"          },
-  { value: "9-12", label: "9–12", hint: "9th–12th grade"         },
+  { value: "1-2",  label: "1–2",  hint: "1st–2nd grade"  },
+  { value: "3-5",  label: "3–5",  hint: "3rd–5th grade"  },
+  { value: "6-8",  label: "6–8",  hint: "6th–8th grade"  },
+  { value: "9-12", label: "9–12", hint: "9th–12th grade" },
 ];
 const DURATIONS = [30, 45, 60, 90];
 
@@ -657,8 +657,8 @@ function GeneratorPage({
   }
 
   const modelLabel    = MODELS.find((m) => m.value === model)?.label ?? model;
-  const gradeBandLabel = GRADE_BANDS.find((b) => b.value === grade)?.label ?? grade;
-  const breadcrumb = [modelLabel, ...resolvedFrameworks(), code, `Grades ${gradeBandLabel}`, `${duration} min`].filter(Boolean).join(" · ");
+  const gradeBandLabel = grade === "K" ? "Kindergarten" : `Grades ${GRADE_BANDS.find((b) => b.value === grade)?.label ?? grade}`;
+  const breadcrumb = [modelLabel, ...resolvedFrameworks(), code, gradeBandLabel, `${duration} min`].filter(Boolean).join(" · ");
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: "40px 40px 60px" }}>
@@ -698,6 +698,18 @@ function GeneratorPage({
             <div className="field">
               <FieldLabel>Grade Band</FieldLabel>
               <div className="grade-row">
+                {/* Kindergarten — visually separated */}
+                <button
+                  type="button"
+                  className={`grade-btn grade-k${grade === "K" ? " active-k" : ""}`}
+                  onClick={() => setGrade("K")}
+                  title="Kindergarten"
+                >
+                  K
+                </button>
+
+                <span className="grade-sep" aria-hidden="true" />
+
                 {GRADE_BANDS.map((b) => (
                   <button
                     key={b.value}
@@ -1991,11 +2003,12 @@ async function fetchLibrary(userId: string): Promise<LibraryRow[]> {
   });
 }
 
-/* Maps an individual grade value ("7") or a band value ("6-8") to a band key */
+/* Maps any grade value to its current band key for filtering */
 function gradeToDisplayBand(gradeLevel: string): string {
-  if (["K-2", "3-5", "6-8", "9-12"].includes(gradeLevel)) return gradeLevel;
+  if (["K", "1-2", "3-5", "6-8", "9-12"].includes(gradeLevel)) return gradeLevel;
   const map: Record<string, string> = {
-    K: "K-2", "1": "K-2", "2": "K-2",
+    K: "K",
+    "1": "1-2", "2": "1-2",
     "3": "3-5", "4": "3-5", "5": "3-5",
     "6": "6-8", "7": "6-8", "8": "6-8",
     "9": "9-12", "10": "9-12", "11": "9-12", "12": "9-12",
@@ -2005,10 +2018,12 @@ function gradeToDisplayBand(gradeLevel: string): string {
 
 /* Produces a human-readable grade string for display in cards and drawers */
 function gradeDisplay(gradeLevel: string): string {
-  if (["K-2", "3-5", "6-8", "9-12"].includes(gradeLevel)) {
+  if (gradeLevel === "K") return "K";
+  // "K-2" is a legacy band value from before K was split out — display gracefully
+  if (["K-2", "1-2", "3-5", "6-8", "9-12"].includes(gradeLevel)) {
     return `Grades ${gradeLevel.replace("-", "–")}`;
   }
-  return `Grade ${gradeLevel}`;
+  return `Grade ${gradeLevel}`; // legacy individual grade fallback
 }
 
 /* ── LibraryPage ── */
@@ -2077,7 +2092,8 @@ function LibraryPage({ userId }: { userId: string }) {
             onChange={(e) => setGradeFlt(e.target.value)}
           >
             <option value="all">All grade bands</option>
-            <option value="K-2">K–2</option>
+            <option value="K">K</option>
+            <option value="1-2">1–2</option>
             <option value="3-5">3–5</option>
             <option value="6-8">6–8</option>
             <option value="9-12">9–12</option>
