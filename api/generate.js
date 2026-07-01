@@ -1,5 +1,6 @@
 import { generateLessonWithMistral } from "./providers/mistral.js";
 import { generateLessonWithGemini  } from "./providers/gemini.js";
+import { supabase }                  from "./lib/supabase.js";
 
 // ── Mock standards lookup ─────────────────────────────────────────────────────
 // Returns a human-readable description for a known standard code.
@@ -44,16 +45,34 @@ function lookupStandard(frameworks, code) {
   return "Use the selected standards framework to align objectives, activities, and assessments.";
 }
 
+// Queries the Supabase `standards` table by framework label and standard code.
+// Returns the content string on a match, or null on miss / error / no client.
+async function lookupStandardFromSupabase(framework, code) {
+  const trimmed = (code || "").trim();
+  if (!trimmed || !framework || !supabase) return null;
+
+  const { data, error } = await supabase
+    .from("standards")
+    .select("content")
+    .eq("framework", framework)
+    .eq("standard_code", trimmed)
+    .maybeSingle();
+
+  if (error) {
+    console.warn("[standards] Supabase lookup error:", error.message);
+    return null;
+  }
+  return data?.content ?? null;
+}
+
 // ── Prompt builder ───────────────────────────────────────────────────────────
 // Builds the full structured lesson-generation prompt from user inputs.
-// Lives here so all prompt logic is in one place, independent of provider.
-function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration }) {
+// standardDescription is resolved by the handler (Supabase first, mock fallback).
+function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription }) {
   const standardsLine =
     Array.isArray(frameworks) && frameworks.length > 0
       ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
       : code || "Not specified";
-
-  const standardDescription = lookupStandard(frameworks, code);
 
   return [
     "ROLE:",
@@ -133,9 +152,15 @@ export default async function handler(req, res) {
   try {
     const { grade, subject, frameworks, code, topic, goal, duration, model } = req.body;
 
+    // Resolve the standard description: Supabase first, mock fallback.
+    const primaryFramework = Array.isArray(frameworks) ? frameworks[0] : frameworks;
+    const standardDescription =
+      (await lookupStandardFromSupabase(primaryFramework, code)) ??
+      lookupStandard(frameworks, code);
+
     // Build the prompt here — providers receive the finished prompt string,
     // not the raw inputs. They are only responsible for calling the LLM.
-    const prompt = buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration });
+    const prompt = buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription });
 
     console.debug("[Generate] inputs:", { grade, subject, frameworks, code, topic, goal, duration, model });
     console.debug("[Generate] prompt:", prompt);
