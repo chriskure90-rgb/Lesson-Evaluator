@@ -1,6 +1,49 @@
 import { generateLessonWithMistral } from "./providers/mistral.js";
 import { generateLessonWithGemini  } from "./providers/gemini.js";
 
+// ── Mock standards lookup ─────────────────────────────────────────────────────
+// Returns a human-readable description for a known standard code.
+// Replace with real retrieval (RAG / Supabase) when ready.
+const MOCK_STANDARDS = {
+  // NGSS – Life Science
+  "MS-LS1-6": "Construct a scientific explanation based on evidence for the role of photosynthesis in the cycling of matter and flow of energy into and out of organisms.",
+  "MS-LS1-1": "Conduct an investigation to provide evidence that living things are made of cells; either one cell or many different numbers and types of cells.",
+  "MS-LS1-3": "Use argument supported by evidence for how the body is a system of interacting subsystems composed of groups of cells.",
+  "MS-LS2-3": "Develop a model to describe the cycling of matter and flow of energy among living and nonliving parts of an ecosystem.",
+  "HS-LS1-5": "Use a model to illustrate how photosynthesis transforms light energy into stored chemical energy.",
+  "HS-LS2-4": "Use mathematical representations to support claims for the cycling of matter and flow of energy among organisms in an ecosystem.",
+  // NGSS – Physical Science
+  "MS-PS1-1": "Develop models to describe the atomic composition of simple molecules and extended structures.",
+  "MS-PS1-2": "Analyze and interpret data on the properties of substances before and after the substances interact to determine if a chemical reaction has occurred.",
+  "MS-PS3-1": "Construct and interpret graphical displays of data to describe the relationships of kinetic energy to the mass of an object and to the speed of an object.",
+  // NGSS – Earth Science
+  "MS-ESS2-1": "Develop a model to describe the cycling of Earth's materials and the flow of energy that drives this process.",
+  "MS-ESS3-1": "Construct a scientific explanation based on evidence for how the uneven distributions of Earth's mineral, energy, and groundwater resources are the result of past and current geoscience processes.",
+  // Common Core ELA
+  "CCSS.ELA-LITERACY.RST.6-8.1": "Cite specific textual evidence to support analysis of science and technical texts.",
+  "CCSS.ELA-LITERACY.RST.6-8.3": "Follow precisely a multistep procedure when carrying out experiments, taking measurements, or performing technical tasks.",
+  "CCSS.ELA-LITERACY.WHST.6-8.2": "Write informative/explanatory texts, including the narration of historical events, scientific procedures/experiments, or technical processes.",
+  "CCSS.ELA-LITERACY.RI.6.1": "Cite textual evidence to support analysis of what the text says explicitly as well as inferences drawn from the text.",
+  // Common Core Math
+  "CCSS.MATH.CONTENT.6.RP.A.1": "Understand the concept of a ratio and use ratio language to describe a ratio relationship between two quantities.",
+  "CCSS.MATH.CONTENT.7.RP.A.2": "Recognize and represent proportional relationships between quantities.",
+  "CCSS.MATH.CONTENT.8.EE.A.1": "Know and apply the properties of integer exponents to generate equivalent numerical expressions.",
+  "CCSS.MATH.CONTENT.HSA.REI.B.3": "Solve linear equations and inequalities in one variable, including equations with coefficients represented by letters.",
+};
+
+function lookupStandard(frameworks, code) {
+  const trimmed = (code || "").trim();
+  if (trimmed && MOCK_STANDARDS[trimmed]) return MOCK_STANDARDS[trimmed];
+
+  // Framework-level fallback when code is unknown or absent
+  const fw = (Array.isArray(frameworks) ? frameworks.join(" ") : "").toLowerCase();
+  if (trimmed) {
+    if (fw.includes("ngss"))         return `NGSS ${trimmed}: Align student learning with science and engineering practices, disciplinary core ideas, and crosscutting concepts as defined in the Next Generation Science Standards.`;
+    if (fw.includes("common core"))  return `Common Core ${trimmed}: Develop student proficiency in the knowledge and skills outlined by the Common Core State Standards for this domain.`;
+  }
+  return "Use the selected standards framework to align objectives, activities, and assessments.";
+}
+
 // ── Prompt builder ───────────────────────────────────────────────────────────
 // Builds the full structured lesson-generation prompt from user inputs.
 // Lives here so all prompt logic is in one place, independent of provider.
@@ -9,6 +52,8 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
     Array.isArray(frameworks) && frameworks.length > 0
       ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
       : code || "Not specified";
+
+  const standardDescription = lookupStandard(frameworks, code);
 
   return [
     "ROLE:",
@@ -25,6 +70,9 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
     `- Lesson topic: ${topic || "(not specified)"}`,
     `- Lesson goal: ${goal || "(not specified)"}`,
     `- Duration: ${duration} minutes`,
+    "",
+    "RELEVANT STANDARDS:",
+    standardDescription,
     "",
     "CONSTRAINTS:",
     `- Do not exceed ${duration} minutes total across all activities.`,
