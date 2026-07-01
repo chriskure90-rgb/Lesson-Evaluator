@@ -179,7 +179,7 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
 
 // ── Route handler ────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
-  // First line of handler — proves this function body is being entered.
+  console.log("=== STANDARDS DIAGNOSTICS ENABLED ===");
   console.log("[standards:diag] /api/generate handler entered");
   try {
     const { grade, subject, frameworks, code, topic, goal, duration, model } = req.body;
