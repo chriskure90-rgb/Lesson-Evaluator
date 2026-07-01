@@ -426,25 +426,17 @@ h1, h2, h3, h4, h5 {
   border-color: var(--primary);
 }
 
-/* Kindergarten — amber, italic, slightly wider padding */
+/* Kindergarten — shown but non-selectable */
 .grade-k {
-  padding: 0 8px;           /* a touch more room so K doesn't feel pinched */
-  border-color: #c49a3a;
-  color: #7a5c0a;
-  background: #fdf6e3;
-  font-weight: 600;
+  padding: 0 8px;
+  border-color: var(--border);
+  color: var(--muted-fg);
+  background: var(--background);
+  font-weight: 500;
   font-style: italic;
   letter-spacing: -0.01em;
-}
-.grade-k:hover {
-  background: #fceec8;
-  border-color: #b08828;
-  color: #5a4208;
-}
-.grade-k.active-k {
-  background: #c49a3a;
-  color: #fff8e8;
-  border-color: #b08828;
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Separator — sits in its own 5px column; the line is 1px, centred */

@@ -692,6 +692,17 @@ function GeneratorPage({
             <div className="field">
               <FieldLabel>Grade Band</FieldLabel>
               <div className="grade-row">
+                <button
+                  type="button"
+                  className="grade-btn grade-k"
+                  disabled
+                  title="Kindergarten (coming soon)"
+                >
+                  K
+                </button>
+
+                <span className="grade-sep" aria-hidden="true" />
+
                 {GRADE_BANDS.map((b) => (
                   <button
                     key={b.value}
