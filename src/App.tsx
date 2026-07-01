@@ -482,9 +482,8 @@ const MODELS = [
 ];
 
 const FRAMEWORKS = [
-  { value: "ngss",  label: "NGSS" },
-  { value: "ccss",  label: "Common Core" },
-  { value: "state", label: "State-specific" },
+  { value: "ngss", label: "NGSS"         },
+  { value: "ccss", label: "Common Core"  },
 ];
 
 function GeneratorPage({
@@ -504,9 +503,8 @@ function GeneratorPage({
   lessonId?: number | null;
   userId: string;
 }) {
-  // Standards: multi-select list of framework ids + optional custom text
+  // Standards: multi-select list of framework ids; "custom" = Custom Upload placeholder
   const [selectedFws, setSelectedFws] = useState<string[]>(["ngss"]);
-  const [customFw, setCustomFw]       = useState("");
   const [model, setModel]             = useState("claude");
   const [grade, setGrade]             = useState("6-8");
   const [subject, setSubject]         = useState("Science");
@@ -598,7 +596,7 @@ function GeneratorPage({
   /** Resolved labels sent to the API and shown in the breadcrumb */
   function resolvedFrameworks(): string[] {
     return selectedFws.map((id) => {
-      if (id === CUSTOM_ID) return customFw.trim() || "Custom";
+      if (id === CUSTOM_ID) return "Custom Upload";
       return FRAMEWORKS.find((f) => f.value === id)?.label ?? id;
     });
   }
@@ -745,11 +743,10 @@ function GeneratorPage({
               </div>
             </div>
 
-            {/* Standards — multi-select chips + optional custom */}
+            {/* Standards */}
             <div className="field">
               <FieldLabel>Standards Framework</FieldLabel>
 
-              {/* Chip row: preset frameworks + Custom toggle */}
               <div className="fw-chip-row">
                 {FRAMEWORKS.map((f) => (
                   <button
@@ -763,47 +760,42 @@ function GeneratorPage({
                   </button>
                 ))}
 
-                {/* Separator */}
-                <span className="grade-sep" aria-hidden="true" />
-
-                {/* Custom toggle */}
                 <button
                   type="button"
-                  className={`fw-chip fw-chip-custom${hasCustom ? " fw-chip-custom-active" : ""}`}
+                  className={`fw-chip${hasCustom ? " fw-chip-active" : ""}`}
                   onClick={() => toggleFramework(CUSTOM_ID)}
                   aria-pressed={hasCustom}
                 >
-                  {hasCustom ? "Custom ✓" : "+ Custom"}
+                  Custom Upload
                 </button>
               </div>
 
-              {/* Custom framework text input — shown only when Custom is selected */}
+              {/* Placeholder upload area — shown when Custom Upload is selected */}
               {hasCustom && (
-                <div className="fw-custom-input-wrap">
-                  <input
-                    className="input"
-                    autoFocus
-                    value={customFw}
-                    onChange={(e) => setCustomFw(e.target.value)}
-                    placeholder="e.g. My District Framework, IB MYP, AP Science…"
-                    aria-label="Custom framework name"
-                  />
+                <div className="fw-upload-area">
+                  <div className="fw-upload-area-icon">↑</div>
+                  <p className="fw-upload-area-label">Drop your standards document here</p>
+                  <p className="fw-upload-area-hint">
+                    Upload your school, district, or state standards document.
+                  </p>
                 </div>
               )}
 
-              {/* Standard code — always visible below */}
-              <div style={{ marginTop: 10 }}>
-                <FieldLabel htmlFor="code" hint="Optional">
-                  Standard Code{selectedFws.length > 1 ? "s" : ""}
-                </FieldLabel>
-                <input
-                  id="code"
-                  className="input"
-                  value={code}
-                  onChange={(e) => setCode(e.target.value)}
-                  placeholder={selectedFws.length > 1 ? "e.g. MS-LS1-6, CCSS.ELA-LITERACY.RST.6-8.3" : "e.g. MS-LS1-6"}
-                />
-              </div>
+              {/* Standard code — hidden when Custom Upload is the only selection */}
+              {!(hasCustom && selectedFws.length === 1) && (
+                <div style={{ marginTop: 10 }}>
+                  <FieldLabel htmlFor="code" hint="Optional">
+                    Standard Code{selectedFws.filter(id => id !== CUSTOM_ID).length > 1 ? "s" : ""}
+                  </FieldLabel>
+                  <input
+                    id="code"
+                    className="input"
+                    value={code}
+                    onChange={(e) => setCode(e.target.value)}
+                    placeholder="e.g. MS-LS1-6"
+                  />
+                </div>
+              )}
             </div>
 
             {/* Lesson Topic */}

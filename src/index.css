@@ -499,31 +499,31 @@ h1, h2, h3, h4, h5 {
   background: var(--primary-hover);
   border-color: var(--primary-hover);
 }
-.fw-chip-custom {
-  border-style: dashed;
-  border-color: var(--muted-fg);
-  color: var(--muted-fg);
-}
-.fw-chip-custom:hover {
-  border-color: rgb(58 107 82 / 0.5);
-  color: var(--primary);
-  border-style: dashed;
-}
-.fw-chip-custom-active {
-  border-style: solid;
-  border-color: #c49a3a;
-  background: #fdf6e3;
-  color: #7a5c0a;
-  font-style: italic;
-}
-.fw-chip-custom-active:hover {
-  background: #fceec8;
-  border-color: #b08828;
-  color: #5a4208;
-}
-.fw-custom-input-wrap {
-  margin-top: 8px;
+.fw-upload-area {
+  margin-top: 10px;
+  border: 1.5px dashed var(--border);
+  border-radius: 8px;
+  padding: 20px 16px;
+  text-align: center;
+  background: var(--background);
   animation: slideDown 160ms ease;
+}
+.fw-upload-area-icon {
+  font-size: 18px;
+  color: var(--muted-fg);
+  margin-bottom: 6px;
+}
+.fw-upload-area-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--foreground);
+  margin: 0 0 4px;
+}
+.fw-upload-area-hint {
+  font-size: 12px;
+  color: var(--muted-fg);
+  line-height: 1.5;
+  margin: 0;
 }
 @keyframes slideDown {
   from { opacity: 0; transform: translateY(-4px); }
