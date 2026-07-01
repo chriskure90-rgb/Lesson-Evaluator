@@ -2,6 +2,9 @@ import { generateLessonWithMistral } from "./providers/mistral.js";
 import { generateLessonWithGemini  } from "./providers/gemini.js";
 import { supabase }                  from "./lib/supabase.js";
 
+// Fires once at cold-start — confirms this exact module was loaded by Vercel.
+console.log("[standards:diag] diagnostics enabled — api/generate.js loaded");
+
 // ── Mock standards lookup ─────────────────────────────────────────────────────
 // Returns a human-readable description for a known standard code.
 // Replace with real retrieval (RAG / Supabase) when ready.
@@ -176,6 +179,8 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
 
 // ── Route handler ────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
+  // First line of handler — proves this function body is being entered.
+  console.log("[standards:diag] /api/generate handler entered");
   try {
     const { grade, subject, frameworks, code, topic, goal, duration, model } = req.body;
 
