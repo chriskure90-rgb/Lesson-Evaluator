@@ -426,16 +426,16 @@ h1, h2, h3, h4, h5 {
   border-color: var(--primary);
 }
 
-/* Kindergarten — shown but non-selectable */
+/* Kindergarten — amber colour, shown but non-selectable */
 .grade-k {
   padding: 0 8px;
-  border-color: var(--border);
-  color: var(--muted-fg);
-  background: var(--background);
-  font-weight: 500;
+  border-color: #c49a3a;
+  color: #7a5c0a;
+  background: #fdf6e3;
+  font-weight: 600;
   font-style: italic;
   letter-spacing: -0.01em;
-  opacity: 0.5;
+  opacity: 0.6;
   cursor: not-allowed;
 }
 
