@@ -588,9 +588,12 @@ function GeneratorPage({
   const hasCustom = selectedFws.includes(CUSTOM_ID);
 
   function toggleFramework(id: string) {
-    setSelectedFws((prev) =>
-      prev.includes(id) ? prev.filter((f) => f !== id) : [...prev, id]
-    );
+    setSelectedFws((prev) => {
+      if (prev.includes(id)) return prev.filter((f) => f !== id);
+      // Custom Upload is exclusive; selecting it clears NGSS/CCSS and vice versa
+      if (id === CUSTOM_ID) return [CUSTOM_ID];
+      return [...prev.filter((f) => f !== CUSTOM_ID), id];
+    });
   }
 
   /** Resolved labels sent to the API and shown in the breadcrumb */
@@ -770,22 +773,19 @@ function GeneratorPage({
                 </button>
               </div>
 
-              {/* Placeholder upload area — shown when Custom Upload is selected */}
+              {/* Upload placeholder — only when Custom Upload is active */}
               {hasCustom && (
                 <div className="fw-upload-area">
                   <div className="fw-upload-area-icon">↑</div>
-                  <p className="fw-upload-area-label">Drop your standards document here</p>
-                  <p className="fw-upload-area-hint">
-                    Upload your school, district, or state standards document.
-                  </p>
+                  <p className="fw-upload-area-label">Upload your standards document (PDF or DOCX)</p>
                 </div>
               )}
 
-              {/* Standard code — hidden when Custom Upload is the only selection */}
-              {!(hasCustom && selectedFws.length === 1) && (
+              {/* Standard Code — only for NGSS / Common Core, never for Custom Upload */}
+              {!hasCustom && (
                 <div style={{ marginTop: 10 }}>
                   <FieldLabel htmlFor="code" hint="Optional">
-                    Standard Code{selectedFws.filter(id => id !== CUSTOM_ID).length > 1 ? "s" : ""}
+                    Standard Code{selectedFws.length > 1 ? "s" : ""}
                   </FieldLabel>
                   <input
                     id="code"
