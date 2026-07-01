@@ -51,12 +51,21 @@ async function lookupStandardFromSupabase(framework, code) {
   const trimmed = (code || "").trim();
 
   // ── Diagnostic logging ───────────────────────────────────────────────────
+  // Re-check env vars per-request so these appear in the same Vercel log
+  // stream as the request (cold-start logs may be in a separate stream).
+  console.log("[standards:diag] --- standards lookup ---");
+  console.log("[standards:diag] SUPABASE_URL present:", !!process.env.SUPABASE_URL);
+  console.log("[standards:diag] VITE_SUPABASE_URL present:", !!process.env.VITE_SUPABASE_URL);
+  console.log("[standards:diag] SUPABASE_SERVICE_ROLE_KEY present:", !!process.env.SUPABASE_SERVICE_ROLE_KEY);
+  console.log("[standards:diag] SUPABASE_ANON_KEY present:", !!process.env.SUPABASE_ANON_KEY);
+  console.log("[standards:diag] VITE_SUPABASE_ANON_KEY present:", !!process.env.VITE_SUPABASE_ANON_KEY);
   console.log("[standards:diag] supabase client initialised:", supabase !== null);
   console.log("[standards:diag] querying framework:", JSON.stringify(framework));
   console.log("[standards:diag] querying standard_code:", JSON.stringify(trimmed));
 
   if (!trimmed || !framework || !supabase) {
-    console.log("[standards:diag] early-exit — missing trimmed/framework/client. Using mock fallback.");
+    console.log("[standards:diag] early-exit reason — trimmed empty:", !trimmed, "| framework empty:", !framework, "| client null:", !supabase);
+    console.log("[standards:diag] => MOCK FALLBACK (early exit)");
     return null;
   }
 
@@ -79,7 +88,7 @@ async function lookupStandardFromSupabase(framework, code) {
     return data.content;
   }
 
-  console.log("[standards:diag] MISS — no matching row, falling back to mock");
+  console.log("[standards:diag] => MISS — no row matched framework:", JSON.stringify(framework), "standard_code:", JSON.stringify(trimmed), "— falling back to mock");
   return null;
 }
 
