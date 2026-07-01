@@ -13,10 +13,11 @@ type Activity = { name: string; minutes: number; detail: string };
 type Lesson = {
   title: string;
   objectives: string[];
+  standards_alignment?: string; // optional — present when a standard code was matched
   materials: string[];
   activities: Activity[];
   assessment: string;
-  differentiation?: string;   // optional — API may include this
+  differentiation?: string;
 };
 
 type LessonMeta = { model: string; grade: string; standards: string; duration: number };
@@ -65,6 +66,9 @@ function normaliseLesson(raw: unknown): Lesson {
     assessment: ensureStr(r.assessment),
   };
 
+  if (r.standards_alignment !== undefined) {
+    lesson.standards_alignment = ensureStr(r.standards_alignment);
+  }
   if (r.differentiation !== undefined) {
     lesson.differentiation = ensureStr(r.differentiation);
   }
@@ -875,6 +879,16 @@ function GeneratorPage({
                     </button>
                   </div>
 
+                  {/* Standards Alignment */}
+                  {draft.standards_alignment !== undefined && (
+                    <div>
+                      <p className="lesson-edit-section-title">Standards Alignment</p>
+                      <textarea className="textarea" rows={3}
+                        value={draft.standards_alignment ?? ""}
+                        onChange={e => setDraftField("standards_alignment", e.target.value || undefined)} />
+                    </div>
+                  )}
+
                   {/* Materials */}
                   <div>
                     <p className="lesson-edit-section-title">Materials</p>
@@ -977,6 +991,14 @@ function GeneratorPage({
                       ))}
                     </ol>
                   </AccordionItem>
+
+                  {lesson.standards_alignment && (
+                    <AccordionItem title="Standards Alignment">
+                      <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
+                        {lesson.standards_alignment}
+                      </p>
+                    </AccordionItem>
+                  )}
 
                   <AccordionItem title="Materials">
                     <ul className="mat-list">
@@ -1370,6 +1392,14 @@ function LessonPanel({ lesson }: { lesson: Lesson }) {
           ))}
         </ol>
       </AccordionItem>
+
+      {lesson.standards_alignment && (
+        <AccordionItem title="Standards Alignment">
+          <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
+            {lesson.standards_alignment}
+          </p>
+        </AccordionItem>
+      )}
 
       <AccordionItem title="Materials">
         <ul className="mat-list">
