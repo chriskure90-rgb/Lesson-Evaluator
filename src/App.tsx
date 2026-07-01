@@ -651,7 +651,7 @@ function GeneratorPage({
   }
 
   const modelLabel    = MODELS.find((m) => m.value === model)?.label ?? model;
-  const gradeBandLabel = grade === "K" ? "Kindergarten" : `Grades ${GRADE_BANDS.find((b) => b.value === grade)?.label ?? grade}`;
+  const gradeBandLabel = `Grades ${GRADE_BANDS.find((b) => b.value === grade)?.label ?? grade}`;
   const breadcrumb = [modelLabel, subject, ...resolvedFrameworks(), code, gradeBandLabel, `${duration} min`].filter(Boolean).join(" · ");
 
   return (
@@ -692,18 +692,6 @@ function GeneratorPage({
             <div className="field">
               <FieldLabel>Grade Band</FieldLabel>
               <div className="grade-row">
-                {/* Kindergarten — visually separated */}
-                <button
-                  type="button"
-                  className={`grade-btn grade-k${grade === "K" ? " active-k" : ""}`}
-                  onClick={() => setGrade("K")}
-                  title="Kindergarten"
-                >
-                  K
-                </button>
-
-                <span className="grade-sep" aria-hidden="true" />
-
                 {GRADE_BANDS.map((b) => (
                   <button
                     key={b.value}
