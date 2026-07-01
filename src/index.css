@@ -2144,6 +2144,33 @@ details[open] .scoring-rules-trigger::before { transform: rotate(90deg); }
   font-size: 13.5px;
 }
 
+/* Google OAuth button */
+.login-google-btn {
+  width: 100%;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--foreground);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, border-color 0.15s;
+}
+.login-google-btn:hover:not(:disabled) {
+  background: var(--muted);
+  border-color: #bbb;
+}
+.login-google-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* ── Responsive ──────────────────────────────────────────── */
 @media (max-width: 900px) {
   .sidebar { width: 56px; }
