@@ -484,7 +484,6 @@ const MODELS = [
 const FRAMEWORKS = [
   { value: "ngss",  label: "NGSS" },
   { value: "ccss",  label: "Common Core" },
-  { value: "teks",  label: "TEKS (Texas)" },
   { value: "state", label: "State-specific" },
 ];
 
