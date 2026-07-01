@@ -49,7 +49,16 @@ function lookupStandard(frameworks, code) {
 // Returns the content string on a match, or null on miss / error / no client.
 async function lookupStandardFromSupabase(framework, code) {
   const trimmed = (code || "").trim();
-  if (!trimmed || !framework || !supabase) return null;
+
+  // ── Diagnostic logging ───────────────────────────────────────────────────
+  console.log("[standards:diag] supabase client initialised:", supabase !== null);
+  console.log("[standards:diag] querying framework:", JSON.stringify(framework));
+  console.log("[standards:diag] querying standard_code:", JSON.stringify(trimmed));
+
+  if (!trimmed || !framework || !supabase) {
+    console.log("[standards:diag] early-exit — missing trimmed/framework/client. Using mock fallback.");
+    return null;
+  }
 
   const { data, error } = await supabase
     .from("standards")
@@ -58,11 +67,20 @@ async function lookupStandardFromSupabase(framework, code) {
     .eq("standard_code", trimmed)
     .maybeSingle();
 
+  console.log("[standards:diag] raw Supabase response — data:", JSON.stringify(data), "| error:", error ? JSON.stringify({ code: error.code, message: error.message, details: error.details }) : null);
+
   if (error) {
-    console.warn("[standards] Supabase lookup error:", error.message);
+    console.warn("[standards:diag] Supabase lookup error — falling back to mock:", error.message);
     return null;
   }
-  return data?.content ?? null;
+
+  if (data?.content) {
+    console.log("[standards:diag] HIT — returning Supabase content");
+    return data.content;
+  }
+
+  console.log("[standards:diag] MISS — no matching row, falling back to mock");
+  return null;
 }
 
 // ── Prompt builder ───────────────────────────────────────────────────────────
@@ -154,9 +172,10 @@ export default async function handler(req, res) {
 
     // Resolve the standard description: Supabase first, mock fallback.
     const primaryFramework = Array.isArray(frameworks) ? frameworks[0] : frameworks;
-    const standardDescription =
-      (await lookupStandardFromSupabase(primaryFramework, code)) ??
-      lookupStandard(frameworks, code);
+    const supabaseResult = await lookupStandardFromSupabase(primaryFramework, code);
+    const standardDescription = supabaseResult ?? lookupStandard(frameworks, code);
+    console.log("[standards:diag] final source:", supabaseResult !== null ? "SUPABASE" : "MOCK");
+    console.log("[standards:diag] standardDescription (first 120 chars):", standardDescription?.slice(0, 120));
 
     // Build the prompt here — providers receive the finished prompt string,
     // not the raw inputs. They are only responsible for calling the LLM.
