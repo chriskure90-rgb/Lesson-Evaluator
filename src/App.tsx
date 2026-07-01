@@ -2654,7 +2654,7 @@ function LoginPage({ forceRecovery }: { forceRecovery: boolean }) {
                 onChange={(e) => setEmail(e.target.value)}
                 onKeyDown={handleKeyDown}
                 autoComplete="email"
-                autoFocus={mode !== "resetpw"}
+                autoFocus
               />
             </div>
           )}
