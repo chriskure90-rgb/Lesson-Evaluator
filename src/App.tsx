@@ -503,8 +503,8 @@ function GeneratorPage({
   lessonId?: number | null;
   userId: string;
 }) {
-  // Standards: multi-select list of framework ids; "custom" = Custom Upload placeholder
-  const [selectedFws, setSelectedFws] = useState<string[]>(["ngss"]);
+  // Standards: single selected framework id
+  const [framework, setFramework] = useState("ngss");
   const [model, setModel]             = useState("claude");
   const [grade, setGrade]             = useState("6-8");
   const [subject, setSubject]         = useState("Science");
@@ -585,23 +585,12 @@ function GeneratorPage({
   }
 
   const CUSTOM_ID = "custom";
-  const hasCustom = selectedFws.includes(CUSTOM_ID);
+  const hasCustom = framework === CUSTOM_ID;
 
-  function toggleFramework(id: string) {
-    setSelectedFws((prev) => {
-      if (prev.includes(id)) return prev.filter((f) => f !== id);
-      // Custom Upload is exclusive; selecting it clears NGSS/CCSS and vice versa
-      if (id === CUSTOM_ID) return [CUSTOM_ID];
-      return [...prev.filter((f) => f !== CUSTOM_ID), id];
-    });
-  }
-
-  /** Resolved labels sent to the API and shown in the breadcrumb */
+  /** Resolved label(s) sent to the API and shown in the breadcrumb */
   function resolvedFrameworks(): string[] {
-    return selectedFws.map((id) => {
-      if (id === CUSTOM_ID) return "Custom Upload";
-      return FRAMEWORKS.find((f) => f.value === id)?.label ?? id;
-    });
+    if (framework === CUSTOM_ID) return ["Custom Upload"];
+    return [FRAMEWORKS.find((f) => f.value === framework)?.label ?? framework];
   }
 
   async function handleGenerate() {
@@ -755,9 +744,9 @@ function GeneratorPage({
                   <button
                     key={f.value}
                     type="button"
-                    className={`fw-chip${selectedFws.includes(f.value) ? " fw-chip-active" : ""}`}
-                    onClick={() => toggleFramework(f.value)}
-                    aria-pressed={selectedFws.includes(f.value)}
+                    className={`fw-chip${framework === f.value ? " fw-chip-active" : ""}`}
+                    onClick={() => setFramework(f.value)}
+                    aria-pressed={framework === f.value}
                   >
                     {f.label}
                   </button>
@@ -766,14 +755,14 @@ function GeneratorPage({
                 <button
                   type="button"
                   className={`fw-chip${hasCustom ? " fw-chip-active" : ""}`}
-                  onClick={() => toggleFramework(CUSTOM_ID)}
+                  onClick={() => setFramework(CUSTOM_ID)}
                   aria-pressed={hasCustom}
                 >
                   Custom Upload
                 </button>
               </div>
 
-              {/* Upload placeholder — only when Custom Upload is active */}
+              {/* Upload placeholder — only when Custom Upload is selected */}
               {hasCustom && (
                 <div className="fw-upload-area">
                   <div className="fw-upload-area-icon">↑</div>
@@ -781,12 +770,10 @@ function GeneratorPage({
                 </div>
               )}
 
-              {/* Standard Code — only for NGSS / Common Core, never for Custom Upload */}
+              {/* Standard Code — only for NGSS / Common Core */}
               {!hasCustom && (
                 <div style={{ marginTop: 10 }}>
-                  <FieldLabel htmlFor="code" hint="Optional">
-                    Standard Code{selectedFws.length > 1 ? "s" : ""}
-                  </FieldLabel>
+                  <FieldLabel htmlFor="code" hint="Optional">Standard Code</FieldLabel>
                   <input
                     id="code"
                     className="input"
