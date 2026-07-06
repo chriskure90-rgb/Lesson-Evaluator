@@ -1,6 +1,10 @@
 import { generateLessonWithMistral } from "./providers/mistral.js";
 import { generateLessonWithGemini  } from "./providers/gemini.js";
 import { supabase }                  from "./lib/supabase.js";
+import { openai }                    from "./lib/openai.js";
+
+const EMBEDDING_MODEL      = "text-embedding-3-small";
+const VECTOR_MATCH_COUNT   = 5;
 
 // Fires once at cold-start — confirms this exact module was loaded by Vercel.
 console.log("[standards:diag] diagnostics enabled — api/generate.js loaded");
@@ -95,6 +99,79 @@ async function lookupStandardFromSupabase(framework, code) {
   return null;
 }
 
+// ── Vector (pgvector) standards retrieval ─────────────────────────────────────
+// Embeds the teacher's inputs and finds the most semantically relevant
+// standards chunks for the selected framework via the `match_standards`
+// Supabase RPC (see scripts/sql/match_standards.sql).
+async function embedQuery(text) {
+  if (!openai) throw new Error("OpenAI client not initialised (missing OPENAI_API_KEY)");
+  const response = await openai.embeddings.create({
+    model: EMBEDDING_MODEL,
+    input: text,
+  });
+  return response.data[0].embedding;
+}
+
+async function vectorSearchStandards({ framework, queryText, matchCount = VECTOR_MATCH_COUNT }) {
+  if (!supabase) throw new Error("Supabase client not initialised");
+  if (!framework) throw new Error("No framework selected for vector search");
+
+  const queryEmbedding = await embedQuery(queryText);
+
+  const { data, error } = await supabase.rpc("match_standards", {
+    query_embedding: queryEmbedding,
+    match_framework: framework,
+    match_count: matchCount,
+  });
+
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+
+// Combines the exact standard_code lookup (priority, when the teacher entered
+// a code) with pgvector semantic search results from the teacher's topic,
+// goal, subject, and grade — de-duplicated and capped at VECTOR_MATCH_COUNT.
+// Returns [] (never throws) so callers can fall back to the existing mock
+// behaviour when both Supabase and the vector search are unavailable.
+async function retrieveRelevantStandards({ framework, code, topic, goal, subject, grade }) {
+  const chunks = [];
+
+  const trimmedCode = (code || "").trim();
+  if (trimmedCode) {
+    const exactContent = await lookupStandardFromSupabase(framework, trimmedCode);
+    if (exactContent) {
+      chunks.push({ standard_code: trimmedCode, title: null, content: exactContent });
+    }
+  }
+
+  try {
+    const queryText = [topic, goal, subject, grade].filter(Boolean).join(" | ");
+    if (!queryText) throw new Error("No teacher inputs available to embed");
+
+    const matches = await vectorSearchStandards({ framework, queryText });
+    console.log("[standards:vector] retrieved", matches.length, "vector matches for framework:", framework);
+
+    for (const match of matches) {
+      const isDuplicate = chunks.some((c) => c.content === match.content);
+      if (!isDuplicate) chunks.push(match);
+    }
+  } catch (err) {
+    console.warn("[standards:vector] search failed, continuing with exact-match/mock fallback:", err.message);
+  }
+
+  return chunks.slice(0, VECTOR_MATCH_COUNT);
+}
+
+// Formats retrieved standards chunks for the RELEVANT STANDARDS prompt section.
+function formatStandardsBlock(chunks) {
+  return chunks
+    .map((c, i) => {
+      const header = [c.standard_code, c.title].filter(Boolean).join(" — ");
+      return header ? `${i + 1}. ${header}\n${c.content}` : `${i + 1}. ${c.content}`;
+    })
+    .join("\n\n");
+}
+
 // ── Prompt builder ───────────────────────────────────────────────────────────
 // Builds the full structured lesson-generation prompt from user inputs.
 // standardDescription is resolved by the handler (Supabase first, mock fallback).
@@ -184,11 +261,15 @@ export default async function handler(req, res) {
   try {
     const { grade, subject, frameworks, code, topic, goal, duration, model } = req.body;
 
-    // Resolve the standard description: Supabase first, mock fallback.
+    // Resolve the standards section: exact code match (priority) + pgvector
+    // semantic search over the teacher's inputs, falling back to the mock
+    // standards map when neither is available.
     const primaryFramework = Array.isArray(frameworks) ? frameworks[0] : frameworks;
-    const supabaseResult = await lookupStandardFromSupabase(primaryFramework, code);
-    const standardDescription = supabaseResult ?? lookupStandard(frameworks, code);
-    console.log("[standards:diag] final source:", supabaseResult !== null ? "SUPABASE" : "MOCK");
+    const relevantChunks = await retrieveRelevantStandards({ framework: primaryFramework, code, topic, goal, subject, grade });
+    const standardDescription = relevantChunks.length > 0
+      ? formatStandardsBlock(relevantChunks)
+      : lookupStandard(frameworks, code);
+    console.log("[standards:diag] final source:", relevantChunks.length > 0 ? `RETRIEVED (${relevantChunks.length} chunks)` : "MOCK");
     console.log("[standards:diag] standardDescription (first 120 chars):", standardDescription?.slice(0, 120));
 
     // Build the prompt here — providers receive the finished prompt string,

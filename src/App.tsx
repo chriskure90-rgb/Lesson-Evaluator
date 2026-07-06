@@ -109,6 +109,47 @@ async function generateLesson(params: {
   return normaliseLesson(raw);
 }
 
+// Result shape returned by /api/upload-standards-process.
+type UploadSummary = { total: number; embedded: number; skipped: number; failed: number };
+
+/* ── Custom standards upload ──────────────────────────────────────────────────
+   Split into two calls (same two endpoints as before — just split out here so
+   the UI can show distinct "Uploading…" vs "Processing…" states):
+     1. Ask the backend for a signed Supabase Storage upload URL, then PUT the
+        file straight into Storage using it (never routes the raw bytes
+        through a Vercel serverless function, which caps bodies at ~4.5MB).
+     2. Ask the backend to download it from Storage, extract/chunk/embed the
+        text, and insert it into `standards` (framework="Custom").
+────────────────────────────────────────────────────────────────────────────── */
+async function uploadFileToStorage(file: File): Promise<{ path: string }> {
+  const initRes = await fetch("/api/upload-standards-init", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename: file.name }),
+  });
+  const initData = await initRes.json();
+  if (!initRes.ok) throw new Error(initData.error || "Could not prepare upload.");
+
+  const { error: storageError } = await supabase.storage
+    .from("standards-uploads")
+    .uploadToSignedUrl(initData.path, initData.token, file);
+  if (storageError) throw new Error(storageError.message);
+
+  return { path: initData.path as string };
+}
+
+async function processUploadedStandards(path: string, filename: string): Promise<UploadSummary> {
+  const processRes = await fetch("/api/upload-standards-process", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, filename }),
+  });
+  const processData = await processRes.json();
+  if (!processRes.ok) throw new Error(processData.error || "Upload processing failed.");
+
+  return processData as UploadSummary;
+}
+
 // Shape returned by /api/evaluate
 type RubricRating = "high" | "medium" | "low";
 
@@ -530,6 +571,30 @@ function GeneratorPage({
   const [editing, setEditing]         = useState(false);
   const [draft, setDraft]             = useState<Lesson | null>(null);
 
+  // Custom standards upload (PDF/DOCX)
+  const [uploadStatus, setUploadStatus]   = useState<"idle" | "uploading" | "processing" | "success" | "error">("idle");
+  const [uploadSummary, setUploadSummary] = useState<UploadSummary | null>(null);
+  const [uploadFileName, setUploadFileName] = useState<string | null>(null);
+  const [uploadError, setUploadError]     = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleUploadFile(file: File) {
+    setUploadFileName(file.name);
+    setUploadError(null);
+    setUploadSummary(null);
+    setUploadStatus("uploading");
+    try {
+      const { path } = await uploadFileToStorage(file);
+      setUploadStatus("processing");
+      const summary = await processUploadedStandards(path, file.name);
+      setUploadSummary(summary);
+      setUploadStatus("success");
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Upload failed. Please try again.");
+      setUploadStatus("error");
+    }
+  }
+
   // ── Edit helpers ──────────────────────────────────────────
   function handleStartEdit() {
     if (!lesson) return;
@@ -601,7 +666,7 @@ function GeneratorPage({
 
   /** Resolved label(s) sent to the API and shown in the breadcrumb */
   function resolvedFrameworks(): string[] {
-    if (framework === CUSTOM_ID) return ["Custom Upload"];
+    if (framework === CUSTOM_ID) return ["Custom"];
     return [FRAMEWORKS.find((f) => f.value === framework)?.label ?? framework];
   }
 
@@ -773,13 +838,64 @@ function GeneratorPage({
                 </button>
               </div>
 
-              {/* Upload placeholder — only when Custom Upload is selected */}
-              {hasCustom && (
-                <div className="fw-upload-area">
-                  <div className="fw-upload-area-icon">↑</div>
-                  <p className="fw-upload-area-label">Upload your standards document (PDF or DOCX)</p>
-                </div>
-              )}
+              {/* Upload area — only when Custom Upload is selected */}
+              {hasCustom && (() => {
+                const busy = uploadStatus === "uploading" || uploadStatus === "processing";
+                return (
+                  <div
+                    className="fw-upload-area"
+                    onClick={() => !busy && fileInputRef.current?.click()}
+                    style={{ cursor: busy ? "default" : "pointer" }}
+                  >
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = ""; // allow re-selecting the same file later
+                        if (file) void handleUploadFile(file);
+                      }}
+                    />
+                    <div className="fw-upload-area-icon">↑</div>
+                    <p className="fw-upload-area-label">Upload your standards document (PDF or DOCX)</p>
+
+                    <button
+                      type="button"
+                      className="btn-outline-sm"
+                      disabled={busy}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        fileInputRef.current?.click();
+                      }}
+                    >
+                      Choose PDF/DOCX File
+                    </button>
+
+                    {uploadFileName && (
+                      <p className="fw-upload-filename">{uploadFileName}</p>
+                    )}
+
+                    {uploadStatus === "uploading" && (
+                      <p className="fw-upload-status">Uploading…</p>
+                    )}
+                    {uploadStatus === "processing" && (
+                      <p className="fw-upload-status">Processing standards…</p>
+                    )}
+                    {uploadStatus === "success" && uploadSummary && (
+                      <p className="fw-upload-status fw-upload-status-success">
+                        Upload complete — {uploadSummary.embedded} embedded
+                        {uploadSummary.skipped > 0 ? `, ${uploadSummary.skipped} already added` : ""}
+                        {uploadSummary.failed > 0 ? `, ${uploadSummary.failed} failed` : ""}.
+                      </p>
+                    )}
+                    {uploadStatus === "error" && (
+                      <p className="fw-upload-status fw-upload-status-error">{uploadError}</p>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Standard Code — only for NGSS / Common Core */}
               {!hasCustom && (
