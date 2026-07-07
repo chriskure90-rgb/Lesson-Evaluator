@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import "./index.css";
 import { supabase } from "./lib/supabase";
+import { ExportDropdown } from "./components/ExportDropdown";
+import type { ExportDocument } from "./lib/export";
 
 /* ════════════════════════════════════════════════════════════
    TYPES
@@ -75,6 +77,33 @@ function normaliseLesson(raw: unknown): Lesson {
 
   console.debug("[normaliseLesson] result:", JSON.stringify(lesson, null, 2));
   return lesson;
+}
+
+// Converts a Lesson into the generic ExportDocument shape shared by the
+// .docx/.pdf/.txt converters in lib/export.ts.
+function buildLessonExportDocument(lesson: Lesson, meta: string): ExportDocument {
+  const sections: ExportDocument["sections"] = [
+    { heading: "Learning Objectives", bullets: lesson.objectives ?? [] },
+  ];
+
+  if (lesson.standards_alignment) {
+    sections.push({ heading: "Standards Alignment", paragraphs: [lesson.standards_alignment] });
+  }
+
+  sections.push({ heading: "Materials", bullets: lesson.materials ?? [] });
+
+  sections.push({
+    heading: "Activities",
+    bullets: (lesson.activities ?? []).map((a) => `${a.name} (${a.minutes} min) — ${a.detail}`),
+  });
+
+  sections.push({ heading: "Assessment", paragraphs: [lesson.assessment || "Not specified."] });
+
+  if (lesson.differentiation) {
+    sections.push({ heading: "Differentiation", paragraphs: [lesson.differentiation] });
+  }
+
+  return { title: lesson.title || "Lesson Plan", meta, sections };
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -171,6 +200,40 @@ type EvaluationResult = {
   summary: string;
   sections: EvaluationSection[];
 };
+
+// Converts the currently displayed evaluation (real or demo/placeholder) into
+// the generic ExportDocument shape shared by the .docx/.pdf/.txt converters.
+function buildEvaluationExportDocument(
+  title: string,
+  meta: string,
+  readiness: { status: string; totalScore: number; maxScore: number; lowCount: number },
+  summary: string,
+  sections: EvaluationSection[],
+  activeRatings: RubricRating[],
+  notes: Record<string, string>
+): ExportDocument {
+  const overviewParagraphs = [
+    `Readiness: ${readiness.status} — ${readiness.totalScore}/${readiness.maxScore} points, ${readiness.lowCount} low rating(s).`,
+  ];
+  if (summary) overviewParagraphs.push(summary);
+
+  const exportSections: ExportDocument["sections"] = [
+    { heading: "Overview", paragraphs: overviewParagraphs },
+  ];
+
+  sections.forEach((s, i) => {
+    const rating = activeRatings[i] ?? s.rating;
+    const paragraphs = [s.feedback];
+    const note = notes[s.id];
+    if (note && note.trim()) paragraphs.push(`Teacher notes: ${note.trim()}`);
+    exportSections.push({
+      heading: `${s.title} — ${RATING_META[rating]?.label ?? rating}`,
+      paragraphs,
+    });
+  });
+
+  return { title: title || "Lesson Evaluation", meta, sections: exportSections };
+}
 
 async function evaluateLesson(lesson: Lesson): Promise<EvaluationResult> {
   const res = await fetch("/api/evaluate", {
@@ -1164,8 +1227,13 @@ function GeneratorPage({
                   )}
                 </div>
 
-                {/* Evaluate Lesson CTA */}
+                {/* Export + Evaluate Lesson CTA */}
                 <div className="preview-evaluate-strip">
+                  <ExportDropdown
+                    label="Export lesson"
+                    filenameBase="lesson-plan"
+                    getDocument={() => buildLessonExportDocument(lesson, breadcrumb)}
+                  />
                   <button
                     type="button"
                     className="btn-primary"
@@ -1901,28 +1969,53 @@ function EvaluatorPage({
               {showLesson ? "Hide lesson plan" : "View lesson plan"}
             </button>
 
-            {/* Evaluate / Re-evaluate */}
-            {evalResult ? (
-              <button
-                type="button"
-                className="btn-outline-sm"
-                onClick={() => { setEvalResult(null); setEvalError(null); }}
-              >
-                Re-evaluate
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="btn-primary"
-                style={{ width: "auto", padding: "0 18px", height: 36, fontSize: 13 }}
-                onClick={handleEvaluate}
-                disabled={evaluating}
-              >
-                {evaluating
-                  ? <><Icon.Loader /> Evaluating…</>
-                  : <><Icon.FileCheck /> Evaluate lesson</>}
-              </button>
-            )}
+            {/* Export + Evaluate / Re-evaluate */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <ExportDropdown
+                label="Export evaluation"
+                filenameBase="lesson-evaluation"
+                getDocument={() => {
+                  const evalMeta = [
+                    lessonMeta?.model ?? (displayLesson as typeof LESSON_META).model,
+                    gradeDisplay(String(lessonMeta?.grade ?? (displayLesson as typeof LESSON_META).grade)),
+                    `${lessonMeta?.duration ?? (displayLesson as typeof LESSON_META).duration} min`,
+                    lessonMeta?.standards,
+                  ].filter(Boolean).join(" · ");
+
+                  return buildEvaluationExportDocument(
+                    (displayLesson as typeof LESSON_META).title,
+                    evalMeta,
+                    readiness,
+                    displaySummary,
+                    displaySections,
+                    activeRatings,
+                    teacherNotes
+                  );
+                }}
+              />
+
+              {evalResult ? (
+                <button
+                  type="button"
+                  className="btn-outline-sm"
+                  onClick={() => { setEvalResult(null); setEvalError(null); }}
+                >
+                  Re-evaluate
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-primary"
+                  style={{ width: "auto", padding: "0 18px", height: 36, fontSize: 13 }}
+                  onClick={handleEvaluate}
+                  disabled={evaluating}
+                >
+                  {evaluating
+                    ? <><Icon.Loader /> Evaluating…</>
+                    : <><Icon.FileCheck /> Evaluate lesson</>}
+                </button>
+              )}
+            </div>
           </div>
         </div>
         {evalError && (

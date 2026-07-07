@@ -277,6 +277,54 @@ h1, h2, h3, h4, h5 {
   color: var(--foreground);
   background: var(--muted);
 }
+.btn-outline-sm:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* ── Export dropdown ─────────────────────────────────────── */
+.export-dropdown {
+  position: relative;
+  display: inline-flex;
+}
+.export-dropdown-caret {
+  font-size: 10px;
+  line-height: 1;
+  margin-left: 1px;
+}
+.export-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 168px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-soft);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 30;
+  animation: slideDown 140ms ease;
+}
+.export-dropdown-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  border-radius: calc(var(--radius) - 3px);
+  background: transparent;
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 120ms;
+}
+.export-dropdown-item:hover,
+.export-dropdown-item:focus-visible {
+  background: var(--muted);
+  outline: none;
+}
 
 /* ── Form controls ───────────────────────────────────────── */
 .field { margin-bottom: 0; }
@@ -649,7 +697,9 @@ h1, h2, h3, h4, h5 {
 /* Evaluate Lesson button strip at the bottom of the preview card */
 .preview-evaluate-strip {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 16px 28px 24px;
   border-top: 1px solid var(--border);
   margin-top: 4px;
