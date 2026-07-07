@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import "./index.css";
 import { supabase } from "./lib/supabase";
 import { ExportDropdown } from "./components/ExportDropdown";
-import type { ExportDocument } from "./lib/export";
+import { slugifyFilename, type ExportDocument } from "./lib/export";
 
 /* ════════════════════════════════════════════════════════════
    TYPES
@@ -1221,7 +1221,7 @@ function GeneratorPage({
                 <div className="preview-evaluate-strip">
                   <ExportDropdown
                     label="Export lesson"
-                    filenameBase="lesson-plan"
+                    filenameBase={slugifyFilename(lesson.title, "lesson-plan")}
                     getDocument={() => buildLessonExportDocument(lesson, breadcrumb)}
                   />
                   <button
@@ -1963,7 +1963,7 @@ function EvaluatorPage({
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <ExportDropdown
                 label="Export evaluation"
-                filenameBase="lesson-evaluation"
+                filenameBase={slugifyFilename((displayLesson as typeof LESSON_META).title, "lesson-evaluation")}
                 getDocument={() => {
                   const evalMeta = [
                     lessonMeta?.model ?? (displayLesson as typeof LESSON_META).model,

@@ -19,6 +19,23 @@ export type ExportDocument = {
   sections: ExportSection[];
 };
 
+// Turns a lesson/evaluation title into a safe filename base: lowercase,
+// spaces -> hyphens, anything that isn't a-z/0-9/space/hyphen stripped
+// (covers :, /, ?, &, quotes, etc.), runs of hyphens collapsed, and
+// leading/trailing hyphens trimmed. Falls back when the title is missing
+// or reduces to nothing usable (e.g. a title made only of punctuation).
+export function slugifyFilename(title: string | undefined | null, fallback: string): string {
+  const slug = (title ?? "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return slug || fallback;
+}
+
 /* ── .txt ─────────────────────────────────────────────────────────────────── */
 export function documentToText(doc: ExportDocument): string {
   const lines: string[] = [doc.title];
