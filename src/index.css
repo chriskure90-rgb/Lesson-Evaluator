@@ -281,7 +281,6 @@ h1, h2, h3, h4, h5 {
 
 /* ── Export dropdown ─────────────────────────────────────── */
 .export-dropdown {
-  position: relative;
   display: inline-flex;
 }
 .export-dropdown-caret {
@@ -289,10 +288,12 @@ h1, h2, h3, h4, h5 {
   line-height: 1;
   margin-left: 1px;
 }
+/* Positioned via inline style (position: fixed, top/left computed from the
+   button's getBoundingClientRect() in ExportDropdown.tsx) — it's rendered
+   through a portal into document.body so it can't be clipped by an
+   ancestor card/container, and it flips above the button when there isn't
+   enough room below. Only visual styling lives here. */
 .export-dropdown-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
   min-width: 168px;
   background: var(--card);
   border: 1px solid var(--border);
