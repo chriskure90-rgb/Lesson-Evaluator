@@ -19,6 +19,7 @@ import { readFileSync, existsSync } from "fs";
 import { createClient }             from "@supabase/supabase-js";
 import { fileURLToPath }            from "url";
 import { dirname, join, resolve }   from "path";
+import { inferNgssGrade }           from "./lib/ngss-grade.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT      = resolve(__dirname, "..");
@@ -139,10 +140,13 @@ for (const s of standards) {
     continue;
   }
 
+  const { grade_level, grade_band } = inferNgssGrade(code, s.topic);
   const row = {
     framework:     "NGSS",
     standard_code: code,
     title:         (s.topic ?? "").trim() || null,
+    grade_level,
+    grade_band,
     content:       buildContent(s),
     source:        "system",
   };

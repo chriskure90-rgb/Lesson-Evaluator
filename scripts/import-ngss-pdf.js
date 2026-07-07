@@ -20,6 +20,7 @@ import { createClient }             from "@supabase/supabase-js";
 import { PDFParse }                 from "pdf-parse";
 import { fileURLToPath }            from "url";
 import { dirname, join, resolve }   from "path";
+import { inferNgssGrade }           from "./lib/ngss-grade.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT      = resolve(__dirname, "..");
@@ -145,10 +146,14 @@ for (const section of sections) {
   for (const chunkText of splitIntoChunks(sectionText)) {
     if (chunkText.length < 20) continue; // skip stray fragments
     const codeMatch = chunkText.match(CODE_RE);
+    const standardCode = codeMatch ? codeMatch[0] : null;
+    const { grade_level, grade_band } = inferNgssGrade(standardCode, section.title);
     chunkRows.push({
       framework:     "NGSS",
-      standard_code: codeMatch ? codeMatch[0] : null,
+      standard_code: standardCode,
       title:         section.title,
+      grade_level,
+      grade_band,
       content:       chunkText,
       source:        "system_pdf",
     });

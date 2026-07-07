@@ -3,8 +3,9 @@ import { generateLessonWithGemini  } from "./providers/gemini.js";
 import { supabase }                  from "./lib/supabase.js";
 import { openai }                    from "./lib/openai.js";
 
-const EMBEDDING_MODEL      = "text-embedding-3-small";
-const VECTOR_MATCH_COUNT   = 5;
+const EMBEDDING_MODEL       = "text-embedding-3-small";
+const VECTOR_MATCH_COUNT    = 5;
+const VECTOR_CANDIDATE_POOL = 15; // fetched before the coded-first rerank below
 
 // Fires once at cold-start — confirms this exact module was loaded by Vercel.
 console.log("[standards:diag] diagnostics enabled — api/generate.js loaded");
@@ -112,7 +113,7 @@ async function embedQuery(text) {
   return response.data[0].embedding;
 }
 
-async function vectorSearchStandards({ framework, queryText, matchCount = VECTOR_MATCH_COUNT }) {
+async function vectorSearchStandards({ framework, queryText, matchCount = VECTOR_MATCH_COUNT, gradeBand = null }) {
   if (!supabase) throw new Error("Supabase client not initialised");
   if (!framework) throw new Error("No framework selected for vector search");
 
@@ -122,6 +123,7 @@ async function vectorSearchStandards({ framework, queryText, matchCount = VECTOR
     query_embedding: queryEmbedding,
     match_framework: framework,
     match_count: matchCount,
+    match_grade_band: gradeBand,
   });
 
   if (error) throw new Error(error.message);
@@ -129,8 +131,9 @@ async function vectorSearchStandards({ framework, queryText, matchCount = VECTOR
 }
 
 // Combines the exact standard_code lookup (priority, when the teacher entered
-// a code) with pgvector semantic search results from the teacher's topic,
-// goal, subject, and grade — de-duplicated and capped at VECTOR_MATCH_COUNT.
+// a code — an explicit user selection, so it is never grade-band filtered)
+// with pgvector semantic search results from the teacher's topic, goal,
+// subject, and grade — de-duplicated and capped at VECTOR_MATCH_COUNT.
 // Returns [] (never throws) so callers can fall back to the existing mock
 // behaviour when both Supabase and the vector search are unavailable.
 async function retrieveRelevantStandards({ framework, code, topic, goal, subject, grade }) {
@@ -148,10 +151,34 @@ async function retrieveRelevantStandards({ framework, code, topic, goal, subject
     const queryText = [topic, goal, subject, grade].filter(Boolean).join(" | ");
     if (!queryText) throw new Error("No teacher inputs available to embed");
 
-    const matches = await vectorSearchStandards({ framework, queryText });
-    console.log("[standards:vector] retrieved", matches.length, "vector matches for framework:", framework);
+    // `grade` on the Generator form is already a grade band ("K", "1-2",
+    // "3-5", "6-8", "9-12"), matching standards.grade_band exactly — no
+    // extra mapping needed. match_standards() treats it as a soft filter:
+    // rows tagged with a *different* band are excluded, but untagged rows
+    // (Common Core, Custom uploads, un-coded NGSS chunks) are unaffected.
+    //
+    // We deliberately over-fetch (VECTOR_CANDIDATE_POOL) and then rerank in
+    // application code, rather than asking match_standards() for exactly
+    // VECTOR_MATCH_COUNT: within the already-band-filtered candidate set,
+    // generic untagged filler text (front matter, "Connections to..."
+    // callouts) can outrank an actual grade-specific performance expectation
+    // on pure cosine similarity. Reordering coded rows first — while keeping
+    // each group's own similarity ordering intact — favors citing a real
+    // standard over descriptive filler whenever both are relevant, without
+    // touching the grade-band filter itself (which still runs in SQL, so a
+    // wrong-band row is never a candidate here to begin with).
+    const matches = await vectorSearchStandards({
+      framework,
+      queryText,
+      gradeBand: grade || null,
+      matchCount: VECTOR_CANDIDATE_POOL,
+    });
+    console.log("[standards:vector] retrieved", matches.length, "vector matches for framework:", framework, "grade band:", grade || "(none)");
 
-    for (const match of matches) {
+    const coded   = matches.filter((m) => m.standard_code);
+    const uncoded = matches.filter((m) => !m.standard_code);
+
+    for (const match of [...coded, ...uncoded]) {
       const isDuplicate = chunks.some((c) => c.content === match.content);
       if (!isDuplicate) chunks.push(match);
     }
@@ -209,6 +236,7 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
     "- The assessment must measure the lesson goal.",
     "- Include realistic classroom activities.",
     "- Ensure the lesson aligns with the provided standard when available.",
+    "- Only reference standards from the selected grade band and retrieved standards context. Do not mention standards from other grade bands unless explicitly selected by the user.",
     "- Do not invent unrelated topics.",
     "- Generate content that is practical for teachers to use immediately.",
     "- Return valid JSON only.",
