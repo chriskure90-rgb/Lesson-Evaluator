@@ -124,6 +124,7 @@ async function generateLesson(params: {
   goal: string;
   duration: number;
   model: string;
+  lessonFormat: string;
 }): Promise<Lesson> {
   const res = await fetch("/api/generate", {
     method: "POST",
@@ -598,6 +599,11 @@ const MODELS = [
   { value: "mistral",  label: "Mistral",  hint: "Mistral AI" },
 ];
 
+const LESSON_FORMATS = [
+  { value: "standard",  label: "Standard Lesson Plan" },
+  { value: "template1", label: "Template 1"           },
+];
+
 const FRAMEWORKS = [
   { value: "ngss", label: "NGSS"         },
   { value: "ccss", label: "Common Core"  },
@@ -621,7 +627,8 @@ function GeneratorPage({
   userId: string;
 }) {
   // Standards: single selected framework id
-  const [framework, setFramework] = useState("ngss");
+  const [framework, setFramework]     = useState("ngss");
+  const [lessonFormat, setLessonFormat] = useState("standard");
   const [model, setModel]             = useState("claude");
   const [grade, setGrade]             = useState("6-8");
   const [subject, setSubject]         = useState("Science");
@@ -739,7 +746,7 @@ function GeneratorPage({
     setLoading(true);
     setError(null);
     try {
-      const result = await generateLesson({ grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model });
+      const result = await generateLesson({ grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model, lessonFormat });
       setLesson(result);
       onLessonGenerated(result);   // share with the Evaluator
       onLessonMetaGenerated?.({ model, grade, standards: resolvedFrameworks().join(", "), duration });
@@ -963,6 +970,24 @@ function GeneratorPage({
                   />
                 </div>
               )}
+            </div>
+
+            {/* Lesson Plan Format */}
+            <div className="field">
+              <FieldLabel>Lesson Plan Format</FieldLabel>
+              <div className="fw-chip-row">
+                {LESSON_FORMATS.map((f) => (
+                  <button
+                    key={f.value}
+                    type="button"
+                    className={`fw-chip${lessonFormat === f.value ? " fw-chip-active" : ""}`}
+                    onClick={() => setLessonFormat(f.value)}
+                    aria-pressed={lessonFormat === f.value}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Lesson Topic */}
