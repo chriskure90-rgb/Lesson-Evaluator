@@ -279,6 +279,75 @@ h1, h2, h3, h4, h5 {
 }
 .btn-outline-sm:disabled { opacity: 0.55; cursor: not-allowed; }
 
+/* ── Template 1 (PSU/GTEP-style) lesson plan — WYSIWYG web preview ────────
+   Mirrors the DOCX export (src/lib/template1-docx.ts) as closely as HTML/CSS
+   reasonably allows: same section order, same bordered table structure,
+   same label colors. This is a distinct visual system from the Standard
+   format's card/accordion preview, not a variant of it. ─────────────────── */
+.t1-page {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 2px);
+  padding: 24px 28px 28px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--foreground);
+}
+.t1-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.t1-header-row .preview-breadcrumb { margin: 0; }
+.t1-title {
+  text-align: center;
+  font-weight: 700;
+  font-size: 1.05rem;
+  margin-bottom: 14px;
+}
+.t1-meta-row {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+.t1-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.t1-cell {
+  border: 1px solid rgb(48 44 39 / 0.55);
+  padding: 10px 12px;
+  vertical-align: top;
+  width: 50%;
+}
+.t1-section-label { font-weight: 700; margin: 0 0 6px; }
+.t1-label { font-weight: 700; margin: 8px 0 2px; }
+.t1-label-red   { font-weight: 700; color: #c00000; }
+.t1-label-blue  { font-weight: 700; color: #1f4e96; }
+.t1-italic-red  { font-style: italic; color: #c00000; }
+.t1-underline   { text-decoration: underline; }
+.t1-instructions,
+.t1-instructions-italic { color: rgb(48 44 39 / 0.85); }
+.t1-instructions-italic { font-style: italic; }
+.t1-body { margin: 6px 0; white-space: pre-wrap; }
+.t1-list {
+  margin: 4px 0 4px 20px;
+  padding: 0;
+}
+.t1-list li { margin-bottom: 3px; }
+.t1-list-dash {
+  list-style: none;
+  margin: 4px 0;
+  padding: 0;
+}
+.t1-list-dash li { margin-bottom: 3px; }
+.t1-list-dash li::before { content: "- "; }
+
 /* ── Export dropdown ─────────────────────────────────────── */
 .export-dropdown {
   display: inline-flex;

@@ -16,36 +16,40 @@ import {
   convertInchesToTwip,
   type IBorderOptions,
 } from "docx";
-import type { Lesson, Activity } from "../App";
+import type { Template1Lesson } from "../App";
 
 /* ── Template 1 DOCX renderer ─────────────────────────────────────────────────
    Recreates the "Secondary GTEP / PSU Graduate School of Education" lesson
    plan template as ONE continuous bordered table — Lesson Goals, Lesson
    Objectives/Materials, Lesson Plan Details, and the three Introduction/Main
    Learning Activities/Closure rows are all rows of the SAME table (some
-   spanning both columns), because in the reference template every one of
-   these sections shares borders with no gap between them — building them as
-   separate boxed elements would not reproduce that.
+   spanning both columns), matching the reference template where every
+   section shares borders with no gap between them.
+
+   Reads Template1Lesson's structured fields directly — no string parsing of
+   a combined "Teacher: ... Students: ..." field is needed since the lesson
+   data itself is already split into teacherActions/studentActions/
+   studentSupport per phase.
 
    This is structural + boilerplate-label replication: the instructional
    placeholder text that is a permanent part of the template's own design
    ("Describe what you are teaching...", "List all standards addressed...",
    the Lesson Plan Details instructions) is reproduced verbatim since it is
-   part of the template itself, not the reference lesson's submitted content.
-   No person name or the reference lesson's own submitted content is reused.
+   part of the template itself. No person name or the reference lesson's own
+   submitted content is reused.
 ────────────────────────────────────────────────────────────────────────────── */
 
 const BORDER: IBorderOptions = { style: BorderStyle.SINGLE, size: 4, color: "000000" };
 const RED   = "C00000";
 const BLUE  = "1F4E96";
-const BODY_SIZE    = 18; // 9pt
-const LABEL_SIZE   = 19; // 9.5pt
-const TITLE_SIZE   = 26; // 13pt
+const BODY_SIZE  = 18; // 9pt
+const LABEL_SIZE = 19; // 9.5pt
+const TITLE_SIZE = 26; // 13pt
 
 const PAGE_MARGIN_TWIPS = convertInchesToTwip(0.6);
 const PAGE_WIDTH_TWIPS  = convertInchesToTwip(8.5) - PAGE_MARGIN_TWIPS * 2;
-const COLUMN_WIDTH       = Math.floor(PAGE_WIDTH_TWIPS / 2);
-const CELL_MARGINS       = { top: 80, bottom: 80, left: 120, right: 120 };
+const COLUMN_WIDTH      = Math.floor(PAGE_WIDTH_TWIPS / 2);
+const CELL_MARGINS      = { top: 80, bottom: 80, left: 120, right: 120 };
 
 function splitSentences(text: string): string[] {
   return (text ?? "")
@@ -59,47 +63,6 @@ function p(text: string, opts?: { bold?: boolean; italics?: boolean; size?: numb
     spacing: { after: 40 },
     children: [new TextRun({ text, bold: opts?.bold, italics: opts?.italics, size: opts?.size ?? BODY_SIZE })],
   });
-}
-
-// The generation prompt instructs the model to format each Template 1
-// activity's detail as "Teacher: ... Students: ... [Support: ...]", possibly
-// with the Teacher:/Students: pair repeated more than once. This walks the
-// string and buckets every segment under whichever label most recently
-// preceded it, so repeated pairs are concatenated correctly instead of only
-// the last one winning.
-function parseTeacherStudentSupport(detail: string): { teacher: string; students: string; support: string | null } {
-  const parts = (detail ?? "").split(/(Teacher:|Students:|Support:)/);
-  let currentLabel: "teacher" | "students" | "support" | null = null;
-  const teacher: string[] = [];
-  const students: string[] = [];
-  const support: string[] = [];
-
-  for (const raw of parts) {
-    const part = raw.trim();
-    if (!part) continue;
-    if (part === "Teacher:") { currentLabel = "teacher"; continue; }
-    if (part === "Students:") { currentLabel = "students"; continue; }
-    if (part === "Support:") { currentLabel = "support"; continue; }
-    if (currentLabel === "teacher") teacher.push(part);
-    else if (currentLabel === "students") students.push(part);
-    else if (currentLabel === "support") support.push(part);
-  }
-
-  // Fallback: if the model didn't follow the Teacher:/Students: format at
-  // all, don't silently drop the content — show it as-is on the teacher side.
-  if (!teacher.length && !students.length) {
-    return { teacher: (detail ?? "").trim(), students: "", support: null };
-  }
-
-  return {
-    teacher: teacher.join(" ").trim(),
-    students: students.join(" ").trim(),
-    support: support.join(" ").trim() || null,
-  };
-}
-
-function findActivity(activities: Activity[], nameIncludes: string, fallbackIndex: number): Activity | undefined {
-  return activities.find((a) => a.name?.toLowerCase().includes(nameIncludes)) ?? activities[fallbackIndex];
 }
 
 function fullWidthCell(children: Paragraph[]): TableCell {
@@ -119,7 +82,7 @@ function halfWidthCell(children: Paragraph[]): TableCell {
   });
 }
 
-function buildLessonGoalsRow(lesson: Lesson, standardsAddressed: string): TableRow {
+function buildLessonGoalsRow(lesson: Template1Lesson): TableRow {
   return new TableRow({
     children: [
       fullWidthCell([
@@ -135,23 +98,23 @@ function buildLessonGoalsRow(lesson: Lesson, standardsAddressed: string): TableR
           ],
         }),
         p(""),
-        p(lesson.standards_alignment || "Not specified."),
+        p(lesson.centralFocus || "Not specified."),
         p(""),
         p("Standard(s) Addressed:", { bold: true }),
         p("List all standards addressed during the lesson. (List number and text)", { italics: true }),
         p(""),
-        p(standardsAddressed || "Not specified."),
+        p(lesson.standardsAddressed || "Not specified."),
       ]),
     ],
   });
 }
 
-function buildObjectivesMaterialsRow(lesson: Lesson): TableRow {
+function buildObjectivesMaterialsRow(lesson: Template1Lesson): TableRow {
   return new TableRow({
     children: [
       halfWidthCell([
         p("Lesson Objectives:", { bold: true }),
-        ...(lesson.objectives ?? []).map((o, i) => p(`${i + 1}. ${o}`)),
+        ...(lesson.lessonObjectives ?? []).map((o, i) => p(`${i + 1}. ${o}`)),
       ]),
       halfWidthCell([
         p("Materials:", { bold: true }),
@@ -188,19 +151,19 @@ function buildLessonPlanDetailsRow(): TableRow {
 function buildPhaseRow(
   phaseName: string,
   teacherHeading: string,
-  activity: Activity | undefined,
+  teacherActions: string,
+  studentActions: string,
+  studentSupport?: string,
   extra?: { label: string; text: string }
 ): TableRow {
-  const { teacher, students, support } = parseTeacherStudentSupport(activity?.detail ?? "");
-
   const leftChildren: Paragraph[] = [
     p(teacherHeading, { bold: true }),
-    ...splitSentences(teacher).map((s, i) => p(`${i + 1}. ${s}`)),
+    ...splitSentences(teacherActions).map((s, i) => p(`${i + 1}. ${s}`)),
   ];
 
-  if (support) {
+  if (studentSupport) {
     leftChildren.push(p("Student Support:", { bold: true }));
-    leftChildren.push(...splitSentences(support).map((s) => p(`- ${s}`)));
+    leftChildren.push(...splitSentences(studentSupport).map((s) => p(`- ${s}`)));
   }
 
   if (extra) {
@@ -210,7 +173,7 @@ function buildPhaseRow(
 
   const rightChildren: Paragraph[] = [
     p(`${phaseName}: What Students will do`, { bold: true }),
-    ...splitSentences(students).map((s) => p(`- ${s}`)),
+    ...splitSentences(studentActions).map((s) => p(`- ${s}`)),
   ];
 
   return new TableRow({
@@ -218,23 +181,7 @@ function buildPhaseRow(
   });
 }
 
-export async function buildTemplate1LessonDocx({
-  lesson,
-  subject,
-  gradeLabel,
-  duration,
-  standardsAddressed,
-}: {
-  lesson: Lesson;
-  subject: string;
-  gradeLabel: string;
-  duration: number;
-  standardsAddressed: string;
-}): Promise<Blob> {
-  const introActivity   = findActivity(lesson.activities ?? [], "introduction", 0);
-  const mainActivity    = findActivity(lesson.activities ?? [], "main learning", 1);
-  const closureActivity = findActivity(lesson.activities ?? [], "closure", 2);
-
+export async function buildTemplate1LessonDocx(lesson: Template1Lesson): Promise<Blob> {
   const header = new Header({
     children: [
       new Paragraph({
@@ -267,15 +214,31 @@ export async function buildTemplate1LessonDocx({
       insideHorizontal: BORDER, insideVertical: BORDER,
     },
     rows: [
-      buildLessonGoalsRow(lesson, standardsAddressed),
+      buildLessonGoalsRow(lesson),
       buildObjectivesMaterialsRow(lesson),
       buildLessonPlanDetailsRow(),
-      buildPhaseRow("Introduction", "Introduction: What Teacher Will Do to Engage Students.", introActivity),
-      buildPhaseRow("Main Learning Activities", "Main Learning Activities: What Teacher Will Do", mainActivity),
-      buildPhaseRow("Closure", "Closure: What Teacher Will Do", closureActivity, {
-        label: "How will you assess the objectives?",
-        text: lesson.assessment || "Not specified.",
-      }),
+      buildPhaseRow(
+        "Introduction",
+        "Introduction: What Teacher Will Do to Engage Students.",
+        lesson.introduction.teacherActions,
+        lesson.introduction.studentActions,
+        lesson.introduction.studentSupport
+      ),
+      buildPhaseRow(
+        "Main Learning Activities",
+        "Main Learning Activities: What Teacher Will Do",
+        lesson.mainLearningActivities.teacherActions,
+        lesson.mainLearningActivities.studentActions,
+        lesson.mainLearningActivities.studentSupport
+      ),
+      buildPhaseRow(
+        "Closure",
+        "Closure: What Teacher Will Do",
+        lesson.closure.teacherActions,
+        lesson.closure.studentActions,
+        undefined,
+        { label: "How will you assess the objectives?", text: lesson.assessment.howObjectivesAssessed || "Not specified." }
+      ),
     ],
   });
 
@@ -308,12 +271,13 @@ export async function buildTemplate1LessonDocx({
             spacing: { after: 120 },
             children: [
               new TextRun({ text: "TC Name: ", bold: true, size: BODY_SIZE }),
+              new TextRun({ text: lesson.teacherName, size: BODY_SIZE }),
               new TextRun({ text: "\t" }),
               new TextRun({ text: "Subject/Grade level: ", bold: true, size: BODY_SIZE }),
-              new TextRun({ text: `${subject} — Grade ${gradeLabel}`, size: BODY_SIZE }),
+              new TextRun({ text: lesson.subjectGradeLevel, size: BODY_SIZE }),
               new TextRun({ text: "\t" }),
               new TextRun({ text: "Time Duration of Lesson: ", bold: true, size: BODY_SIZE }),
-              new TextRun({ text: `${duration} minutes`, size: BODY_SIZE }),
+              new TextRun({ text: lesson.lessonDuration, size: BODY_SIZE }),
             ],
           }),
           mainTable,

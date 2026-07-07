@@ -25,6 +25,125 @@ export type Lesson = {
 
 type LessonMeta = { model: string; grade: string; standards: string; duration: number };
 
+// ── Template 1 (PSU/GTEP-style) lesson plan ───────────────────────────────────
+// A completely separate data shape from Lesson — Template 1 is not "Standard
+// lesson content re-styled", it's a structurally different lesson plan
+// format (teacher/student action pairs per phase, differentiation folded
+// into specific phases). The web preview, edit form, and DOCX export all
+// read this shape directly; nothing adapts Lesson into it or vice versa.
+export type Template1TeacherStudentPhase = {
+  teacherActions: string;
+  studentActions: string;
+  studentSupport: string;
+};
+
+export type Template1ClosurePhase = {
+  teacherActions: string;
+  studentActions: string;
+};
+
+export type Template1Lesson = {
+  lessonTitle: string;
+  teacherName: string;         // always "" — no such input exists in this app
+  subjectGradeLevel: string;   // derived from the form's subject + grade, not the model
+  lessonDuration: string;      // derived from the form's duration, not the model
+  centralFocus: string;
+  standardsAddressed: string;
+  lessonObjectives: string[];
+  materials: string[];
+  introduction: Template1TeacherStudentPhase;
+  mainLearningActivities: Template1TeacherStudentPhase;
+  closure: Template1ClosurePhase;
+  assessment: { howObjectivesAssessed: string };
+};
+
+// Coerces a raw /api/generate response (Template 1 format) into a safe
+// Template1Lesson. subjectGradeLevel/lessonDuration/teacherName are always
+// set from known local values, never trusted from the model, since the
+// model has no reliable source for them (avoids hallucinated metadata).
+function normaliseTemplate1Lesson(
+  raw: unknown,
+  meta: { subject: string; gradeLabel: string; duration: number }
+): Template1Lesson {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const ensureArr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+  const ensureStr = (v: unknown): string => {
+    if (typeof v === "string") return v;
+    if (Array.isArray(v)) return v.filter(Boolean).join(" ");
+    return "";
+  };
+  const ensurePhase = (v: unknown): Template1TeacherStudentPhase => {
+    const s = (v ?? {}) as Record<string, unknown>;
+    return {
+      teacherActions: ensureStr(s.teacherActions),
+      studentActions: ensureStr(s.studentActions),
+      studentSupport: ensureStr(s.studentSupport),
+    };
+  };
+  const ensureClosure = (v: unknown): Template1ClosurePhase => {
+    const s = (v ?? {}) as Record<string, unknown>;
+    return {
+      teacherActions: ensureStr(s.teacherActions),
+      studentActions: ensureStr(s.studentActions),
+    };
+  };
+  const assessmentRaw = (r.assessment ?? {}) as Record<string, unknown>;
+
+  return {
+    lessonTitle: ensureStr(r.lessonTitle),
+    teacherName: "",
+    subjectGradeLevel: `${meta.subject} — Grade ${meta.gradeLabel}`,
+    lessonDuration: `${meta.duration} minutes`,
+    centralFocus: ensureStr(r.centralFocus),
+    standardsAddressed: ensureStr(r.standardsAddressed),
+    lessonObjectives: ensureArr(r.lessonObjectives).map(ensureStr),
+    materials: ensureArr(r.materials).map(ensureStr),
+    introduction: ensurePhase(r.introduction),
+    mainLearningActivities: ensurePhase(r.mainLearningActivities),
+    closure: ensureClosure(r.closure),
+    assessment: { howObjectivesAssessed: ensureStr(assessmentRaw.howObjectivesAssessed) },
+  };
+}
+
+// Converts a Template1Lesson into the generic ExportDocument shape for the
+// PDF/Text export options (DOCX uses buildTemplate1LessonDocx directly instead).
+function buildTemplate1ExportDocument(lesson: Template1Lesson): ExportDocument {
+  return {
+    title: lesson.lessonTitle || "Lesson Plan",
+    meta: [lesson.subjectGradeLevel, lesson.lessonDuration].filter(Boolean).join(" · "),
+    sections: [
+      { heading: "Central Focus of Lesson", paragraphs: [lesson.centralFocus || "Not specified."] },
+      { heading: "Standard(s) Addressed", paragraphs: [lesson.standardsAddressed || "Not specified."] },
+      { heading: "Lesson Objectives", bullets: lesson.lessonObjectives },
+      { heading: "Materials", bullets: lesson.materials },
+      {
+        heading: "Introduction",
+        paragraphs: [
+          `Teacher: ${lesson.introduction.teacherActions}`,
+          `Students: ${lesson.introduction.studentActions}`,
+          `Student Support: ${lesson.introduction.studentSupport}`,
+        ],
+      },
+      {
+        heading: "Main Learning Activities",
+        paragraphs: [
+          `Teacher: ${lesson.mainLearningActivities.teacherActions}`,
+          `Students: ${lesson.mainLearningActivities.studentActions}`,
+          `Student Support: ${lesson.mainLearningActivities.studentSupport}`,
+        ],
+      },
+      {
+        heading: "Closure",
+        paragraphs: [
+          `Teacher: ${lesson.closure.teacherActions}`,
+          `Students: ${lesson.closure.studentActions}`,
+        ],
+      },
+      { heading: "How will you assess the objectives?", paragraphs: [lesson.assessment.howObjectivesAssessed || "Not specified."] },
+    ],
+  };
+}
+
 /**
  * Coerce a raw API response into a safe Lesson.
  * Guarantees every array field is actually an array, and every string field
@@ -125,12 +244,11 @@ async function generateLesson(params: {
   goal: string;
   duration: number;
   model: string;
-  lessonFormat: string;
 }): Promise<Lesson> {
   const res = await fetch("/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
+    body: JSON.stringify({ ...params, lessonFormat: "standard" }),
   });
   if (!res.ok) {
     const msg = await res.text().catch(() => `HTTP ${res.status}`);
@@ -138,6 +256,35 @@ async function generateLesson(params: {
   }
   const raw = await res.json();
   return normaliseLesson(raw);
+}
+
+// Same /api/generate endpoint, different output schema — see
+// buildTemplate1Prompt in api/generate.js. subjectLabel/gradeLabel/duration
+// are used to fill in subjectGradeLevel/lessonDuration client-side (the
+// model is never asked for them).
+async function generateTemplate1Lesson(params: {
+  grade: string;
+  subject: string;
+  frameworks: string[];
+  code: string;
+  topic: string;
+  goal: string;
+  duration: number;
+  model: string;
+  subjectLabel: string;
+  gradeLabel: string;
+}): Promise<Template1Lesson> {
+  const res = await fetch("/api/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...params, lessonFormat: "template1" }),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => `HTTP ${res.status}`);
+    throw new Error(msg || `Server error ${res.status}`);
+  }
+  const raw = await res.json();
+  return normaliseTemplate1Lesson(raw, { subject: params.subjectLabel, gradeLabel: params.gradeLabel, duration: params.duration });
 }
 
 // Result shape returned by /api/upload-standards-process.
@@ -523,6 +670,286 @@ function AccordionItem({
 }
 
 /* ════════════════════════════════════════════════════════════
+   TEMPLATE 1 (PSU/GTEP-style) LESSON PLAN — WYSIWYG PREVIEW
+   Mirrors src/lib/template1-docx.ts section-for-section: one continuous
+   bordered table (Lesson Goals -> Objectives/Materials -> Lesson Plan
+   Details -> Introduction -> Main Learning Activities -> Closure), so what
+   a teacher sees here is what they get in the exported Word document.
+════════════════════════════════════════════════════════════ */
+
+function t1SplitSentences(text: string): string[] {
+  return (text ?? "")
+    .split(/(?<=[.?!])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function Template1PhaseRow({
+  phaseName,
+  teacherHeading,
+  teacherActions,
+  studentActions,
+  studentSupport,
+  extra,
+}: {
+  phaseName: string;
+  teacherHeading: string;
+  teacherActions: string;
+  studentActions: string;
+  studentSupport?: string;
+  extra?: { label: string; text: string };
+}) {
+  return (
+    <tr>
+      <td className="t1-cell">
+        <p className="t1-label" style={{ marginTop: 0 }}>{teacherHeading}</p>
+        <ol className="t1-list">
+          {t1SplitSentences(teacherActions).map((s, i) => <li key={i}>{s}</li>)}
+        </ol>
+        {studentSupport && (
+          <>
+            <p className="t1-label">Student Support:</p>
+            <ul className="t1-list-dash">
+              {t1SplitSentences(studentSupport).map((s, i) => <li key={i}>{s}</li>)}
+            </ul>
+          </>
+        )}
+        {extra && (
+          <>
+            <p className="t1-label">{extra.label}</p>
+            <ul className="t1-list-dash">
+              {t1SplitSentences(extra.text).map((s, i) => <li key={i}>{s}</li>)}
+            </ul>
+          </>
+        )}
+      </td>
+      <td className="t1-cell">
+        <p className="t1-label" style={{ marginTop: 0 }}>{phaseName}: What Students will do</p>
+        <ul className="t1-list-dash">
+          {t1SplitSentences(studentActions).map((s, i) => <li key={i}>{s}</li>)}
+        </ul>
+      </td>
+    </tr>
+  );
+}
+
+export function Template1Preview({ lesson, breadcrumb, onEdit }: { lesson: Template1Lesson; breadcrumb: string; onEdit: () => void }) {
+  return (
+    <div className="t1-page">
+      <div className="t1-header-row">
+        <p className="preview-breadcrumb">{breadcrumb}</p>
+        <button type="button" className="btn-outline-sm" onClick={onEdit} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <Icon.Edit /> Edit
+        </button>
+      </div>
+
+      <h2 className="t1-title">PSU Graduate School of Education Lesson Plan Template</h2>
+      <div className="t1-meta-row">
+        <span><strong>TC Name:</strong> {lesson.teacherName}</span>
+        <span><strong>Subject/Grade level:</strong> {lesson.subjectGradeLevel}</span>
+        <span><strong>Time Duration of Lesson:</strong> {lesson.lessonDuration}</span>
+      </div>
+
+      <table className="t1-table">
+        <tbody>
+          <tr>
+            <td className="t1-cell" colSpan={2}>
+              <p className="t1-section-label">Lesson Goals</p>
+              <p style={{ margin: 0 }}>
+                <span className="t1-label-red">Central Focus of Lesson: </span>
+                <span className="t1-instructions">
+                  Describe what you are teaching. Describe the purpose for teaching this content. Describe how the standards apply to the learning strategy and skills learned.
+                </span>
+              </p>
+              <p className="t1-body">{lesson.centralFocus || "Not specified."}</p>
+              <p className="t1-label">Standard(s) Addressed:</p>
+              <p className="t1-instructions-italic" style={{ margin: 0 }}>List all standards addressed during the lesson. (List number and text)</p>
+              <p className="t1-body">{lesson.standardsAddressed || "Not specified."}</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td className="t1-cell">
+              <p className="t1-label" style={{ marginTop: 0 }}>Lesson Objectives:</p>
+              <ol className="t1-list">
+                {lesson.lessonObjectives.map((o, i) => <li key={i}>{o}</li>)}
+              </ol>
+            </td>
+            <td className="t1-cell">
+              <p className="t1-label" style={{ marginTop: 0 }}>Materials:</p>
+              <ul className="t1-list-dash">
+                {lesson.materials.map((m, i) => <li key={i}>{m}</li>)}
+              </ul>
+            </td>
+          </tr>
+
+          <tr>
+            <td className="t1-cell" colSpan={2}>
+              <p style={{ margin: 0 }}>
+                <span className="t1-label" style={{ margin: 0 }}>Lesson Plan Details: </span>
+                Write a <span className="t1-underline">detailed outline</span> of your lesson. Your outline
+                should be detailed enough that another teacher could understand them well enough to use them.{" "}
+                <span className="t1-label-blue">Each section MUST include how you will differentiate</span> your
+                lesson to accommodate a <span className="t1-italic-red">variety of learners.</span>
+              </p>
+            </td>
+          </tr>
+
+          <Template1PhaseRow
+            phaseName="Introduction"
+            teacherHeading="Introduction: What Teacher Will Do to Engage Students."
+            teacherActions={lesson.introduction.teacherActions}
+            studentActions={lesson.introduction.studentActions}
+            studentSupport={lesson.introduction.studentSupport}
+          />
+          <Template1PhaseRow
+            phaseName="Main Learning Activities"
+            teacherHeading="Main Learning Activities: What Teacher Will Do"
+            teacherActions={lesson.mainLearningActivities.teacherActions}
+            studentActions={lesson.mainLearningActivities.studentActions}
+            studentSupport={lesson.mainLearningActivities.studentSupport}
+          />
+          <Template1PhaseRow
+            phaseName="Closure"
+            teacherHeading="Closure: What Teacher Will Do"
+            teacherActions={lesson.closure.teacherActions}
+            studentActions={lesson.closure.studentActions}
+            extra={{ label: "How will you assess the objectives?", text: lesson.assessment.howObjectivesAssessed }}
+          />
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export function Template1EditForm({
+  draft,
+  setField,
+  setPhaseField,
+  setClosureField,
+  updateObjective,
+  removeObjective,
+  addObjective,
+  updateMaterial,
+  removeMaterial,
+  addMaterial,
+  onCancel,
+  onSave,
+}: {
+  draft: Template1Lesson;
+  setField: <K extends keyof Template1Lesson>(key: K, value: Template1Lesson[K]) => void;
+  setPhaseField: (phase: "introduction" | "mainLearningActivities", field: keyof Template1TeacherStudentPhase, value: string) => void;
+  setClosureField: (field: keyof Template1ClosurePhase, value: string) => void;
+  updateObjective: (i: number, v: string) => void;
+  removeObjective: (i: number) => void;
+  addObjective: () => void;
+  updateMaterial: (i: number, v: string) => void;
+  removeMaterial: (i: number) => void;
+  addMaterial: () => void;
+  onCancel: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="t1-page">
+      <div className="lesson-edit-form">
+        <div className="field">
+          <FieldLabel>Lesson Title</FieldLabel>
+          <input className="input" value={draft.lessonTitle} onChange={e => setField("lessonTitle", e.target.value)} />
+        </div>
+
+        <div className="field">
+          <FieldLabel>Central Focus of Lesson</FieldLabel>
+          <textarea className="textarea" rows={3} value={draft.centralFocus} onChange={e => setField("centralFocus", e.target.value)} />
+        </div>
+
+        <div className="field">
+          <FieldLabel>Standard(s) Addressed</FieldLabel>
+          <textarea className="textarea" rows={2} value={draft.standardsAddressed} onChange={e => setField("standardsAddressed", e.target.value)} />
+        </div>
+
+        <div>
+          <p className="lesson-edit-section-title">Lesson Objectives</p>
+          {draft.lessonObjectives.map((o, i) => (
+            <div key={i} className="lesson-edit-item-row">
+              <textarea className="textarea" rows={2} value={o} onChange={e => updateObjective(i, e.target.value)} />
+              <button type="button" className="lesson-edit-remove-btn" onClick={() => removeObjective(i)} aria-label="Remove objective">×</button>
+            </div>
+          ))}
+          <button type="button" className="lesson-edit-add-btn" onClick={addObjective}>+ Add objective</button>
+        </div>
+
+        <div>
+          <p className="lesson-edit-section-title">Materials</p>
+          {draft.materials.map((m, i) => (
+            <div key={i} className="lesson-edit-item-row">
+              <input className="input" value={m} onChange={e => updateMaterial(i, e.target.value)} />
+              <button type="button" className="lesson-edit-remove-btn" onClick={() => removeMaterial(i)} aria-label="Remove material">×</button>
+            </div>
+          ))}
+          <button type="button" className="lesson-edit-add-btn" onClick={addMaterial}>+ Add material</button>
+        </div>
+
+        <div>
+          <p className="lesson-edit-section-title">Introduction — Teacher Actions</p>
+          <textarea className="textarea" rows={3} value={draft.introduction.teacherActions}
+            onChange={e => setPhaseField("introduction", "teacherActions", e.target.value)} />
+        </div>
+        <div>
+          <p className="lesson-edit-section-title">Introduction — Student Actions</p>
+          <textarea className="textarea" rows={3} value={draft.introduction.studentActions}
+            onChange={e => setPhaseField("introduction", "studentActions", e.target.value)} />
+        </div>
+        <div>
+          <p className="lesson-edit-section-title">Introduction — Student Support</p>
+          <textarea className="textarea" rows={2} value={draft.introduction.studentSupport}
+            onChange={e => setPhaseField("introduction", "studentSupport", e.target.value)} />
+        </div>
+
+        <div>
+          <p className="lesson-edit-section-title">Main Learning Activities — Teacher Actions</p>
+          <textarea className="textarea" rows={3} value={draft.mainLearningActivities.teacherActions}
+            onChange={e => setPhaseField("mainLearningActivities", "teacherActions", e.target.value)} />
+        </div>
+        <div>
+          <p className="lesson-edit-section-title">Main Learning Activities — Student Actions</p>
+          <textarea className="textarea" rows={3} value={draft.mainLearningActivities.studentActions}
+            onChange={e => setPhaseField("mainLearningActivities", "studentActions", e.target.value)} />
+        </div>
+        <div>
+          <p className="lesson-edit-section-title">Main Learning Activities — Student Support</p>
+          <textarea className="textarea" rows={2} value={draft.mainLearningActivities.studentSupport}
+            onChange={e => setPhaseField("mainLearningActivities", "studentSupport", e.target.value)} />
+        </div>
+
+        <div>
+          <p className="lesson-edit-section-title">Closure — Teacher Actions</p>
+          <textarea className="textarea" rows={3} value={draft.closure.teacherActions}
+            onChange={e => setClosureField("teacherActions", e.target.value)} />
+        </div>
+        <div>
+          <p className="lesson-edit-section-title">Closure — Student Actions</p>
+          <textarea className="textarea" rows={3} value={draft.closure.studentActions}
+            onChange={e => setClosureField("studentActions", e.target.value)} />
+        </div>
+
+        <div>
+          <p className="lesson-edit-section-title">Assessment — How Objectives Will Be Assessed</p>
+          <textarea className="textarea" rows={3} value={draft.assessment.howObjectivesAssessed}
+            onChange={e => setField("assessment", { howObjectivesAssessed: e.target.value })} />
+        </div>
+
+        <div className="lesson-edit-actions">
+          <button type="button" className="btn-outline-sm" onClick={onCancel}>Cancel</button>
+          <button type="button" className="btn-primary" style={{ width: "auto", padding: "0 20px", height: 36, fontSize: 13 }} onClick={onSave}>
+            Save changes
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════
    SIDEBAR
 ════════════════════════════════════════════════════════════ */
 
@@ -643,6 +1070,15 @@ function GeneratorPage({
   const [editing, setEditing]         = useState(false);
   const [draft, setDraft]             = useState<Lesson | null>(null);
 
+  // Template 1 (PSU/GTEP-style) has its own data shape entirely — tracked
+  // separately from `lesson`/`draft`. `generatedFormat` records which format
+  // actually produced the currently-displayed content, independent of the
+  // live `lessonFormat` selector (so flipping the selector after generating
+  // doesn't change what's displayed until the user regenerates).
+  const [generatedFormat, setGeneratedFormat] = useState<"standard" | "template1" | null>(sharedLesson ? "standard" : null);
+  const [template1Lesson, setTemplate1Lesson] = useState<Template1Lesson | null>(null);
+  const [template1Draft, setTemplate1Draft]   = useState<Template1Lesson | null>(null);
+
   // Custom standards upload (PDF/DOCX)
   const [uploadStatus, setUploadStatus]   = useState<"idle" | "uploading" | "processing" | "success" | "error">("idle");
   const [uploadSummary, setUploadSummary] = useState<UploadSummary | null>(null);
@@ -733,6 +1169,68 @@ function GeneratorPage({
     setDraft(prev => prev ? { ...prev, activities: [...prev.activities, { name: "", minutes: 10, detail: "" }] } : prev);
   }
 
+  // ── Template 1 edit helpers ────────────────────────────────
+  function handleStartTemplate1Edit() {
+    if (!template1Lesson) return;
+    setTemplate1Draft(JSON.parse(JSON.stringify(template1Lesson)));
+    setEditing(true);
+  }
+  function handleCancelTemplate1Edit() { setEditing(false); setTemplate1Draft(null); }
+  function handleSaveTemplate1Edit() {
+    if (!template1Draft) return;
+    const savedDraft = template1Draft;
+    setTemplate1Lesson(savedDraft);
+    setEditing(false);
+    setTemplate1Draft(null);
+    if (lessonId != null) {
+      const lid = lessonId;
+      supabase
+        .from("lesson_generation")
+        .update({ lesson_json: savedDraft })
+        .eq("id", lid)
+        .then(({ error }) => {
+          if (error) { console.error("[lesson_generation] update:", error); return; }
+          logGeneratorAction({
+            lesson_id:      lid,
+            user_id:        userId,
+            action_type:    "lesson_edited",
+            previous_data:  template1Lesson,
+            new_data:       savedDraft,
+            changed_fields: [],
+          });
+        });
+    }
+  }
+  function setTemplate1Field<K extends keyof Template1Lesson>(key: K, value: Template1Lesson[K]) {
+    setTemplate1Draft(prev => prev ? { ...prev, [key]: value } : prev);
+  }
+  function setTemplate1PhaseField<P extends "introduction" | "mainLearningActivities">(
+    phase: P, field: keyof Template1TeacherStudentPhase, value: string
+  ) {
+    setTemplate1Draft(prev => prev ? { ...prev, [phase]: { ...prev[phase], [field]: value } } : prev);
+  }
+  function setTemplate1ClosureField(field: keyof Template1ClosurePhase, value: string) {
+    setTemplate1Draft(prev => prev ? { ...prev, closure: { ...prev.closure, [field]: value } } : prev);
+  }
+  function updateTemplate1Objective(i: number, v: string) {
+    setTemplate1Draft(prev => { if (!prev) return prev; const a = [...prev.lessonObjectives]; a[i] = v; return { ...prev, lessonObjectives: a }; });
+  }
+  function removeTemplate1Objective(i: number) {
+    setTemplate1Draft(prev => prev ? { ...prev, lessonObjectives: prev.lessonObjectives.filter((_, j) => j !== i) } : prev);
+  }
+  function addTemplate1Objective() {
+    setTemplate1Draft(prev => prev ? { ...prev, lessonObjectives: [...prev.lessonObjectives, ""] } : prev);
+  }
+  function updateTemplate1Material(i: number, v: string) {
+    setTemplate1Draft(prev => { if (!prev) return prev; const a = [...prev.materials]; a[i] = v; return { ...prev, materials: a }; });
+  }
+  function removeTemplate1Material(i: number) {
+    setTemplate1Draft(prev => prev ? { ...prev, materials: prev.materials.filter((_, j) => j !== i) } : prev);
+  }
+  function addTemplate1Material() {
+    setTemplate1Draft(prev => prev ? { ...prev, materials: [...prev.materials, ""] } : prev);
+  }
+
   const CUSTOM_ID = "custom";
   const hasCustom = framework === CUSTOM_ID;
 
@@ -743,12 +1241,64 @@ function GeneratorPage({
   }
 
   async function handleGenerate() {
-    const previousLesson = lesson; // capture before generation (null = first-time creation)
     setLoading(true);
     setError(null);
     try {
-      const result = await generateLesson({ grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model, lessonFormat });
+      if (lessonFormat === "template1") {
+        const previousTemplate1Lesson = template1Lesson;
+        const result = await generateTemplate1Lesson({
+          grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
+          subjectLabel: subject,
+          gradeLabel: gradeBandLabel.replace(/^Grades\s*/, ""),
+        });
+        setTemplate1Lesson(result);
+        setGeneratedFormat("template1");
+        onLessonMetaGenerated?.({ model, grade, standards: resolvedFrameworks().join(", "), duration });
+
+        const insertPayload = {
+          lesson_topic:        topic,
+          api_model:           model,
+          grade_level:         String(grade),
+          subject:             subject,
+          standards_framework: resolvedFrameworks().join(", "),
+          standard_code:       code,
+          lesson_goal:         goal,
+          duration:            String(duration),
+          lesson_json:         result,
+          is_demo:             false,
+          user_id:             userId,
+        };
+
+        const { data: savedLesson, error: saveError } = await supabase
+          .from("lesson_generation")
+          .insert([insertPayload])
+          .select("id")
+          .single();
+
+        if (saveError) {
+          console.error("[Supabase] lesson_generation insert error:", saveError);
+        } else if (!savedLesson?.id) {
+          console.warn("[Supabase] lesson_generation insert returned no id. Possible RLS block.");
+        } else {
+          console.debug("[Supabase] lesson_generation saved, id:", savedLesson.id);
+          onLessonSaved(savedLesson.id);
+          logGeneratorAction({
+            lesson_id:      savedLesson.id,
+            user_id:        userId,
+            action_type:    previousTemplate1Lesson !== null ? "lesson_regenerated" : "lesson_created",
+            previous_data:  previousTemplate1Lesson,
+            new_data:       result,
+            changed_fields: [], // different shape than Lesson — no field-level diff for Template 1 yet
+            api_model:      model,
+          });
+        }
+        return;
+      }
+
+      const previousLesson = lesson; // capture before generation (null = first-time creation)
+      const result = await generateLesson({ grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model });
       setLesson(result);
+      setGeneratedFormat("standard");
       onLessonGenerated(result);   // share with the Evaluator
       onLessonMetaGenerated?.({ model, grade, standards: resolvedFrameworks().join(", "), duration });
 
@@ -1048,7 +1598,46 @@ function GeneratorPage({
         </div>
 
         {/* ── Preview ────────────────────────────── */}
-        {lesson ? (
+        {generatedFormat === "template1" && template1Lesson ? (
+          /* ── Template 1 (PSU/GTEP-style) — its own WYSIWYG preview/edit, not the card/accordion layout ── */
+          editing && template1Draft ? (
+            <Template1EditForm
+              draft={template1Draft}
+              setField={setTemplate1Field}
+              setPhaseField={setTemplate1PhaseField}
+              setClosureField={setTemplate1ClosureField}
+              updateObjective={updateTemplate1Objective}
+              removeObjective={removeTemplate1Objective}
+              addObjective={addTemplate1Objective}
+              updateMaterial={updateTemplate1Material}
+              removeMaterial={removeTemplate1Material}
+              addMaterial={addTemplate1Material}
+              onCancel={handleCancelTemplate1Edit}
+              onSave={handleSaveTemplate1Edit}
+            />
+          ) : (
+            <>
+              <Template1Preview lesson={template1Lesson} breadcrumb={breadcrumb} onEdit={handleStartTemplate1Edit} />
+              <div className="preview-evaluate-strip">
+                <ExportDropdown
+                  label="Export lesson"
+                  filenameBase={slugifyFilename(template1Lesson.lessonTitle, "lesson-plan")}
+                  getDocument={() => buildTemplate1ExportDocument(template1Lesson)}
+                  getDocxOverride={() => buildTemplate1LessonDocx(template1Lesson)}
+                />
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled
+                  title="Evaluation isn't available for Template 1 lessons yet."
+                  style={{ width: "auto", padding: "0 22px", height: 38, fontSize: 13, display: "flex", alignItems: "center", gap: 6, opacity: 0.5, cursor: "not-allowed" }}
+                >
+                  <Icon.FileCheck /> Evaluate Lesson
+                </button>
+              </div>
+            </>
+          )
+        ) : generatedFormat === "standard" && lesson ? (
           <div className="card" style={{ overflow: "hidden" }}>
             {editing && draft ? (
               /* ── Edit mode ── */
@@ -1249,18 +1838,6 @@ function GeneratorPage({
                     label="Export lesson"
                     filenameBase={slugifyFilename(lesson.title, "lesson-plan")}
                     getDocument={() => buildLessonExportDocument(lesson, breadcrumb)}
-                    getDocxOverride={
-                      lessonFormat === "template1"
-                        ? () =>
-                            buildTemplate1LessonDocx({
-                              lesson,
-                              subject,
-                              gradeLabel: gradeBandLabel.replace(/^Grades\s*/, ""),
-                              duration,
-                              standardsAddressed: [...resolvedFrameworks(), code].filter(Boolean).join(" — "),
-                            })
-                        : undefined
-                    }
                   />
                   <button
                     type="button"

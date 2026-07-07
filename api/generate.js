@@ -199,57 +199,14 @@ function formatStandardsBlock(chunks) {
     .join("\n\n");
 }
 
-// Section hierarchy for the alternate "Template 1" lesson format (a generic
-// lesson-plan structure — teacher/student action pairs for each phase, with
-// differentiation folded into the Introduction and Main Learning Activities
-// phases rather than broken out as its own section). Reconstructed as a
-// structural outline only — no institution name, person name, or example
-// lesson content from the reference material is included here.
-const TEMPLATE1_STRUCTURE_NOTES = [
-  "",
-  "TEMPLATE STRUCTURE (Template 1):",
-  "Organize the lesson content so it follows this section hierarchy, in this order:",
-  "1. Lesson Goals — a central focus explaining what is being taught, why, and how it connects to the standard(s); followed by the standard(s) addressed.",
-  "2. Lesson Objectives — a numbered list of \"Students will be able to...\" statements.",
-  "3. Materials — the materials and resources needed for the lesson.",
-  "4. Introduction — what the teacher will do to engage students, and what students will do in response.",
-  "5. Main Learning Activities — what the teacher will do, and what students will do.",
-  "6. Closure — what the teacher will do to conclude the lesson, and what students will do.",
-  "7. Assessment — how the lesson objectives will be assessed.",
-  "The Introduction and Main Learning Activities sections must each also describe how that part differentiates instruction for a variety of learners; Closure does not need this.",
-];
-
-// ── Prompt builder ───────────────────────────────────────────────────────────
+// ── Prompt builder (Standard format) ─────────────────────────────────────────
 // Builds the full structured lesson-generation prompt from user inputs.
 // standardDescription is resolved by the handler (Supabase first, mock fallback).
-// lessonFormat is "standard" (default) or "template1" — both return the exact
-// same OUTPUT FORMAT JSON schema so parsing/preview/edit/save/export code
-// never has to know which format produced a given lesson; only the section
-// hierarchy and phrasing instructions differ.
-function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, lessonFormat }) {
+function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription }) {
   const standardsLine =
     Array.isArray(frameworks) && frameworks.length > 0
       ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
       : code || "Not specified";
-
-  const isTemplate1 = lessonFormat === "template1";
-
-  const standardsAlignmentRule = isTemplate1
-    ? `- standards_alignment: Open with the central focus of the lesson (what is being taught and why), then state the standard(s) addressed, referencing the standard code (e.g. ${code || "the standard code"}) and briefly restating what it requires. Do not copy the standard text verbatim.`
-    : `- standards_alignment: Write 2–4 sentences explaining how the lesson objectives, activities, and assessment connect to the standard cited in RELEVANT STANDARDS. Reference the standard code (e.g. ${code || "the standard code"}). Do not copy the standard text verbatim.`;
-
-  const formatSpecificRules = isTemplate1
-    ? [
-        "- activities must contain exactly 3 entries, in this order, with these exact names: \"Introduction\", \"Main Learning Activities\", \"Closure\".",
-        "- Each activity's detail must describe both what the teacher does and what students do, as two short parts in the same string starting with \"Teacher: \" and \"Students: \" respectively.",
-        "- The \"Introduction\" entry's detail MUST end with a sentence starting \"Support: \" describing how that part differentiates instruction for a variety of learners — this is required, not optional.",
-        "- The \"Main Learning Activities\" entry's detail MUST also end with a sentence starting \"Support: \" describing how that part differentiates instruction for a variety of learners — this is required, not optional.",
-        "- Do not add a Support sentence to \"Closure\" — it only applies to \"Introduction\" and \"Main Learning Activities\".",
-        "- Return differentiation as an empty string \"\" — for this format, differentiation is described within each activity's detail instead of as its own section.",
-      ]
-    : [
-        "- The differentiation section should provide practical support strategies for diverse learners.",
-      ];
 
   return [
     "ROLE:",
@@ -257,7 +214,6 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
     "",
     "CONTEXT:",
     "Teachers will provide key information about the class, subject area, learning standards, lesson topic, lesson goal, and duration. Use this information to create a clear, practical, standards-aligned lesson plan that can be realistically delivered in a classroom.",
-    ...(isTemplate1 ? TEMPLATE1_STRUCTURE_NOTES : []),
     "",
     "INPUTS:",
     "Teachers will provide:",
@@ -313,16 +269,90 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
     "OUTPUT RULES:",
     "- The title should clearly reflect the lesson topic.",
     "- Include 2-4 measurable learning objectives.",
-    standardsAlignmentRule,
+    `- standards_alignment: Write 2–4 sentences explaining how the lesson objectives, activities, and assessment connect to the standard cited in RELEVANT STANDARDS. Reference the standard code (e.g. ${code || "the standard code"}). Do not copy the standard text verbatim.`,
     "- Include realistic materials needed for the lesson.",
     "- Activities should be ordered chronologically.",
     `- The total activity minutes should approximately match ${duration} minutes.`,
     "- The assessment should directly evaluate the lesson goal.",
-    ...formatSpecificRules,
+    "- The differentiation section should provide practical support strategies for diverse learners.",
     "- Ensure all generated content is internally consistent and aligned with the topic, goal, grade level, standards, and duration.",
     "- activities[].minutes must be a plain integer (not a string like '10m').",
     "- assessment must be a plain string (not an array).",
     "- differentiation must be a plain string (not an array).",
+  ].join("\n");
+}
+
+// ── Prompt builder (Template 1 / PSU-GTEP format) ────────────────────────────
+// A completely separate output schema from the Standard format — Template 1
+// is not "Standard content re-styled", it asks the model directly for the
+// structured teacher/student fields the Template 1 web preview and DOCX
+// export both read. subjectGradeLevel/lessonDuration/teacherName are NOT
+// requested here; the client fills those in from known form values so the
+// model never has to (and can't) hallucinate them.
+function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription }) {
+  const standardsLine =
+    Array.isArray(frameworks) && frameworks.length > 0
+      ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
+      : code || "Not specified";
+
+  return [
+    "ROLE:",
+    "You are an experienced K-12 instructional designer creating a lesson plan using a structured template with these phases: Lesson Goals (central focus + standards addressed), Lesson Objectives, Materials, Introduction, Main Learning Activities, Closure, and Assessment. Each phase describes what the teacher does and what students do; Introduction and Main Learning Activities also describe how that phase differentiates instruction for a variety of learners.",
+    "",
+    "CONTEXT:",
+    "Teachers will provide key information about the class, subject area, learning standards, lesson topic, lesson goal, and duration. Use this information to create a clear, practical, standards-aligned lesson plan that can be realistically delivered in a classroom.",
+    "",
+    "INPUTS:",
+    "Teachers will provide:",
+    `- Grade level: ${grade}`,
+    `- Subject: ${subject || "Not specified"}`,
+    `- Standards framework: ${standardsLine}`,
+    `- Lesson topic: ${topic || "(not specified)"}`,
+    `- Lesson goal: ${goal || "(not specified)"}`,
+    `- Duration: ${duration} minutes`,
+    "",
+    "RELEVANT STANDARDS:",
+    standardDescription,
+    "",
+    "CONSTRAINTS:",
+    `- The teacherActions/studentActions across introduction, mainLearningActivities, and closure combined should fit within ${duration} minutes.`,
+    "- Use vocabulary appropriate for the grade level.",
+    "- Keep each field concise and readable.",
+    "- All content must align with the lesson topic and lesson goal.",
+    `- All content must be appropriate for the subject area: ${subject || "general"}.`,
+    "- Ensure the lesson aligns with the provided standard when available.",
+    "- Only reference standards from the selected grade band and retrieved standards context. Do not mention standards from other grade bands unless explicitly selected by the user.",
+    "- Do not invent unrelated topics.",
+    "- Generate content that is practical for teachers to use immediately.",
+    "- Return valid JSON only.",
+    "- Do not include markdown formatting.",
+    "- Do not include explanations outside the JSON.",
+    "",
+    "OUTPUT FORMAT:",
+    "{",
+    '  "lessonTitle": "string",',
+    '  "centralFocus": "string",',
+    '  "standardsAddressed": "string",',
+    '  "lessonObjectives": ["string", "string"],',
+    '  "materials": ["string", "string"],',
+    '  "introduction": { "teacherActions": "string", "studentActions": "string", "studentSupport": "string" },',
+    '  "mainLearningActivities": { "teacherActions": "string", "studentActions": "string", "studentSupport": "string" },',
+    '  "closure": { "teacherActions": "string", "studentActions": "string" },',
+    '  "assessment": { "howObjectivesAssessed": "string" }',
+    "}",
+    "",
+    "OUTPUT RULES:",
+    "- lessonTitle should clearly reflect the lesson topic.",
+    "- centralFocus: 2-4 sentences describing what is being taught, why, and how it connects to the standard(s).",
+    `- standardsAddressed: state the standard code (e.g. ${code || "the standard code"}) and briefly restate what it requires. Do not copy the standard text verbatim.`,
+    "- lessonObjectives: 2-4 measurable \"Students will be able to...\" statements.",
+    "- materials: realistic materials/resources needed for the lesson.",
+    "- introduction.teacherActions/studentActions and mainLearningActivities.teacherActions/studentActions: 2-4 sentences of concrete, realistic classroom actions each.",
+    "- introduction.studentSupport and mainLearningActivities.studentSupport: describe how that phase differentiates instruction for a variety of learners. These fields are required, not optional.",
+    "- closure.teacherActions/studentActions: how the lesson concludes. closure has no studentSupport field — do not add one.",
+    "- assessment.howObjectivesAssessed: describe how the lesson goal/objectives will be assessed.",
+    "- Every field must be a plain string; lessonObjectives and materials must be arrays of plain strings.",
+    "- Do not include lessonTitle-unrelated fields such as teacherName, subjectGradeLevel, or lessonDuration — those are filled in separately.",
   ].join("\n");
 }
 
@@ -350,7 +380,12 @@ export default async function handler(req, res) {
 
     // Build the prompt here — providers receive the finished prompt string,
     // not the raw inputs. They are only responsible for calling the LLM.
-    const prompt = buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, lessonFormat: normalizedLessonFormat });
+    // Template 1 has its own prompt + output schema entirely (not the
+    // Standard schema with different phrasing) — see buildTemplate1Prompt.
+    const isTemplate1 = normalizedLessonFormat === "template1";
+    const prompt = isTemplate1
+      ? buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription })
+      : buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription });
 
     console.debug("[Generate] inputs:", { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat: normalizedLessonFormat });
     console.debug("[Generate] prompt:", prompt);
@@ -366,24 +401,53 @@ export default async function handler(req, res) {
     }
 
     // Placeholder for providers not yet implemented
-    return res.status(200).json({
-      title: `${model} Provider Not Implemented Yet`,
-      objectives: ["Only the Mistral provider is currently connected."],
-      materials: [],
-      activities: [],
-      assessment: "Provider not implemented yet.",
-      differentiation: "Provider not implemented yet.",
-    });
+    return res.status(200).json(
+      isTemplate1
+        ? {
+            lessonTitle: `${model} Provider Not Implemented Yet`,
+            centralFocus: "Only the Mistral provider is currently connected.",
+            standardsAddressed: "",
+            lessonObjectives: [],
+            materials: [],
+            introduction: { teacherActions: "", studentActions: "", studentSupport: "" },
+            mainLearningActivities: { teacherActions: "", studentActions: "", studentSupport: "" },
+            closure: { teacherActions: "", studentActions: "" },
+            assessment: { howObjectivesAssessed: "" },
+          }
+        : {
+            title: `${model} Provider Not Implemented Yet`,
+            objectives: ["Only the Mistral provider is currently connected."],
+            materials: [],
+            activities: [],
+            assessment: "Provider not implemented yet.",
+            differentiation: "Provider not implemented yet.",
+          }
+    );
 
   } catch (error) {
     console.error("[Generate] error:", error);
-    return res.status(500).json({
-      title: "Generation Failed",
-      objectives: [],
-      materials: [],
-      activities: [],
-      assessment: "An error occurred during generation.",
-      differentiation: "",
-    });
+    const isTemplate1 = req.body?.lessonFormat === "template1";
+    return res.status(500).json(
+      isTemplate1
+        ? {
+            lessonTitle: "Generation Failed",
+            centralFocus: "An error occurred during generation.",
+            standardsAddressed: "",
+            lessonObjectives: [],
+            materials: [],
+            introduction: { teacherActions: "", studentActions: "", studentSupport: "" },
+            mainLearningActivities: { teacherActions: "", studentActions: "", studentSupport: "" },
+            closure: { teacherActions: "", studentActions: "" },
+            assessment: { howObjectivesAssessed: "" },
+          }
+        : {
+            title: "Generation Failed",
+            objectives: [],
+            materials: [],
+            activities: [],
+            assessment: "An error occurred during generation.",
+            differentiation: "",
+          }
+    );
   }
 }
