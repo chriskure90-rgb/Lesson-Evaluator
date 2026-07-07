@@ -3,6 +3,7 @@ import "./index.css";
 import { supabase } from "./lib/supabase";
 import { ExportDropdown } from "./components/ExportDropdown";
 import { slugifyFilename, type ExportDocument } from "./lib/export";
+import { buildTemplate1LessonDocx } from "./lib/template1-docx";
 
 /* ════════════════════════════════════════════════════════════
    TYPES
@@ -10,9 +11,9 @@ import { slugifyFilename, type ExportDocument } from "./lib/export";
 
 type Page = "login" | "generator" | "evaluator" | "library";
 
-type Activity = { name: string; minutes: number; detail: string };
+export type Activity = { name: string; minutes: number; detail: string };
 
-type Lesson = {
+export type Lesson = {
   title: string;
   objectives: string[];
   standards_alignment?: string; // optional — present when a standard code was matched
@@ -1248,6 +1249,18 @@ function GeneratorPage({
                     label="Export lesson"
                     filenameBase={slugifyFilename(lesson.title, "lesson-plan")}
                     getDocument={() => buildLessonExportDocument(lesson, breadcrumb)}
+                    getDocxOverride={
+                      lessonFormat === "template1"
+                        ? () =>
+                            buildTemplate1LessonDocx({
+                              lesson,
+                              subject,
+                              gradeLabel: gradeBandLabel.replace(/^Grades\s*/, ""),
+                              duration,
+                              standardsAddressed: [...resolvedFrameworks(), code].filter(Boolean).join(" — "),
+                            })
+                        : undefined
+                    }
                   />
                   <button
                     type="button"

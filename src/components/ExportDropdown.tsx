@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { exportAndDownload, type ExportDocument, type ExportFormat } from "../lib/export";
+import { downloadBlob, exportAndDownload, type ExportDocument, type ExportFormat } from "../lib/export";
 
 const FORMAT_OPTIONS: { format: ExportFormat; label: string }[] = [
   { format: "docx", label: "Word (.docx)" },
@@ -29,10 +29,16 @@ export function ExportDropdown({
   label,
   filenameBase,
   getDocument,
+  getDocxOverride,
 }: {
   label: string;
   filenameBase: string;
   getDocument: () => ExportDocument;
+  // When provided, used instead of the generic ExportDocument -> .docx
+  // converter for the "Word (.docx)" option only — PDF/Text still use
+  // getDocument(). Lets a specific lesson format (e.g. Template 1) render
+  // its own DOCX layout without needing its own PDF/Text converters too.
+  getDocxOverride?: () => Promise<Blob>;
 }) {
   const [open, setOpen] = useState(false);
   const [busyFormat, setBusyFormat] = useState<ExportFormat | null>(null);
@@ -109,7 +115,11 @@ export function ExportDropdown({
     setOpen(false);
     setBusyFormat(format);
     try {
-      await exportAndDownload(getDocument(), format, filenameBase);
+      if (format === "docx" && getDocxOverride) {
+        downloadBlob(await getDocxOverride(), `${filenameBase}.docx`);
+      } else {
+        await exportAndDownload(getDocument(), format, filenameBase);
+      }
     } catch (err) {
       console.error("[ExportDropdown] export failed:", err);
     } finally {
