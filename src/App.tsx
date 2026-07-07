@@ -583,6 +583,7 @@ function Sidebar({ page, setPage, userEmail, onLogout }: { page: Page; setPage: 
 const SUBJECTS = ["Science", "Math", "English", "Social Studies"];
 
 const GRADE_BANDS = [
+  { value: "K",    label: "K",    hint: "Kindergarten"   },
   { value: "1-2",  label: "1–2",  hint: "1st–2nd grade"  },
   { value: "3-5",  label: "3–5",  hint: "3rd–5th grade"  },
   { value: "6-8",  label: "6–8",  hint: "6th–8th grade"  },
@@ -832,17 +833,6 @@ function GeneratorPage({
             <div className="field">
               <FieldLabel>Grade Band</FieldLabel>
               <div className="grade-row">
-                <button
-                  type="button"
-                  className="grade-btn grade-k"
-                  disabled
-                  title="Kindergarten (coming soon)"
-                >
-                  K
-                </button>
-
-                <span className="grade-sep" aria-hidden="true" />
-
                 {GRADE_BANDS.map((b) => (
                   <button
                     key={b.value}

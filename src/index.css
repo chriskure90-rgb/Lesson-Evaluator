@@ -474,35 +474,6 @@ h1, h2, h3, h4, h5 {
   border-color: var(--primary);
 }
 
-/* Kindergarten — amber colour, shown but non-selectable */
-.grade-k {
-  padding: 0 8px;
-  border-color: #c49a3a;
-  color: #7a5c0a;
-  background: #fdf6e3;
-  font-weight: 600;
-  font-style: italic;
-  letter-spacing: -0.01em;
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-/* Separator — sits in its own 5px column; the line is 1px, centred */
-.grade-sep {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 100%;
-}
-.grade-sep::after {
-  content: "";
-  display: block;
-  width: 1px;
-  height: 16px;
-  background: var(--border);
-  border-radius: 1px;
-}
-
 /* ── Standards framework chips ───────────────────────────── */
 .fw-chip-row {
   display: flex;
