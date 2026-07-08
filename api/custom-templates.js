@@ -174,6 +174,52 @@ async function handleRegister(req, res) {
   return res.status(200).json(saved);
 }
 
+// ── action: "delete" ───────────────────────────────────────────────────────────
+// Removes the Storage object and the custom_templates row. Requires the
+// service-role key (the bucket is private, so the browser can't do this
+// directly) — that's why this lives here rather than as a direct client
+// Supabase call like renameCustomTemplate.
+async function handleDelete(req, res) {
+  const { customTemplateId, userId } = req.body ?? {};
+  if (!customTemplateId) return res.status(400).json({ error: "Missing customTemplateId." });
+  if (!userId)           return res.status(400).json({ error: "Missing userId." });
+
+  const { data: template, error: fetchError } = await supabase
+    .from("custom_templates")
+    .select("*")
+    .eq("id", customTemplateId)
+    .single();
+
+  if (fetchError || !template) {
+    return res.status(404).json({ error: "Template not found." });
+  }
+  if (template.user_id !== userId) {
+    return res.status(403).json({ error: "You do not have access to this template." });
+  }
+
+  const { error: removeError } = await supabase.storage.from(BUCKET).remove([template.storage_path]);
+  if (removeError) {
+    // Don't block deleting the row over a storage cleanup failure — an
+    // orphaned file in a private bucket is harmless, an undeletable row isn't.
+    console.warn("[custom-templates:delete] storage remove failed:", removeError.message);
+  }
+
+  const { error: deleteError } = await supabase
+    .from("custom_templates")
+    .delete()
+    .eq("id", customTemplateId);
+
+  if (deleteError) {
+    console.error("[custom-templates:delete] delete error:", deleteError.message);
+    if (deleteError.code === "23503") {
+      return res.status(409).json({ error: "This template has saved lessons using it and can't be deleted." });
+    }
+    return res.status(500).json({ error: "Could not delete the template." });
+  }
+
+  return res.status(200).json({ success: true });
+}
+
 // ── action: "export" ───────────────────────────────────────────────────────────
 // Loads the teacher's uploaded .docx template, fills in its recognized
 // {{PLACEHOLDER}} tokens from the (Template1Lesson-shaped) lessonData, and
@@ -244,7 +290,8 @@ export default async function handler(req, res) {
     switch (action) {
       case "upload-init": return await handleUploadInit(req, res);
       case "register":    return await handleRegister(req, res);
-      case "export":       return await handleExport(req, res);
+      case "delete":      return await handleDelete(req, res);
+      case "export":      return await handleExport(req, res);
       default:
         return res.status(400).json({ error: `Unknown action: ${action}` });
     }

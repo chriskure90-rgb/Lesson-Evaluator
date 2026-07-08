@@ -75,6 +75,31 @@ export async function fetchCustomTemplates(userId: string): Promise<CustomTempla
   return (data ?? []) as CustomTemplate[];
 }
 
+// Renaming is just a metadata update (no Storage/service-role work needed),
+// so it goes straight through the browser's Supabase client, same as other
+// direct row updates in this app (e.g. lesson_json edits).
+export async function renameCustomTemplate(id: string, name: string, userId: string): Promise<void> {
+  const { error } = await supabase
+    .from("custom_templates")
+    .update({ name })
+    .eq("id", id)
+    .eq("user_id", userId);
+  if (error) throw error;
+}
+
+// Deletion removes the Storage object too, which requires the service-role
+// key (the bucket is private) — routed through /api/custom-templates
+// (action: "delete") rather than done directly from the browser.
+export async function deleteCustomTemplate(id: string, userId: string): Promise<void> {
+  const res = await fetch("/api/custom-templates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "delete", customTemplateId: id, userId }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Could not delete template.");
+}
+
 // Server-side merge (docxtemplater) of the teacher's uploaded .docx with the
 // generated Template1Lesson content — see api/custom-templates.js (action: "export").
 // The built-in Template1 DOCX builder is never used for custom templates.

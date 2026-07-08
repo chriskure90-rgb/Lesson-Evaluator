@@ -10,6 +10,8 @@ import {
   fetchCustomTemplates,
   uploadCustomTemplateFile,
   registerCustomTemplate,
+  renameCustomTemplate,
+  deleteCustomTemplate,
   exportCustomTemplateLessonDocx,
   type CustomTemplate,
 } from "./lib/custom-templates";
@@ -18,7 +20,7 @@ import {
    TYPES
 ════════════════════════════════════════════════════════════ */
 
-type Page = "login" | "generator" | "evaluator" | "library" | "templates";
+type Page = "login" | "generator" | "evaluator" | "library";
 
 export type Activity = { name: string; minutes: number; detail: string };
 
@@ -760,7 +762,6 @@ function Sidebar({ page, setPage, userEmail, onLogout }: { page: Page; setPage: 
     { id: "generator" as Page, label: "Generator", Icon: Icon.Sparkles },
     { id: "evaluator" as Page, label: "Evaluator", Icon: Icon.FileCheck },
     { id: "library"   as Page, label: "Library",   Icon: Icon.Library  },
-    { id: "templates" as Page, label: "Templates", Icon: Icon.FileText },
   ];
 
   return (
@@ -897,17 +898,32 @@ function GeneratorPage({
   const [template1Lesson, setTemplate1Lesson] = useState<Template1Lesson | null>(sharedTemplate1Lesson);
   const [template1Draft, setTemplate1Draft]   = useState<Template1Lesson | null>(null);
 
-  // Teacher's own uploaded DOCX templates (only "ready" ones are selectable)
+  // Teacher's own uploaded DOCX templates. Holds every status (the "Manage
+  // Templates" modal needs to show processing/error ones too) — the format
+  // selector below only lists the "ready" subset via readyCustomTemplates.
   const [customTemplates, setCustomTemplates] = useState<CustomTemplate[]>([]);
   const [selectedCustomTemplateId, setSelectedCustomTemplateId] = useState<string | null>(sharedCustomTemplateId);
+  const [showTemplatesModal, setShowTemplatesModal] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     fetchCustomTemplates(userId)
-      .then((data) => { if (!cancelled) setCustomTemplates(data.filter((t) => t.status === "ready")); })
+      .then((data) => { if (!cancelled) setCustomTemplates(data); })
       .catch((err) => console.error("[custom_templates] fetch error:", err));
     return () => { cancelled = true; };
   }, [userId]);
+
+  const readyCustomTemplates = customTemplates.filter((t) => t.status === "ready");
+
+  // Called by the modal whenever it uploads/renames/deletes a template, so
+  // the format-selector chips update immediately without a page refresh.
+  function handleCustomTemplatesChange(updated: CustomTemplate[]) {
+    setCustomTemplates(updated);
+    if (selectedCustomTemplateId && !updated.some((t) => t.id === selectedCustomTemplateId && t.status === "ready")) {
+      setSelectedCustomTemplateId(null);
+      setLessonFormat((prev) => (prev === "custom" ? "standard" : prev));
+    }
+  }
 
   // Custom standards upload (PDF/DOCX)
   const [uploadStatus, setUploadStatus]   = useState<"idle" | "uploading" | "processing" | "success" | "error">("idle");
@@ -1370,10 +1386,10 @@ function GeneratorPage({
 
             {/* Lesson Plan Format */}
             <div className="field">
-              <FieldLabel hint={customTemplates.length > 0 ? undefined : "Upload one under Templates"}>
-                Lesson Plan Format
-              </FieldLabel>
-              <div className="fw-chip-row">
+              <FieldLabel>Lesson Plan Format</FieldLabel>
+
+              <p className="drawer-eyebrow" style={{ marginBottom: 6 }}>Built-in</p>
+              <div className="fw-chip-row" style={{ marginBottom: readyCustomTemplates.length > 0 ? 14 : 10 }}>
                 {LESSON_FORMATS.map((f) => (
                   <button
                     key={f.value}
@@ -1385,21 +1401,37 @@ function GeneratorPage({
                     {f.label}
                   </button>
                 ))}
-                {customTemplates.map((t) => {
-                  const active = lessonFormat === "custom" && selectedCustomTemplateId === t.id;
-                  return (
-                    <button
-                      key={t.id}
-                      type="button"
-                      className={`fw-chip${active ? " fw-chip-active" : ""}`}
-                      onClick={() => { setLessonFormat("custom"); setSelectedCustomTemplateId(t.id); }}
-                      aria-pressed={active}
-                    >
-                      {t.name}
-                    </button>
-                  );
-                })}
               </div>
+
+              {readyCustomTemplates.length > 0 && (
+                <>
+                  <p className="drawer-eyebrow" style={{ marginBottom: 6 }}>My Templates</p>
+                  <div className="fw-chip-row" style={{ marginBottom: 10 }}>
+                    {readyCustomTemplates.map((t) => {
+                      const active = lessonFormat === "custom" && selectedCustomTemplateId === t.id;
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          className={`fw-chip${active ? " fw-chip-active" : ""}`}
+                          onClick={() => { setLessonFormat("custom"); setSelectedCustomTemplateId(t.id); }}
+                          aria-pressed={active}
+                        >
+                          {t.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              <button
+                type="button"
+                className="btn-outline-sm"
+                onClick={() => setShowTemplatesModal(true)}
+              >
+                {readyCustomTemplates.length === 0 ? "+ Upload a Template" : "Manage Templates"}
+              </button>
             </div>
 
             {/* Lesson Topic */}
@@ -1679,6 +1711,15 @@ function GeneratorPage({
           </div>
         )}
       </div>
+
+      {showTemplatesModal && (
+        <ManageTemplatesModal
+          userId={userId}
+          templates={customTemplates}
+          onTemplatesChange={handleCustomTemplatesChange}
+          onClose={() => setShowTemplatesModal(false)}
+        />
+      )}
     </div>
   );
 }
@@ -2643,29 +2684,39 @@ function gradeDisplay(gradeLevel: string): string {
 }
 
 /* ════════════════════════════════════════════════════════════
-   MANAGE TEMPLATES PAGE
+   MANAGE TEMPLATES MODAL
+   Slide-over panel opened from GeneratorPage's "Manage Templates" button
+   (Lesson Plan Format section) — templates are a supporting feature of
+   lesson generation, not a separate app section, so this is a modal rather
+   than its own page/nav item. `templates`/`onTemplatesChange` are owned by
+   GeneratorPage so uploads/renames/deletes are reflected in the format
+   selector immediately, with no refetch or page refresh needed.
 ════════════════════════════════════════════════════════════ */
 
-function TemplatesPage({ userId }: { userId: string }) {
-  const [templates, setTemplates] = useState<CustomTemplate[]>([]);
-  const [loading, setLoading]     = useState(true);
-  const [fetchErr, setFetchErr]   = useState<string | null>(null);
-
+function ManageTemplatesModal({
+  userId,
+  templates,
+  onTemplatesChange,
+  onClose,
+}: {
+  userId: string;
+  templates: CustomTemplate[];
+  onTemplatesChange: (templates: CustomTemplate[]) => void;
+  onClose: () => void;
+}) {
   const [templateName, setTemplateName] = useState("");
   const [pendingFile, setPendingFile]   = useState<File | null>(null);
   const [uploadStatus, setUploadStatus] = useState<"idle" | "uploading" | "processing" | "success" | "error">("idle");
   const [uploadError, setUploadError]   = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setFetchErr(null);
-    fetchCustomTemplates(userId)
-      .then((data) => { if (!cancelled) { setTemplates(data); setLoading(false); } })
-      .catch((err) => { if (!cancelled) { setFetchErr(err?.message ?? "Failed to load templates."); setLoading(false); } });
-    return () => { cancelled = true; };
-  }, [userId]);
+  const [editingId, setEditingId]     = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
+  const [renameBusy, setRenameBusy]   = useState(false);
+
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy]           = useState(false);
+  const [actionError, setActionError]         = useState<string | null>(null);
 
   async function handleUpload() {
     if (!pendingFile) return;
@@ -2680,7 +2731,7 @@ function TemplatesPage({ userId }: { userId: string }) {
         name: templateName.trim() || pendingFile.name,
         userId,
       });
-      setTemplates((prev) => [saved, ...prev]);
+      onTemplatesChange([saved, ...templates]);
       setUploadStatus("success");
       setPendingFile(null);
       setTemplateName("");
@@ -2690,123 +2741,223 @@ function TemplatesPage({ userId }: { userId: string }) {
     }
   }
 
+  function startRename(t: CustomTemplate) {
+    setEditingId(t.id);
+    setEditingName(t.name);
+    setActionError(null);
+  }
+  function cancelRename() {
+    setEditingId(null);
+    setEditingName("");
+  }
+  async function saveRename(id: string) {
+    const trimmed = editingName.trim();
+    if (!trimmed) return;
+    setRenameBusy(true);
+    setActionError(null);
+    try {
+      await renameCustomTemplate(id, trimmed, userId);
+      onTemplatesChange(templates.map((t) => (t.id === id ? { ...t, name: trimmed } : t)));
+      setEditingId(null);
+      setEditingName("");
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Could not rename template.");
+    } finally {
+      setRenameBusy(false);
+    }
+  }
+
+  async function confirmDelete(id: string) {
+    setDeleteBusy(true);
+    setActionError(null);
+    try {
+      await deleteCustomTemplate(id, userId);
+      onTemplatesChange(templates.filter((t) => t.id !== id));
+      setConfirmDeleteId(null);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Could not delete template.");
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
   const busy = uploadStatus === "uploading" || uploadStatus === "processing";
 
   return (
-    <div style={{ maxWidth: 900, margin: "0 auto", padding: "40px 40px 60px" }}>
-      <PageHeader
-        title="Manage Templates"
-        subtitle="Upload your school or district's Word lesson plan template — lessons are generated to fit your format, not the other way around."
-      />
-
-      {/* ── Upload card ── */}
-      <div className="card" style={{ padding: "24px 24px 28px", marginBottom: 28 }}>
-        <div className="space-y-6">
-          <div className="field">
-            <FieldLabel htmlFor="template-name" hint="Optional">Template Name</FieldLabel>
-            <input
-              id="template-name"
-              className="input"
-              value={templateName}
-              onChange={(e) => setTemplateName(e.target.value)}
-              placeholder="e.g. District Lesson Plan Format"
-            />
+    <>
+      <div className="drawer-backdrop" onClick={onClose} />
+      <div className="drawer-panel">
+        <div className="drawer-header">
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p className="drawer-eyebrow">Lesson Generation</p>
+            <h2 className="drawer-title">Manage Templates</h2>
           </div>
-
-          <div
-            className="fw-upload-area"
-            onClick={() => !busy && fileInputRef.current?.click()}
-            style={{ cursor: busy ? "default" : "pointer" }}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                e.target.value = ""; // allow re-selecting the same file later
-                if (file) {
-                  setPendingFile(file);
-                  setUploadStatus("idle");
-                  setUploadError(null);
-                }
-              }}
-            />
-            <div className="fw-upload-area-icon">↑</div>
-            <p className="fw-upload-area-label">Upload a .docx template with {"{{PLACEHOLDER}}"} tags</p>
-
-            <button
-              type="button"
-              className="btn-outline-sm"
-              disabled={busy}
-              onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
-            >
-              Choose .docx File
-            </button>
-
-            {pendingFile && <p className="fw-upload-filename">{pendingFile.name}</p>}
-
-            {uploadStatus === "uploading" && <p className="fw-upload-status">Uploading…</p>}
-            {uploadStatus === "processing" && <p className="fw-upload-status">Detecting placeholders…</p>}
-            {uploadStatus === "success" && (
-              <p className="fw-upload-status fw-upload-status-success">Template uploaded.</p>
-            )}
-            {uploadStatus === "error" && (
-              <p className="fw-upload-status fw-upload-status-error">{uploadError}</p>
-            )}
-          </div>
-
-          {pendingFile && !busy && (
-            <button type="button" className="btn-primary" onClick={handleUpload} style={{ marginTop: 4 }}>
-              <Icon.Sparkles /> Upload Template
-            </button>
-          )}
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="Close">
+            ✕
+          </button>
         </div>
-      </div>
 
-      {/* ── Template list ── */}
-      {loading ? (
-        <p style={{ color: "var(--muted-fg)", fontSize: 14 }}>Loading templates…</p>
-      ) : fetchErr ? (
-        <div className="error-box">{fetchErr}</div>
-      ) : templates.length === 0 ? (
-        <p style={{ color: "var(--muted-fg)", fontSize: 14 }}>No custom templates uploaded yet.</p>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {templates.map((t) => (
-            <div key={t.id} className="lib-card">
-              <div className="lib-card-top">
-                <span className={"lib-badge " + (t.status === "ready" ? "badge-ready" : t.status === "error" ? "badge-not" : "badge-needs")}>
-                  {t.status === "ready" ? "Ready" : t.status === "error" ? "Error" : "Processing"}
-                </span>
-                <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>{formatDate(t.created_at)}</span>
+        <div className="drawer-body">
+          {/* ── Upload ── */}
+          <section className="drawer-section" style={{ paddingTop: 20, borderTop: "none", marginTop: 0 }}>
+            <h3 className="drawer-section-title">Upload a New Template</h3>
+            <div className="space-y-6" style={{ marginTop: 12 }}>
+              <div className="field">
+                <FieldLabel htmlFor="template-name" hint="Optional">Template Name</FieldLabel>
+                <input
+                  id="template-name"
+                  className="input"
+                  value={templateName}
+                  onChange={(e) => setTemplateName(e.target.value)}
+                  placeholder="e.g. District Lesson Plan Format"
+                />
               </div>
-              <p className="lib-card-title" style={{ marginBottom: 2 }}>{t.name}</p>
-              <p style={{ fontSize: 12.5, color: "var(--muted-fg)", marginBottom: 10 }}>{t.original_filename}</p>
 
-              {t.recognized_placeholders.length > 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: t.unrecognized_placeholders.length > 0 ? 8 : 0 }}>
-                  {t.recognized_placeholders.map((p) => (
-                    <span key={p} className="lib-badge badge-ready" style={{ fontFamily: "monospace" }}>{`{{${p}}}`}</span>
-                  ))}
-                </div>
-              )}
+              <div
+                className="fw-upload-area"
+                onClick={() => !busy && fileInputRef.current?.click()}
+                style={{ cursor: busy ? "default" : "pointer" }}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = ""; // allow re-selecting the same file later
+                    if (file) {
+                      setPendingFile(file);
+                      setUploadStatus("idle");
+                      setUploadError(null);
+                    }
+                  }}
+                />
+                <div className="fw-upload-area-icon">↑</div>
+                <p className="fw-upload-area-label">Upload a .docx template with {"{{PLACEHOLDER}}"} tags</p>
 
-              {t.unrecognized_placeholders.length > 0 && (
-                <p style={{ fontSize: 12.5, color: "var(--destructive)", marginBottom: 0 }}>
-                  ⚠ Unrecognized (left blank on export): {t.unrecognized_placeholders.map((p) => `{{${p}}}`).join(", ")}
-                </p>
-              )}
+                <button
+                  type="button"
+                  className="btn-outline-sm"
+                  disabled={busy}
+                  onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+                >
+                  Choose .docx File
+                </button>
 
-              {t.status === "error" && t.error_message && (
-                <p style={{ fontSize: 12.5, color: "var(--destructive)", marginTop: 6 }}>{t.error_message}</p>
+                {pendingFile && <p className="fw-upload-filename">{pendingFile.name}</p>}
+
+                {uploadStatus === "uploading" && <p className="fw-upload-status">Uploading…</p>}
+                {uploadStatus === "processing" && <p className="fw-upload-status">Detecting placeholders…</p>}
+                {uploadStatus === "success" && (
+                  <p className="fw-upload-status fw-upload-status-success">Template uploaded.</p>
+                )}
+                {uploadStatus === "error" && (
+                  <p className="fw-upload-status fw-upload-status-error">{uploadError}</p>
+                )}
+              </div>
+
+              {pendingFile && !busy && (
+                <button type="button" className="btn-primary" onClick={handleUpload} style={{ marginTop: 4 }}>
+                  <Icon.Sparkles /> Upload Template
+                </button>
               )}
             </div>
-          ))}
+          </section>
+
+          {/* ── List ── */}
+          <section className="drawer-section">
+            <h3 className="drawer-section-title">Your Templates</h3>
+            {actionError && <div className="error-box" style={{ marginTop: 10 }}>{actionError}</div>}
+
+            {templates.length === 0 ? (
+              <p className="drawer-empty-note">No custom templates uploaded yet.</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
+                {templates.map((t) => (
+                  <div key={t.id} className="lib-card">
+                    <div className="lib-card-top">
+                      <span className={"lib-badge " + (t.status === "ready" ? "badge-ready" : t.status === "error" ? "badge-not" : "badge-needs")}>
+                        {t.status === "ready" ? "Ready" : t.status === "error" ? "Error" : "Processing"}
+                      </span>
+                      <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>{formatDate(t.created_at)}</span>
+                    </div>
+
+                    {editingId === t.id ? (
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                        <input
+                          className="input"
+                          value={editingName}
+                          onChange={(e) => setEditingName(e.target.value)}
+                          style={{ flex: 1 }}
+                          autoFocus
+                        />
+                        <button type="button" className="btn-outline-sm" disabled={renameBusy} onClick={() => saveRename(t.id)}>
+                          Save
+                        </button>
+                        <button type="button" className="btn-outline-sm" disabled={renameBusy} onClick={cancelRename}>
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="lib-card-title" style={{ marginBottom: 2 }}>{t.name}</p>
+                    )}
+
+                    <p style={{ fontSize: 12.5, color: "var(--muted-fg)", marginBottom: 10 }}>{t.original_filename}</p>
+
+                    {t.recognized_placeholders.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: t.unrecognized_placeholders.length > 0 ? 8 : 0 }}>
+                        {t.recognized_placeholders.map((p) => (
+                          <span key={p} className="lib-badge badge-ready" style={{ fontFamily: "monospace" }}>{`{{${p}}}`}</span>
+                        ))}
+                      </div>
+                    )}
+
+                    {t.unrecognized_placeholders.length > 0 && (
+                      <p style={{ fontSize: 12.5, color: "var(--destructive)", marginBottom: 0 }}>
+                        ⚠ Unrecognized (left blank on export): {t.unrecognized_placeholders.map((p) => `{{${p}}}`).join(", ")}
+                      </p>
+                    )}
+
+                    {t.status === "error" && t.error_message && (
+                      <p style={{ fontSize: 12.5, color: "var(--destructive)", marginTop: 6 }}>{t.error_message}</p>
+                    )}
+
+                    {editingId !== t.id && (
+                      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                        <button type="button" className="btn-outline-sm" onClick={() => startRename(t)}>
+                          Rename
+                        </button>
+                        {confirmDeleteId === t.id ? (
+                          <>
+                            <button
+                              type="button"
+                              className="btn-outline-sm"
+                              style={{ color: "var(--destructive)", borderColor: "var(--destructive)" }}
+                              disabled={deleteBusy}
+                              onClick={() => confirmDelete(t.id)}
+                            >
+                              {deleteBusy ? "Deleting…" : "Confirm Delete"}
+                            </button>
+                            <button type="button" className="btn-outline-sm" disabled={deleteBusy} onClick={() => setConfirmDeleteId(null)}>
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <button type="button" className="btn-outline-sm" onClick={() => setConfirmDeleteId(t.id)}>
+                            Delete
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
-      )}
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -3674,9 +3825,7 @@ export default function App() {
                   autoEvaluate={autoEvaluate}
                   onAutoEvaluateDone={() => setAutoEvaluate(false)}
                 />
-              : page === "library"
-              ? <LibraryPage userId={user!.id} />
-              : <TemplatesPage userId={user!.id} />}
+              : <LibraryPage userId={user!.id} />}
           </main>
         </div>
       )}
