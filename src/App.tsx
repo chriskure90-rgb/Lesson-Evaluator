@@ -15,6 +15,12 @@ import {
   exportCustomTemplateLessonDocx,
   type CustomTemplate,
 } from "./lib/custom-templates";
+import {
+  fetchTeachingStrategies,
+  resolveTeachingStrategyNames,
+  TEACHING_STRATEGY_CATEGORY_LABELS,
+  type TeachingStrategy,
+} from "./data/teachingStrategies";
 
 /* ════════════════════════════════════════════════════════════
    TYPES
@@ -874,35 +880,51 @@ const TECH_USAGE_OPTIONS = [
   "Other",
 ];
 
-// Source of truth: "Teaching Strategy.pdf". Strategy names are preserved
-// verbatim from the document. Concept Mapping and Graphic Organizers appear
-// under both the Literacy and Numeracy sections of the PDF — they're listed
-// once here (under Literacy, their first appearance) rather than duplicated,
-// so each is a single selectable chip instead of two independent ones.
-const TEACHING_STRATEGIES = {
-  literacy: [
-    "Concept Mapping",
-    "Descriptive Writing",
-    "Dialogical Writing",
-    "Graphic Organizers",
-    "Infographics",
-    "Performance",
-    "Persuasive Writing",
-    "Procedural Writing",
-    "Text-Based, Open-Ended Writing Prompt",
-    "Text-Based, Oral Comprehension Questions",
-    "Think-Pair-Share",
-    "Vocabulary Instruction",
-  ],
-  numeracy: [
-    "Manipulatives",
-    "Math Journals",
-    "Number Talks",
-    "Reciprocal Peer Tutoring",
-    "Science Talks",
-    "Socratic Seminar",
-  ],
-};
+/** Renders the Literacy/Numeracy chip picker from whatever TeachingStrategy[]
+ *  it's given — it has no knowledge of where that list came from (today, a
+ *  local constant via fetchTeachingStrategies(); later, potentially a
+ *  Supabase table), so swapping the source doesn't touch this component. */
+function TeachingStrategiesPicker({
+  strategies,
+  selectedIds,
+  onToggle,
+}: {
+  strategies: TeachingStrategy[];
+  selectedIds: string[];
+  onToggle: (id: string) => void;
+}) {
+  const categories = Array.from(new Set(strategies.map((s) => s.category)));
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      {categories.map((cat, i) => (
+        <AccordionItem
+          key={cat}
+          title={TEACHING_STRATEGY_CATEGORY_LABELS[cat]}
+          defaultOpen
+          isLast={i === categories.length - 1}
+        >
+          <div className="fw-chip-row">
+            {strategies.filter((s) => s.category === cat).map((s) => {
+              const active = selectedIds.includes(s.id);
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  className={`fw-chip${active ? " fw-chip-active" : ""}`}
+                  onClick={() => onToggle(s.id)}
+                  aria-pressed={active}
+                  title={s.description}
+                >
+                  {s.name}
+                </button>
+              );
+            })}
+          </div>
+        </AccordionItem>
+      ))}
+    </div>
+  );
+}
 
 function GeneratorPage({
   sharedLesson,
@@ -941,7 +963,16 @@ function GeneratorPage({
   const [duration, setDuration]       = useState(60);
   const [technologyReliance, setTechnologyReliance] = useState(0); // 0-100
   const [technologyUsage, setTechnologyUsage]       = useState<string[]>([]);
-  const [teachingStrategies, setTeachingStrategies] = useState<string[]>([]);
+  const [teachingStrategyCatalog, setTeachingStrategyCatalog] = useState<TeachingStrategy[]>([]);
+  const [selectedStrategyIds, setSelectedStrategyIds]         = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchTeachingStrategies()
+      .then((data) => { if (!cancelled) setTeachingStrategyCatalog(data); })
+      .catch((err) => console.error("[teaching_strategies] fetch error:", err));
+    return () => { cancelled = true; };
+  }, []);
   const [loading, setLoading]         = useState(false);
   const [lesson, setLesson]           = useState<Lesson | null>(sharedLesson);
   const [error, setError]             = useState<string | null>(null);
@@ -1158,9 +1189,9 @@ function GeneratorPage({
     );
   }
 
-  function toggleTeachingStrategy(name: string) {
-    setTeachingStrategies((prev) =>
-      prev.includes(name) ? prev.filter((s) => s !== name) : [...prev, name]
+  function toggleTeachingStrategy(id: string) {
+    setSelectedStrategyIds((prev) =>
+      prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]
     );
   }
 
@@ -1175,6 +1206,9 @@ function GeneratorPage({
 
     setLoading(true);
     setError(null);
+    // The picker tracks selection by id (stable even if a strategy's display
+    // name changes); the API/prompt only cares about human-readable names.
+    const teachingStrategies = resolveTeachingStrategyNames(selectedStrategyIds);
     try {
       if (lessonFormat === "template1" || lessonFormat === "custom") {
         const isCustom = lessonFormat === "custom";
@@ -1602,45 +1636,11 @@ function GeneratorPage({
                   </AdvancedOptionGroup>
 
                   <AdvancedOptionGroup title="Teaching Strategies">
-                    <div style={{ display: "flex", flexDirection: "column" }}>
-                      <AccordionItem title="Literacy" defaultOpen>
-                        <div className="fw-chip-row">
-                          {TEACHING_STRATEGIES.literacy.map((s) => {
-                            const active = teachingStrategies.includes(s);
-                            return (
-                              <button
-                                key={s}
-                                type="button"
-                                className={`fw-chip${active ? " fw-chip-active" : ""}`}
-                                onClick={() => toggleTeachingStrategy(s)}
-                                aria-pressed={active}
-                              >
-                                {s}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </AccordionItem>
-
-                      <AccordionItem title="Numeracy" defaultOpen isLast>
-                        <div className="fw-chip-row">
-                          {TEACHING_STRATEGIES.numeracy.map((s) => {
-                            const active = teachingStrategies.includes(s);
-                            return (
-                              <button
-                                key={s}
-                                type="button"
-                                className={`fw-chip${active ? " fw-chip-active" : ""}`}
-                                onClick={() => toggleTeachingStrategy(s)}
-                                aria-pressed={active}
-                              >
-                                {s}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </AccordionItem>
-                    </div>
+                    <TeachingStrategiesPicker
+                      strategies={teachingStrategyCatalog}
+                      selectedIds={selectedStrategyIds}
+                      onToggle={toggleTeachingStrategy}
+                    />
                   </AdvancedOptionGroup>
 
                   {/* Future groups go here as additional <AdvancedOptionGroup> siblings */}
