@@ -96,12 +96,32 @@ const RUBRIC_CRITERIA = [
   },
 ];
 
+// Template 1 (PSU/GTEP) lessons use a different JSON shape than the Standard
+// format, so the model needs to be told explicitly which fields carry which
+// rubric-relevant content before it reads the raw JSON.
+const TEMPLATE1_FIELD_GUIDE = [
+  "FIELD GUIDE (Template 1 / PSU-GTEP lesson format):",
+  "This lesson plan uses the Template 1 JSON shape, not the standard shape. Map its fields as follows when evaluating:",
+  "- centralFocus -> the lesson's overall topic/purpose (relevant to Lesson Title and Opening/Introduction).",
+  "- standardsAddressed -> academic standards (relevant to Standards Alignment).",
+  "- lessonObjectives -> the learning objectives (relevant to Learning Objectives).",
+  "- materials -> resources/materials (relevant to Resources & Materials).",
+  "- introduction.teacherActions / introduction.studentActions -> the opening/introduction phase (relevant to Opening/Introduction, Timing & Pacing).",
+  "- mainLearningActivities.teacherActions / mainLearningActivities.studentActions -> the main instructional activities (relevant to Instructional Activities, Timing & Pacing, Differentiation Strategy).",
+  "- closure.teacherActions / closure.studentActions -> the closing phase (relevant to Evaluation/Reflection).",
+  "- assessment.howObjectivesAssessed -> how objectives are assessed (relevant to Assessment Strategy).",
+  "- lessonTitle -> the lesson's title (relevant to Lesson Title).",
+  "",
+].join("\n");
+
 // ── Prompt builder ────────────────────────────────────────────────────────────
-// Builds the full rubric evaluation prompt from the lesson JSON.
-// Lives here — providers receive only the finished prompt string.
-function buildEvaluationPrompt(lesson) {
+// Builds the full rubric evaluation prompt from the lesson JSON. templateType
+// is "standard" or "template1" — it only changes the field-guide preamble
+// injected before the raw JSON; the rubric criteria are identical either way.
+function buildEvaluationPrompt(lesson, templateType) {
   // Serialize the lesson plan so Mistral can read every section
   const lessonText = JSON.stringify(lesson, null, 2);
+  const fieldGuide = templateType === "template1" ? TEMPLATE1_FIELD_GUIDE : "";
 
   // Build one criteria block per rubric item
   const criteriaBlocks = RUBRIC_CRITERIA.map((c) =>
@@ -135,6 +155,7 @@ function buildEvaluationPrompt(lesson) {
     "You will be given a lesson plan as JSON and a set of rubric criteria. For each criterion, assign a rating of high, medium, or low based on the evidence in the lesson plan. Write brief, specific feedback that references the actual lesson content.",
     "",
     "LESSON PLAN:",
+    fieldGuide,
     lessonText,
     "",
     "RUBRIC CRITERIA:",
@@ -171,15 +192,16 @@ function buildEvaluationPrompt(lesson) {
 // ── Route handler ─────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
   try {
-    const { lesson } = req.body;
+    const { lesson, templateType } = req.body;
 
     if (!lesson) {
       return res.status(400).json({ error: "No lesson provided for evaluation." });
     }
 
-    const prompt = buildEvaluationPrompt(lesson);
+    const prompt = buildEvaluationPrompt(lesson, templateType);
 
-    console.debug("[Evaluate] lesson title:", lesson.title);
+    console.debug("[Evaluate] template type:", templateType);
+    console.debug("[Evaluate] lesson title:", templateType === "template1" ? lesson.lessonTitle : lesson.title);
     console.debug("[Evaluate] prompt:", prompt);
 
     // Mistral is the evaluation provider for this prototype

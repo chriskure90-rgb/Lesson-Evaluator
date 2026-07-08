@@ -4,6 +4,8 @@ import { supabase } from "./lib/supabase";
 import { ExportDropdown } from "./components/ExportDropdown";
 import { slugifyFilename, type ExportDocument } from "./lib/export";
 import { buildTemplate1LessonDocx } from "./lib/template1-docx";
+import { TemplateRenderer } from "./components/lesson-templates/TemplateRenderer";
+import { Icon } from "./components/Icon";
 
 /* ════════════════════════════════════════════════════════════
    TYPES
@@ -384,11 +386,16 @@ function buildEvaluationExportDocument(
   return { title: title || "Lesson Evaluation", meta, sections: exportSections };
 }
 
-async function evaluateLesson(lesson: Lesson): Promise<EvaluationResult> {
+// templateType tells the backend which field names to read when building the
+// evaluation prompt ("standard" reads title/objectives/activities/etc.,
+// "template1" reads centralFocus/lessonObjectives/introduction.teacherActions/
+// etc. — see buildEvaluationPrompt in api/evaluate.js). lessonData is passed
+// through as-is either way; it is never converted between formats.
+async function evaluateLessonData(lessonData: Lesson | Template1Lesson, templateType: "standard" | "template1"): Promise<EvaluationResult> {
   const res = await fetch("/api/evaluate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ lesson }),
+    body: JSON.stringify({ lesson: lessonData, templateType }),
   });
   if (!res.ok) {
     const msg = await res.text().catch(() => `HTTP ${res.status}`);
@@ -510,76 +517,10 @@ function diffLessonFields(prev: Lesson, next: Lesson): string[] {
   );
 }
 
-/* ════════════════════════════════════════════════════════════
-   ICONS (inline SVG, no lucide dependency)
-════════════════════════════════════════════════════════════ */
-
-const Icon = {
-  BookOpen: () => (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
-    </svg>
-  ),
-  Sparkles: () => (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.582a.5.5 0 0 1 0 .963L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/>
-    </svg>
-  ),
-  FileCheck: () => (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m9 15 2 2 4-4"/>
-    </svg>
-  ),
-  FileText: () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>
-    </svg>
-  ),
-  Loader: () => (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: "spin 1s linear infinite" }}>
-      <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-    </svg>
-  ),
-  Chevron: () => (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="6 9 12 15 18 9"/>
-    </svg>
-  ),
-  Library: () => (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 3v18"/><path d="M3 6h4a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3"/><path d="M13 3l4 18"/><path d="M21 3l-4 18"/>
-    </svg>
-  ),
-  Search: () => (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
-    </svg>
-  ),
-  ArrowUpRight: () => (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M7 7h10v10"/><path d="M7 17 17 7"/>
-    </svg>
-  ),
-  ChevronDown: () => (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="6 9 12 15 18 9"/>
-    </svg>
-  ),
-  Edit: () => (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-    </svg>
-  ),
-  GoogleG: () => (
-    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
-      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-    </svg>
-  ),
-};
+/* Icon moved to ./components/Icon.tsx (imported above) — Fast Refresh
+   breaks when a file exports both components and non-component values
+   (Icon is a plain object, not a component). Import it from
+   "./components/Icon" directly rather than re-exporting it here. */
 
 /* ════════════════════════════════════════════════════════════
    PRIMITIVES
@@ -604,7 +545,7 @@ function FieldLabel({ children, hint, htmlFor }: { children: React.ReactNode; hi
 }
 
 /** Animated accordion item */
-function AccordionItem({
+export function AccordionItem({
   title,
   defaultOpen = false,
   children,
@@ -670,157 +611,11 @@ function AccordionItem({
 }
 
 /* ════════════════════════════════════════════════════════════
-   TEMPLATE 1 (PSU/GTEP-style) LESSON PLAN — WYSIWYG PREVIEW
-   Mirrors src/lib/template1-docx.ts section-for-section: one continuous
-   bordered table (Lesson Goals -> Objectives/Materials -> Lesson Plan
-   Details -> Introduction -> Main Learning Activities -> Closure), so what
-   a teacher sees here is what they get in the exported Word document.
+   TEMPLATE 1 (PSU/GTEP-style) LESSON PLAN — EDIT FORM
+   The read-only view lives in src/components/lesson-templates/
+   Template1LessonView.tsx (shared by Generate/Evaluate/Library via
+   TemplateRenderer) — only the Generate-specific edit form stays here.
 ════════════════════════════════════════════════════════════ */
-
-function t1SplitSentences(text: string): string[] {
-  return (text ?? "")
-    .split(/(?<=[.?!])\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-function Template1PhaseRow({
-  phaseName,
-  teacherHeading,
-  teacherActions,
-  studentActions,
-  studentSupport,
-  extra,
-}: {
-  phaseName: string;
-  teacherHeading: string;
-  teacherActions: string;
-  studentActions: string;
-  studentSupport?: string;
-  extra?: { label: string; text: string };
-}) {
-  return (
-    <tr>
-      <td className="t1-cell">
-        <p className="t1-label" style={{ marginTop: 0 }}>{teacherHeading}</p>
-        <ol className="t1-list">
-          {t1SplitSentences(teacherActions).map((s, i) => <li key={i}>{s}</li>)}
-        </ol>
-        {studentSupport && (
-          <>
-            <p className="t1-label">Student Support:</p>
-            <ul className="t1-list-dash">
-              {t1SplitSentences(studentSupport).map((s, i) => <li key={i}>{s}</li>)}
-            </ul>
-          </>
-        )}
-        {extra && (
-          <>
-            <p className="t1-label">{extra.label}</p>
-            <ul className="t1-list-dash">
-              {t1SplitSentences(extra.text).map((s, i) => <li key={i}>{s}</li>)}
-            </ul>
-          </>
-        )}
-      </td>
-      <td className="t1-cell">
-        <p className="t1-label" style={{ marginTop: 0 }}>{phaseName}: What Students will do</p>
-        <ul className="t1-list-dash">
-          {t1SplitSentences(studentActions).map((s, i) => <li key={i}>{s}</li>)}
-        </ul>
-      </td>
-    </tr>
-  );
-}
-
-export function Template1Preview({ lesson, breadcrumb, onEdit }: { lesson: Template1Lesson; breadcrumb: string; onEdit: () => void }) {
-  return (
-    <div className="t1-page">
-      <div className="t1-header-row">
-        <p className="preview-breadcrumb">{breadcrumb}</p>
-        <button type="button" className="btn-outline-sm" onClick={onEdit} style={{ display: "flex", alignItems: "center", gap: 5 }}>
-          <Icon.Edit /> Edit
-        </button>
-      </div>
-
-      <h2 className="t1-title">PSU Graduate School of Education Lesson Plan Template</h2>
-      <div className="t1-meta-row">
-        <span><strong>TC Name:</strong> {lesson.teacherName}</span>
-        <span><strong>Subject/Grade level:</strong> {lesson.subjectGradeLevel}</span>
-        <span><strong>Time Duration of Lesson:</strong> {lesson.lessonDuration}</span>
-      </div>
-
-      <table className="t1-table">
-        <tbody>
-          <tr>
-            <td className="t1-cell" colSpan={2}>
-              <p className="t1-section-label">Lesson Goals</p>
-              <p style={{ margin: 0 }}>
-                <span className="t1-label-red">Central Focus of Lesson: </span>
-                <span className="t1-instructions">
-                  Describe what you are teaching. Describe the purpose for teaching this content. Describe how the standards apply to the learning strategy and skills learned.
-                </span>
-              </p>
-              <p className="t1-body">{lesson.centralFocus || "Not specified."}</p>
-              <p className="t1-label">Standard(s) Addressed:</p>
-              <p className="t1-instructions-italic" style={{ margin: 0 }}>List all standards addressed during the lesson. (List number and text)</p>
-              <p className="t1-body">{lesson.standardsAddressed || "Not specified."}</p>
-            </td>
-          </tr>
-
-          <tr>
-            <td className="t1-cell">
-              <p className="t1-label" style={{ marginTop: 0 }}>Lesson Objectives:</p>
-              <ol className="t1-list">
-                {lesson.lessonObjectives.map((o, i) => <li key={i}>{o}</li>)}
-              </ol>
-            </td>
-            <td className="t1-cell">
-              <p className="t1-label" style={{ marginTop: 0 }}>Materials:</p>
-              <ul className="t1-list-dash">
-                {lesson.materials.map((m, i) => <li key={i}>{m}</li>)}
-              </ul>
-            </td>
-          </tr>
-
-          <tr>
-            <td className="t1-cell" colSpan={2}>
-              <p style={{ margin: 0 }}>
-                <span className="t1-label" style={{ margin: 0 }}>Lesson Plan Details: </span>
-                Write a <span className="t1-underline">detailed outline</span> of your lesson. Your outline
-                should be detailed enough that another teacher could understand them well enough to use them.{" "}
-                <span className="t1-label-blue">Each section MUST include how you will differentiate</span> your
-                lesson to accommodate a <span className="t1-italic-red">variety of learners.</span>
-              </p>
-            </td>
-          </tr>
-
-          <Template1PhaseRow
-            phaseName="Introduction"
-            teacherHeading="Introduction: What Teacher Will Do to Engage Students."
-            teacherActions={lesson.introduction.teacherActions}
-            studentActions={lesson.introduction.studentActions}
-            studentSupport={lesson.introduction.studentSupport}
-          />
-          <Template1PhaseRow
-            phaseName="Main Learning Activities"
-            teacherHeading="Main Learning Activities: What Teacher Will Do"
-            teacherActions={lesson.mainLearningActivities.teacherActions}
-            studentActions={lesson.mainLearningActivities.studentActions}
-            studentSupport={lesson.mainLearningActivities.studentSupport}
-          />
-          <Template1PhaseRow
-            phaseName="Closure"
-            teacherHeading="Closure: What Teacher Will Do"
-            teacherActions={lesson.closure.teacherActions}
-            studentActions={lesson.closure.studentActions}
-            extra={{ label: "How will you assess the objectives?", text: lesson.assessment.howObjectivesAssessed }}
-          />
-        </tbody>
-      </table>
-    </div>
-  );
-}
 
 export function Template1EditForm({
   draft,
@@ -1039,7 +834,9 @@ const FRAMEWORKS = [
 
 function GeneratorPage({
   sharedLesson,
+  sharedTemplate1Lesson,
   onLessonGenerated,
+  onTemplate1LessonGenerated,
   onLessonSaved,
   onLessonMetaGenerated,
   onEvaluateLesson,
@@ -1047,7 +844,9 @@ function GeneratorPage({
   userId,
 }: {
   sharedLesson: Lesson | null;
+  sharedTemplate1Lesson: Template1Lesson | null;
   onLessonGenerated: (l: Lesson) => void;
+  onTemplate1LessonGenerated: (l: Template1Lesson) => void;
   onLessonSaved: (id: number) => void;
   onLessonMetaGenerated?: (meta: LessonMeta) => void;
   onEvaluateLesson: () => void;
@@ -1075,8 +874,10 @@ function GeneratorPage({
   // actually produced the currently-displayed content, independent of the
   // live `lessonFormat` selector (so flipping the selector after generating
   // doesn't change what's displayed until the user regenerates).
-  const [generatedFormat, setGeneratedFormat] = useState<"standard" | "template1" | null>(sharedLesson ? "standard" : null);
-  const [template1Lesson, setTemplate1Lesson] = useState<Template1Lesson | null>(null);
+  const [generatedFormat, setGeneratedFormat] = useState<"standard" | "template1" | null>(
+    sharedTemplate1Lesson ? "template1" : sharedLesson ? "standard" : null
+  );
+  const [template1Lesson, setTemplate1Lesson] = useState<Template1Lesson | null>(sharedTemplate1Lesson);
   const [template1Draft, setTemplate1Draft]   = useState<Template1Lesson | null>(null);
 
   // Custom standards upload (PDF/DOCX)
@@ -1253,9 +1054,11 @@ function GeneratorPage({
         });
         setTemplate1Lesson(result);
         setGeneratedFormat("template1");
+        onTemplate1LessonGenerated(result);   // share with the Evaluator
         onLessonMetaGenerated?.({ model, grade, standards: resolvedFrameworks().join(", "), duration });
 
         const insertPayload = {
+          template_type:       "template1",
           lesson_topic:        topic,
           api_model:           model,
           grade_level:         String(grade),
@@ -1304,6 +1107,7 @@ function GeneratorPage({
 
       // ── Supabase save ──────────────────────────────────────────────────
       const insertPayload = {
+        template_type:       "standard",
         lesson_topic:        topic,
         api_model:           model,
         grade_level:         String(grade),
@@ -1617,7 +1421,7 @@ function GeneratorPage({
             />
           ) : (
             <>
-              <Template1Preview lesson={template1Lesson} breadcrumb={breadcrumb} onEdit={handleStartTemplate1Edit} />
+              <TemplateRenderer templateType="template1" lessonData={template1Lesson} breadcrumb={breadcrumb} onEdit={handleStartTemplate1Edit} />
               <div className="preview-evaluate-strip">
                 <ExportDropdown
                   label="Export lesson"
@@ -1628,9 +1432,8 @@ function GeneratorPage({
                 <button
                   type="button"
                   className="btn-primary"
-                  disabled
-                  title="Evaluation isn't available for Template 1 lessons yet."
-                  style={{ width: "auto", padding: "0 22px", height: 38, fontSize: 13, display: "flex", alignItems: "center", gap: 6, opacity: 0.5, cursor: "not-allowed" }}
+                  onClick={() => onEvaluateLesson()}
+                  style={{ width: "auto", padding: "0 22px", height: 38, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}
                 >
                   <Icon.FileCheck /> Evaluate Lesson
                 </button>
@@ -1773,63 +1576,7 @@ function GeneratorPage({
                   </div>
                 </div>
                 <div className="preview-body">
-                  <AccordionItem title="Learning Objectives" defaultOpen>
-                    <ol className="obj-list">
-                      {(lesson.objectives || []).map((o, i) => (
-                        <li key={i} className="obj-item">
-                          <span className="obj-num">{String(i + 1).padStart(2, "0")}</span>
-                          <span style={{ lineHeight: 1.55 }}>{o}</span>
-                        </li>
-                      ))}
-                    </ol>
-                  </AccordionItem>
-
-                  {lesson.standards_alignment && (
-                    <AccordionItem title="Standards Alignment">
-                      <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
-                        {lesson.standards_alignment}
-                      </p>
-                    </AccordionItem>
-                  )}
-
-                  <AccordionItem title="Materials">
-                    <ul className="mat-list">
-                      {(lesson.materials || []).map((m, i) => (
-                        <li key={i} className="mat-item">
-                          <span className="mat-dot" />
-                          {m}
-                        </li>
-                      ))}
-                    </ul>
-                  </AccordionItem>
-
-                  <AccordionItem title="Activities" defaultOpen>
-                    <ol className="act-list">
-                      {(lesson.activities || []).map((a, i) => (
-                        <li key={i} className="act-item">
-                          <span className="act-time">{a.minutes}m</span>
-                          <div>
-                            <div className="act-name">{a.name}</div>
-                            <div className="act-detail">{a.detail}</div>
-                          </div>
-                        </li>
-                      ))}
-                    </ol>
-                  </AccordionItem>
-
-                  <AccordionItem title="Assessment" isLast={!lesson.differentiation}>
-                    <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
-                      {lesson.assessment || "No assessment details provided."}
-                    </p>
-                  </AccordionItem>
-
-                  {lesson.differentiation && (
-                    <AccordionItem title="Differentiation" isLast>
-                      <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
-                        {lesson.differentiation}
-                      </p>
-                    </AccordionItem>
-                  )}
+                  <TemplateRenderer templateType="standard" lessonData={lesson} />
                 </div>
 
                 {/* Export + Evaluate Lesson CTA */}
@@ -2166,82 +1913,9 @@ function EvalSection({
   );
 }
 
-/* ── LessonPanel ─────────────────────────────────────────────────────────────
-   Compact read-only view of the generated lesson plan.
-   Toggled by "View lesson plan" in the Evaluator lesson card.
-   Reuses AccordionItem for consistent look; no editing here.
-────────────────────────────────────────────────────────────────────────────── */
-function LessonPanel({ lesson }: { lesson: Lesson }) {
-  return (
-    <div className="lesson-panel">
-      <div className="lesson-panel-header">
-        <p className="lesson-panel-label">Lesson Plan</p>
-        <h3 className="lesson-panel-title">{lesson.title}</h3>
-      </div>
-
-      <AccordionItem title="Learning Objectives" defaultOpen>
-        <ol className="obj-list">
-          {(lesson.objectives || []).map((o, i) => (
-            <li key={i} className="obj-item">
-              <span className="obj-num">{String(i + 1).padStart(2, "0")}</span>
-              <span style={{ lineHeight: 1.55 }}>{o}</span>
-            </li>
-          ))}
-        </ol>
-      </AccordionItem>
-
-      {lesson.standards_alignment && (
-        <AccordionItem title="Standards Alignment">
-          <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
-            {lesson.standards_alignment}
-          </p>
-        </AccordionItem>
-      )}
-
-      <AccordionItem title="Materials">
-        <ul className="mat-list">
-          {(lesson.materials || []).map((m, i) => (
-            <li key={i} className="mat-item">
-              <span className="mat-dot" />
-              {m}
-            </li>
-          ))}
-        </ul>
-      </AccordionItem>
-
-      <AccordionItem title="Activities">
-        <ol className="act-list">
-          {(lesson.activities || []).map((a, i) => (
-            <li key={i} className="act-item">
-              <span className="act-time">{a.minutes}m</span>
-              <div>
-                <div className="act-name">{a.name}</div>
-                <div className="act-detail">{a.detail}</div>
-              </div>
-            </li>
-          ))}
-        </ol>
-      </AccordionItem>
-
-      <AccordionItem title="Assessment" isLast={!lesson.differentiation}>
-        <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
-          {lesson.assessment || "No assessment details provided."}
-        </p>
-      </AccordionItem>
-
-      {lesson.differentiation && (
-        <AccordionItem title="Differentiation" isLast>
-          <p style={{ fontSize: 14, color: "rgb(48 44 39 / 0.85)", lineHeight: 1.6 }}>
-            {lesson.differentiation}
-          </p>
-        </AccordionItem>
-      )}
-    </div>
-  );
-}
-
 function EvaluatorPage({
   lesson,
+  template1Lesson,
   lessonId,
   userId,
   lessonMeta,
@@ -2249,6 +1923,7 @@ function EvaluatorPage({
   onAutoEvaluateDone,
 }: {
   lesson: Lesson | null;
+  template1Lesson: Template1Lesson | null;
   lessonId: number | null;
   userId: string;
   lessonMeta?: LessonMeta | null;
@@ -2393,12 +2068,18 @@ function EvaluatorPage({
   }
 
   const displayLesson = lesson ?? LESSON_META;
+  // Template 1 wins when present — lessonTitle lives in a different field
+  // than the Standard/demo shape's .title, so this can't just fall through
+  // the same ?? chain as displayLesson.
+  const displayTitle = template1Lesson?.lessonTitle || (displayLesson as typeof LESSON_META).title;
 
   async function handleEvaluate() {
     setEvaluating(true);
     setEvalError(null);
     try {
-      const result = await evaluateLesson(displayLesson as Lesson);
+      const result = template1Lesson
+        ? await evaluateLessonData(template1Lesson, "template1")
+        : await evaluateLessonData(displayLesson as Lesson, "standard");
       setEvalResult(result);
     } catch (err) {
       setEvalError(err instanceof Error ? err.message : "Evaluation failed. Please try again.");
@@ -2411,7 +2092,7 @@ function EvaluatorPage({
 
   // When arriving via the "Evaluate Lesson" button, start AI evaluation immediately
   useEffect(() => {
-    if (autoEvaluate && lesson && !evaluating && !evalResult) {
+    if (autoEvaluate && (lesson || template1Lesson) && !evaluating && !evalResult) {
       handleEvaluate();
       onAutoEvaluateDone?.();
     }
@@ -2535,7 +2216,7 @@ function EvaluatorPage({
               Reviewing
             </p>
             <h2 style={{ marginTop: 6, fontSize: "1.2rem", lineHeight: 1.3, maxWidth: 600 }}>
-              {(displayLesson as typeof LESSON_META).title}
+              {displayTitle}
             </h2>
             <div className="meta-row">
               {(lessonMeta?.model ?? (displayLesson as typeof LESSON_META).model) && (
@@ -2554,7 +2235,7 @@ function EvaluatorPage({
                 </>
               )}
             </div>
-            {!lesson && (displayLesson as typeof LESSON_META).overview && (
+            {!lesson && !template1Lesson && (displayLesson as typeof LESSON_META).overview && (
               <p style={{ marginTop: 12, fontSize: 14, color: "rgb(48 44 39 / 0.8)", lineHeight: 1.65, maxWidth: 620 }}>
                 {(displayLesson as typeof LESSON_META).overview}
               </p>
@@ -2578,7 +2259,7 @@ function EvaluatorPage({
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <ExportDropdown
                 label="Export evaluation"
-                filenameBase={slugifyFilename((displayLesson as typeof LESSON_META).title, "lesson-evaluation")}
+                filenameBase={slugifyFilename(displayTitle, "lesson-evaluation")}
                 getDocument={() => {
                   const evalMeta = [
                     lessonMeta?.model ?? (displayLesson as typeof LESSON_META).model,
@@ -2588,7 +2269,7 @@ function EvaluatorPage({
                   ].filter(Boolean).join(" · ");
 
                   return buildEvaluationExportDocument(
-                    (displayLesson as typeof LESSON_META).title,
+                    displayTitle,
                     evalMeta,
                     readiness,
                     displaySummary,
@@ -2641,7 +2322,17 @@ function EvaluatorPage({
 
       {/* ── Expandable lesson plan panel ── */}
       {showLesson && (
-        <LessonPanel lesson={displayLesson as Lesson} />
+        template1Lesson ? (
+          <TemplateRenderer templateType="template1" lessonData={template1Lesson} />
+        ) : (
+          <div className="lesson-panel">
+            <div className="lesson-panel-header">
+              <p className="lesson-panel-label">Lesson Plan</p>
+              <h3 className="lesson-panel-title">{displayTitle}</h3>
+            </div>
+            <TemplateRenderer templateType="standard" lessonData={displayLesson as Lesson} />
+          </div>
+        )
       )}
 
       {/* Detailed sections */}
@@ -2731,7 +2422,8 @@ type LibraryReadiness =
 // Raw row from lesson_generation joined with latest lesson_evaluations
 type LibraryRow = {
   id: number;
-  title: string;            // lesson_json.title ?? lesson_topic
+  title: string;            // lesson_json.title / .lessonTitle ?? lesson_topic
+  template_type: string | null; // "template1" or "standard"/null
   lesson_topic: string;
   api_model: string;
   grade_level: string;
@@ -2739,7 +2431,7 @@ type LibraryRow = {
   standards_framework: string;
   duration: string;
   created_at: string;
-  lesson_json: Lesson | null;
+  lesson_json: Lesson | Template1Lesson | null;
   // from lesson_evaluations (may be absent)
   eval_id: number | null;
   readiness_status: string | null;
@@ -2781,6 +2473,7 @@ function formatDate(iso: string) {
 // Explicit types for the raw Supabase rows avoid inference issues
 type RawLesson = {
   id: number;
+  template_type: string | null;
   lesson_topic: string;
   api_model: string;
   grade_level: string;
@@ -2788,7 +2481,7 @@ type RawLesson = {
   standards_framework: string;
   duration: string;
   created_at: string;
-  lesson_json: Lesson | null;
+  lesson_json: Lesson | Template1Lesson | null;
 };
 
 type RawEval = {
@@ -2804,7 +2497,7 @@ type RawEval = {
 async function fetchLibrary(userId: string): Promise<LibraryRow[]> {
   const { data: lessons, error: lessonErr } = await supabase
     .from("lesson_generation")
-    .select("id, lesson_topic, api_model, grade_level, subject, standards_framework, duration, created_at, lesson_json")
+    .select("id, template_type, lesson_topic, api_model, grade_level, subject, standards_framework, duration, created_at, lesson_json")
     .eq("is_demo", false)
     .eq("user_id", userId)
     .order("created_at", { ascending: false });
@@ -2835,10 +2528,15 @@ async function fetchLibrary(userId: string): Promise<LibraryRow[]> {
 
   return (lessons as RawLesson[]).map((l) => {
     const ev: RawEval | null = evalMap[l.id] ?? null;
-    const lessonTitle = l.lesson_json?.title || l.lesson_topic;
+    // Template 1's lesson_json has no .title field — its title lives in
+    // .lessonTitle instead. Never read a field the other format doesn't have.
+    const lessonTitle = l.template_type === "template1"
+      ? (l.lesson_json as Template1Lesson | null)?.lessonTitle || l.lesson_topic
+      : (l.lesson_json as Lesson | null)?.title || l.lesson_topic;
     return {
       id:                  l.id,
       title:               lessonTitle,
+      template_type:       l.template_type,
       lesson_topic:        l.lesson_topic,
       api_model:           l.api_model,
       grade_level:         l.grade_level,
@@ -3250,7 +2948,7 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
           {lesson && (
             <section className="drawer-section">
               <h3 className="drawer-section-title">Lesson Plan</h3>
-              <LessonPanel lesson={lesson} />
+              <TemplateRenderer templateType={row.template_type} lessonData={lesson} />
             </section>
           )}
 
@@ -3615,6 +3313,7 @@ type AuthUser = { id: string; email?: string };
 export default function App() {
   const [page, setPage] = useState<Page>("login");
   const [sharedLesson, setSharedLesson] = useState<Lesson | null>(null);
+  const [sharedTemplate1Lesson, setSharedTemplate1Lesson] = useState<Template1Lesson | null>(null);
   const [sharedLessonMeta, setSharedLessonMeta] = useState<LessonMeta | null>(null);
   const [generatedLessonId, setGeneratedLessonId] = useState<number | null>(null);
   const [autoEvaluate, setAutoEvaluate] = useState(false);
@@ -3694,6 +3393,7 @@ export default function App() {
 
   async function handleLogout() {
     setSharedLesson(null);
+    setSharedTemplate1Lesson(null);
     setSharedLessonMeta(null);
     setGeneratedLessonId(null);
     setAutoEvaluate(false);
@@ -3719,7 +3419,9 @@ export default function App() {
             {page === "generator"
               ? <GeneratorPage
                   sharedLesson={sharedLesson}
+                  sharedTemplate1Lesson={sharedTemplate1Lesson}
                   onLessonGenerated={setSharedLesson}
+                  onTemplate1LessonGenerated={setSharedTemplate1Lesson}
                   onLessonSaved={setGeneratedLessonId}
                   onLessonMetaGenerated={setSharedLessonMeta}
                   onEvaluateLesson={() => { setAutoEvaluate(true); setPage("evaluator"); }}
@@ -3729,6 +3431,7 @@ export default function App() {
               : page === "evaluator"
               ? <EvaluatorPage
                   lesson={sharedLesson}
+                  template1Lesson={sharedTemplate1Lesson}
                   lessonId={generatedLessonId}
                   userId={user!.id}
                   lessonMeta={sharedLessonMeta}
