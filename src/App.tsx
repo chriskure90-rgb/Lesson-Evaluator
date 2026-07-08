@@ -557,6 +557,19 @@ function FieldLabel({ children, hint, htmlFor }: { children: React.ReactNode; hi
   );
 }
 
+/** One labeled category inside a collapsible options panel (e.g. the
+ *  "Advanced Lesson Options" panel on GeneratorPage) — each future category
+ *  (Technology Integration, Teaching Strategies, ...) is just another one
+ *  of these, so adding one is a new sibling, not a layout change. */
+function AdvancedOptionGroup({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <p className="drawer-eyebrow" style={{ marginBottom: 10 }}>{title}</p>
+      <div className="space-y-6">{children}</div>
+    </div>
+  );
+}
+
 /** Animated accordion item */
 export function AccordionItem({
   title,
@@ -1506,39 +1519,52 @@ function GeneratorPage({
               </div>
             </div>
 
-            {/* Technology Integration */}
-            <div className="field">
-              <FieldLabel hint={`${technologyReliance}%`}>Technology Reliance</FieldLabel>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                step={5}
-                value={technologyReliance}
-                onChange={(e) => setTechnologyReliance(Number(e.target.value))}
-                style={{ width: "100%", accentColor: "var(--accent-fg)" }}
-                aria-label="Technology reliance percentage"
-              />
-            </div>
+            {/* Advanced Lesson Options — collapsed by default. Extensible: each
+                category (Technology Integration today; Teaching Strategies
+                and others later) is its own AdvancedOptionGroup added as a
+                sibling inside this one panel. */}
+            <div className="card" style={{ padding: "4px 20px" }}>
+              <AccordionItem title="Advanced Lesson Options" isLast>
+                <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+                  <AdvancedOptionGroup title="Technology Integration">
+                    <div className="field">
+                      <FieldLabel hint={`${technologyReliance}%`}>Technology Reliance</FieldLabel>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={5}
+                        value={technologyReliance}
+                        onChange={(e) => setTechnologyReliance(Number(e.target.value))}
+                        style={{ width: "100%", accentColor: "var(--accent-fg)" }}
+                        aria-label="Technology reliance percentage"
+                      />
+                    </div>
 
-            <div className="field">
-              <FieldLabel>Technology Usage</FieldLabel>
-              <div className="fw-chip-row">
-                {TECH_USAGE_OPTIONS.map((opt) => {
-                  const active = technologyUsage.includes(opt);
-                  return (
-                    <button
-                      key={opt}
-                      type="button"
-                      className={`fw-chip${active ? " fw-chip-active" : ""}`}
-                      onClick={() => toggleTechnologyUsage(opt)}
-                      aria-pressed={active}
-                    >
-                      {opt}
-                    </button>
-                  );
-                })}
-              </div>
+                    <div className="field">
+                      <FieldLabel>Technology Usage</FieldLabel>
+                      <div className="fw-chip-row">
+                        {TECH_USAGE_OPTIONS.map((opt) => {
+                          const active = technologyUsage.includes(opt);
+                          return (
+                            <button
+                              key={opt}
+                              type="button"
+                              className={`fw-chip${active ? " fw-chip-active" : ""}`}
+                              onClick={() => toggleTechnologyUsage(opt)}
+                              aria-pressed={active}
+                            >
+                              {opt}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </AdvancedOptionGroup>
+
+                  {/* Future groups (e.g. <AdvancedOptionGroup title="Teaching Strategies">) go here */}
+                </div>
+              </AccordionItem>
             </div>
 
             {error && <div className="error-box">{error}</div>}
