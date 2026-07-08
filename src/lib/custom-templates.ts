@@ -26,12 +26,17 @@ const BUCKET = "custom-templates";
    function (which caps request bodies at ~4.5MB). Unlike that pipeline,
    the uploaded file here is never deleted afterward — it's the permanent
    export template, not a processing relay.
+
+   All three actions (upload-init/register/export) are served by the single
+   /api/custom-templates route (dispatched via `action` in the body) rather
+   than one file each — Vercel's Hobby plan caps a project at 12 Serverless
+   Functions and every file under /api counts toward that.
 ────────────────────────────────────────────────────────────────────────────── */
 export async function uploadCustomTemplateFile(file: File, userId: string): Promise<{ path: string }> {
-  const initRes = await fetch("/api/custom-template-upload-init", {
+  const initRes = await fetch("/api/custom-templates", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ filename: file.name, userId }),
+    body: JSON.stringify({ action: "upload-init", filename: file.name, userId }),
   });
   const initData = await initRes.json();
   if (!initRes.ok) throw new Error(initData.error || "Could not prepare upload.");
@@ -50,10 +55,10 @@ export async function registerCustomTemplate(params: {
   name: string;
   userId: string;
 }): Promise<CustomTemplate> {
-  const res = await fetch("/api/custom-template-register", {
+  const res = await fetch("/api/custom-templates", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
+    body: JSON.stringify({ action: "register", ...params }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Could not register template.");
@@ -71,17 +76,17 @@ export async function fetchCustomTemplates(userId: string): Promise<CustomTempla
 }
 
 // Server-side merge (docxtemplater) of the teacher's uploaded .docx with the
-// generated Template1Lesson content — see api/custom-template-export.js.
+// generated Template1Lesson content — see api/custom-templates.js (action: "export").
 // The built-in Template1 DOCX builder is never used for custom templates.
 export async function exportCustomTemplateLessonDocx(
   customTemplateId: string,
   userId: string,
   lessonData: Template1Lesson
 ): Promise<Blob> {
-  const res = await fetch("/api/custom-template-export", {
+  const res = await fetch("/api/custom-templates", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ customTemplateId, userId, lessonData }),
+    body: JSON.stringify({ action: "export", customTemplateId, userId, lessonData }),
   });
   if (!res.ok) {
     const msg = await res.text().catch(() => `HTTP ${res.status}`);
