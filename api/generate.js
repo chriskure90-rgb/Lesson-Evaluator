@@ -215,10 +215,28 @@ function buildTechnologyIntegrationBlock(technologyReliance, technologyUsage) {
   ].join("\n");
 }
 
+// Shared by both prompt builders — teaching strategies (from the Advanced
+// Lesson Options panel's Literacy/Numeracy chip picker) are a cross-cutting
+// input, not a format-specific one.
+function buildTeachingStrategiesBlock(teachingStrategies) {
+  if (!Array.isArray(teachingStrategies) || teachingStrategies.length === 0) {
+    return [
+      "TEACHING STRATEGIES:",
+      "No specific teaching strategies were selected — use your instructional judgment for the best pedagogical approach.",
+    ].join("\n");
+  }
+
+  return [
+    "TEACHING STRATEGIES:",
+    `Meaningfully incorporate the following teaching strategies throughout the lesson: ${teachingStrategies.join(", ")}.`,
+    "Reflect each selected strategy in whichever part of the lesson it naturally fits (introduction, activities, or closure) — do not just mention them superficially or list them without integrating them into the actual instructional steps.",
+  ].join("\n");
+}
+
 // ── Prompt builder (Standard format) ─────────────────────────────────────────
 // Builds the full structured lesson-generation prompt from user inputs.
 // standardDescription is resolved by the handler (Supabase first, mock fallback).
-function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyReliance, technologyUsage }) {
+function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyReliance, technologyUsage, teachingStrategies }) {
   const standardsLine =
     Array.isArray(frameworks) && frameworks.length > 0
       ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
@@ -244,6 +262,8 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
     standardDescription,
     "",
     buildTechnologyIntegrationBlock(technologyReliance, technologyUsage),
+    "",
+    buildTeachingStrategiesBlock(teachingStrategies),
     "",
     "CONSTRAINTS:",
     `- Do not exceed ${duration} minutes total across all activities.`,
@@ -307,7 +327,7 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
 // export both read. subjectGradeLevel/lessonDuration/teacherName are NOT
 // requested here; the client fills those in from known form values so the
 // model never has to (and can't) hallucinate them.
-function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyReliance, technologyUsage }) {
+function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyReliance, technologyUsage, teachingStrategies }) {
   const standardsLine =
     Array.isArray(frameworks) && frameworks.length > 0
       ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
@@ -333,6 +353,8 @@ function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, d
     standardDescription,
     "",
     buildTechnologyIntegrationBlock(technologyReliance, technologyUsage),
+    "",
+    buildTeachingStrategiesBlock(teachingStrategies),
     "",
     "CONSTRAINTS:",
     `- The teacherActions/studentActions across introduction, mainLearningActivities, and closure combined should fit within ${duration} minutes.`,
@@ -381,7 +403,7 @@ export default async function handler(req, res) {
   console.log("=== STANDARDS DIAGNOSTICS ENABLED ===");
   console.log("[standards:diag] /api/generate handler entered");
   try {
-    const { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat, technologyReliance, technologyUsage } = req.body;
+    const { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat, technologyReliance, technologyUsage, teachingStrategies } = req.body;
 
     // Unrecognized/missing values fall back to "standard" so existing
     // clients (and the Standard Lesson Plan option) behave exactly as before.
@@ -404,10 +426,10 @@ export default async function handler(req, res) {
     // Standard schema with different phrasing) — see buildTemplate1Prompt.
     const isTemplate1 = normalizedLessonFormat === "template1";
     const prompt = isTemplate1
-      ? buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyReliance, technologyUsage })
-      : buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyReliance, technologyUsage });
+      ? buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyReliance, technologyUsage, teachingStrategies })
+      : buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyReliance, technologyUsage, teachingStrategies });
 
-    console.debug("[Generate] inputs:", { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat: normalizedLessonFormat, technologyReliance, technologyUsage });
+    console.debug("[Generate] inputs:", { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat: normalizedLessonFormat, technologyReliance, technologyUsage, teachingStrategies });
     console.debug("[Generate] prompt:", prompt);
 
     if (model === "mistral" || model === "Mistral") {

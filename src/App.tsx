@@ -257,6 +257,7 @@ async function generateLesson(params: {
   model: string;
   technologyReliance: number;
   technologyUsage: string[];
+  teachingStrategies: string[];
 }): Promise<Lesson> {
   const res = await fetch("/api/generate", {
     method: "POST",
@@ -286,6 +287,7 @@ async function generateTemplate1Lesson(params: {
   model: string;
   technologyReliance: number;
   technologyUsage: string[];
+  teachingStrategies: string[];
   subjectLabel: string;
   gradeLabel: string;
 }): Promise<Template1Lesson> {
@@ -872,6 +874,36 @@ const TECH_USAGE_OPTIONS = [
   "Other",
 ];
 
+// Source of truth: "Teaching Strategy.pdf". Strategy names are preserved
+// verbatim from the document. Concept Mapping and Graphic Organizers appear
+// under both the Literacy and Numeracy sections of the PDF — they're listed
+// once here (under Literacy, their first appearance) rather than duplicated,
+// so each is a single selectable chip instead of two independent ones.
+const TEACHING_STRATEGIES = {
+  literacy: [
+    "Concept Mapping",
+    "Descriptive Writing",
+    "Dialogical Writing",
+    "Graphic Organizers",
+    "Infographics",
+    "Performance",
+    "Persuasive Writing",
+    "Procedural Writing",
+    "Text-Based, Open-Ended Writing Prompt",
+    "Text-Based, Oral Comprehension Questions",
+    "Think-Pair-Share",
+    "Vocabulary Instruction",
+  ],
+  numeracy: [
+    "Manipulatives",
+    "Math Journals",
+    "Number Talks",
+    "Reciprocal Peer Tutoring",
+    "Science Talks",
+    "Socratic Seminar",
+  ],
+};
+
 function GeneratorPage({
   sharedLesson,
   sharedTemplate1Lesson,
@@ -909,6 +941,7 @@ function GeneratorPage({
   const [duration, setDuration]       = useState(60);
   const [technologyReliance, setTechnologyReliance] = useState(0); // 0-100
   const [technologyUsage, setTechnologyUsage]       = useState<string[]>([]);
+  const [teachingStrategies, setTeachingStrategies] = useState<string[]>([]);
   const [loading, setLoading]         = useState(false);
   const [lesson, setLesson]           = useState<Lesson | null>(sharedLesson);
   const [error, setError]             = useState<string | null>(null);
@@ -1125,6 +1158,12 @@ function GeneratorPage({
     );
   }
 
+  function toggleTeachingStrategy(name: string) {
+    setTeachingStrategies((prev) =>
+      prev.includes(name) ? prev.filter((s) => s !== name) : [...prev, name]
+    );
+  }
+
   async function handleGenerate() {
     // "custom" reuses the identical Template1 generation branch below — a
     // custom template is only a different DOCX export skin over the same
@@ -1142,7 +1181,7 @@ function GeneratorPage({
         const previousTemplate1Lesson = template1Lesson;
         const result = await generateTemplate1Lesson({
           grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
-          technologyReliance, technologyUsage,
+          technologyReliance, technologyUsage, teachingStrategies,
           subjectLabel: subject,
           gradeLabel: gradeBandLabel.replace(/^Grades\s*/, ""),
         });
@@ -1197,7 +1236,7 @@ function GeneratorPage({
       const previousLesson = lesson; // capture before generation (null = first-time creation)
       const result = await generateLesson({
         grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
-        technologyReliance, technologyUsage,
+        technologyReliance, technologyUsage, teachingStrategies,
       });
       setLesson(result);
       setGeneratedFormat("standard");
@@ -1562,7 +1601,49 @@ function GeneratorPage({
                     </div>
                   </AdvancedOptionGroup>
 
-                  {/* Future groups (e.g. <AdvancedOptionGroup title="Teaching Strategies">) go here */}
+                  <AdvancedOptionGroup title="Teaching Strategies">
+                    <div style={{ display: "flex", flexDirection: "column" }}>
+                      <AccordionItem title="Literacy" defaultOpen>
+                        <div className="fw-chip-row">
+                          {TEACHING_STRATEGIES.literacy.map((s) => {
+                            const active = teachingStrategies.includes(s);
+                            return (
+                              <button
+                                key={s}
+                                type="button"
+                                className={`fw-chip${active ? " fw-chip-active" : ""}`}
+                                onClick={() => toggleTeachingStrategy(s)}
+                                aria-pressed={active}
+                              >
+                                {s}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </AccordionItem>
+
+                      <AccordionItem title="Numeracy" defaultOpen isLast>
+                        <div className="fw-chip-row">
+                          {TEACHING_STRATEGIES.numeracy.map((s) => {
+                            const active = teachingStrategies.includes(s);
+                            return (
+                              <button
+                                key={s}
+                                type="button"
+                                className={`fw-chip${active ? " fw-chip-active" : ""}`}
+                                onClick={() => toggleTeachingStrategy(s)}
+                                aria-pressed={active}
+                              >
+                                {s}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </AccordionItem>
+                    </div>
+                  </AdvancedOptionGroup>
+
+                  {/* Future groups go here as additional <AdvancedOptionGroup> siblings */}
                 </div>
               </AccordionItem>
             </div>
