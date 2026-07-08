@@ -21,7 +21,10 @@ export function TemplateRenderer({
   breadcrumb?: string;
   onEdit?: () => void;
 }) {
-  if (templateType === "template1") {
+  // Custom templates (template_type "custom") reuse the same Template1Lesson
+  // data shape and, for v1, the same generic web preview — only DOCX export
+  // differs (via the teacher's uploaded .docx, see api/custom-template-export.js).
+  if (templateType === "template1" || templateType === "custom") {
     return <Template1LessonView lessonData={lessonData as Template1Lesson} breadcrumb={breadcrumb} onEdit={onEdit} />;
   }
   return <DefaultLessonView lessonData={lessonData as Lesson} />;

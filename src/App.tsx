@@ -6,12 +6,19 @@ import { slugifyFilename, type ExportDocument } from "./lib/export";
 import { buildTemplate1LessonDocx } from "./lib/template1-docx";
 import { TemplateRenderer } from "./components/lesson-templates/TemplateRenderer";
 import { Icon } from "./components/Icon";
+import {
+  fetchCustomTemplates,
+  uploadCustomTemplateFile,
+  registerCustomTemplate,
+  exportCustomTemplateLessonDocx,
+  type CustomTemplate,
+} from "./lib/custom-templates";
 
 /* ════════════════════════════════════════════════════════════
    TYPES
 ════════════════════════════════════════════════════════════ */
 
-type Page = "login" | "generator" | "evaluator" | "library";
+type Page = "login" | "generator" | "evaluator" | "library" | "templates";
 
 export type Activity = { name: string; minutes: number; detail: string };
 
@@ -753,6 +760,7 @@ function Sidebar({ page, setPage, userEmail, onLogout }: { page: Page; setPage: 
     { id: "generator" as Page, label: "Generator", Icon: Icon.Sparkles },
     { id: "evaluator" as Page, label: "Evaluator", Icon: Icon.FileCheck },
     { id: "library"   as Page, label: "Library",   Icon: Icon.Library  },
+    { id: "templates" as Page, label: "Templates", Icon: Icon.FileText },
   ];
 
   return (
@@ -835,8 +843,10 @@ const FRAMEWORKS = [
 function GeneratorPage({
   sharedLesson,
   sharedTemplate1Lesson,
+  sharedCustomTemplateId,
   onLessonGenerated,
   onTemplate1LessonGenerated,
+  onCustomTemplateSelected,
   onLessonSaved,
   onLessonMetaGenerated,
   onEvaluateLesson,
@@ -845,8 +855,10 @@ function GeneratorPage({
 }: {
   sharedLesson: Lesson | null;
   sharedTemplate1Lesson: Template1Lesson | null;
+  sharedCustomTemplateId: string | null;
   onLessonGenerated: (l: Lesson) => void;
   onTemplate1LessonGenerated: (l: Template1Lesson) => void;
+  onCustomTemplateSelected: (id: string | null) => void;
   onLessonSaved: (id: number) => void;
   onLessonMetaGenerated?: (meta: LessonMeta) => void;
   onEvaluateLesson: () => void;
@@ -874,11 +886,28 @@ function GeneratorPage({
   // actually produced the currently-displayed content, independent of the
   // live `lessonFormat` selector (so flipping the selector after generating
   // doesn't change what's displayed until the user regenerates).
-  const [generatedFormat, setGeneratedFormat] = useState<"standard" | "template1" | null>(
-    sharedTemplate1Lesson ? "template1" : sharedLesson ? "standard" : null
+  //
+  // "custom" (a teacher's own uploaded DOCX template) reuses this exact same
+  // Template1Lesson content/state — it's only a different export skin, see
+  // api/custom-template-export.js — so it's disambiguated from "template1"
+  // by whether a customTemplateId is also selected.
+  const [generatedFormat, setGeneratedFormat] = useState<"standard" | "template1" | "custom" | null>(
+    sharedTemplate1Lesson ? (sharedCustomTemplateId ? "custom" : "template1") : sharedLesson ? "standard" : null
   );
   const [template1Lesson, setTemplate1Lesson] = useState<Template1Lesson | null>(sharedTemplate1Lesson);
   const [template1Draft, setTemplate1Draft]   = useState<Template1Lesson | null>(null);
+
+  // Teacher's own uploaded DOCX templates (only "ready" ones are selectable)
+  const [customTemplates, setCustomTemplates] = useState<CustomTemplate[]>([]);
+  const [selectedCustomTemplateId, setSelectedCustomTemplateId] = useState<string | null>(sharedCustomTemplateId);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchCustomTemplates(userId)
+      .then((data) => { if (!cancelled) setCustomTemplates(data.filter((t) => t.status === "ready")); })
+      .catch((err) => console.error("[custom_templates] fetch error:", err));
+    return () => { cancelled = true; };
+  }, [userId]);
 
   // Custom standards upload (PDF/DOCX)
   const [uploadStatus, setUploadStatus]   = useState<"idle" | "uploading" | "processing" | "success" | "error">("idle");
@@ -1042,10 +1071,19 @@ function GeneratorPage({
   }
 
   async function handleGenerate() {
+    // "custom" reuses the identical Template1 generation branch below — a
+    // custom template is only a different DOCX export skin over the same
+    // Template1Lesson content, never its own generation schema.
+    if (lessonFormat === "custom" && !selectedCustomTemplateId) {
+      setError("Please select one of your uploaded templates first.");
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
-      if (lessonFormat === "template1") {
+      if (lessonFormat === "template1" || lessonFormat === "custom") {
+        const isCustom = lessonFormat === "custom";
         const previousTemplate1Lesson = template1Lesson;
         const result = await generateTemplate1Lesson({
           grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
@@ -1053,12 +1091,14 @@ function GeneratorPage({
           gradeLabel: gradeBandLabel.replace(/^Grades\s*/, ""),
         });
         setTemplate1Lesson(result);
-        setGeneratedFormat("template1");
+        setGeneratedFormat(isCustom ? "custom" : "template1");
         onTemplate1LessonGenerated(result);   // share with the Evaluator
+        onCustomTemplateSelected(isCustom ? selectedCustomTemplateId : null);
         onLessonMetaGenerated?.({ model, grade, standards: resolvedFrameworks().join(", "), duration });
 
         const insertPayload = {
-          template_type:       "template1",
+          template_type:       isCustom ? "custom" : "template1",
+          custom_template_id:  isCustom ? selectedCustomTemplateId : null,
           lesson_topic:        topic,
           api_model:           model,
           grade_level:         String(grade),
@@ -1103,6 +1143,7 @@ function GeneratorPage({
       setLesson(result);
       setGeneratedFormat("standard");
       onLessonGenerated(result);   // share with the Evaluator
+      onCustomTemplateSelected(null); // clear any stale custom-template linkage
       onLessonMetaGenerated?.({ model, grade, standards: resolvedFrameworks().join(", "), duration });
 
       // ── Supabase save ──────────────────────────────────────────────────
@@ -1329,7 +1370,9 @@ function GeneratorPage({
 
             {/* Lesson Plan Format */}
             <div className="field">
-              <FieldLabel>Lesson Plan Format</FieldLabel>
+              <FieldLabel hint={customTemplates.length > 0 ? undefined : "Upload one under Templates"}>
+                Lesson Plan Format
+              </FieldLabel>
               <div className="fw-chip-row">
                 {LESSON_FORMATS.map((f) => (
                   <button
@@ -1342,6 +1385,20 @@ function GeneratorPage({
                     {f.label}
                   </button>
                 ))}
+                {customTemplates.map((t) => {
+                  const active = lessonFormat === "custom" && selectedCustomTemplateId === t.id;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      className={`fw-chip${active ? " fw-chip-active" : ""}`}
+                      onClick={() => { setLessonFormat("custom"); setSelectedCustomTemplateId(t.id); }}
+                      aria-pressed={active}
+                    >
+                      {t.name}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -1402,8 +1459,10 @@ function GeneratorPage({
         </div>
 
         {/* ── Preview ────────────────────────────── */}
-        {generatedFormat === "template1" && template1Lesson ? (
-          /* ── Template 1 (PSU/GTEP-style) — its own WYSIWYG preview/edit, not the card/accordion layout ── */
+        {(generatedFormat === "template1" || generatedFormat === "custom") && template1Lesson ? (
+          /* ── Template 1 (PSU/GTEP-style) — its own WYSIWYG preview/edit, not the card/accordion layout ──
+             "custom" (a teacher's own uploaded DOCX) reuses this exact same preview/edit UI — only the
+             DOCX export target differs (see getDocxOverride below). ── */
           editing && template1Draft ? (
             <Template1EditForm
               draft={template1Draft}
@@ -1421,13 +1480,17 @@ function GeneratorPage({
             />
           ) : (
             <>
-              <TemplateRenderer templateType="template1" lessonData={template1Lesson} breadcrumb={breadcrumb} onEdit={handleStartTemplate1Edit} />
+              <TemplateRenderer templateType={generatedFormat} lessonData={template1Lesson} breadcrumb={breadcrumb} onEdit={handleStartTemplate1Edit} />
               <div className="preview-evaluate-strip">
                 <ExportDropdown
                   label="Export lesson"
                   filenameBase={slugifyFilename(template1Lesson.lessonTitle, "lesson-plan")}
                   getDocument={() => buildTemplate1ExportDocument(template1Lesson)}
-                  getDocxOverride={() => buildTemplate1LessonDocx(template1Lesson)}
+                  getDocxOverride={() =>
+                    generatedFormat === "custom" && selectedCustomTemplateId
+                      ? exportCustomTemplateLessonDocx(selectedCustomTemplateId, userId, template1Lesson)
+                      : buildTemplate1LessonDocx(template1Lesson)
+                  }
                 />
                 <button
                   type="button"
@@ -2530,7 +2593,8 @@ async function fetchLibrary(userId: string): Promise<LibraryRow[]> {
     const ev: RawEval | null = evalMap[l.id] ?? null;
     // Template 1's lesson_json has no .title field — its title lives in
     // .lessonTitle instead. Never read a field the other format doesn't have.
-    const lessonTitle = l.template_type === "template1"
+    // "custom" lessons share the exact same Template1Lesson shape.
+    const lessonTitle = (l.template_type === "template1" || l.template_type === "custom")
       ? (l.lesson_json as Template1Lesson | null)?.lessonTitle || l.lesson_topic
       : (l.lesson_json as Lesson | null)?.title || l.lesson_topic;
     return {
@@ -2576,6 +2640,174 @@ function gradeDisplay(gradeLevel: string): string {
     return `Grades ${gradeLevel.replace("-", "–")}`;
   }
   return `Grade ${gradeLevel}`; // legacy individual grade fallback
+}
+
+/* ════════════════════════════════════════════════════════════
+   MANAGE TEMPLATES PAGE
+════════════════════════════════════════════════════════════ */
+
+function TemplatesPage({ userId }: { userId: string }) {
+  const [templates, setTemplates] = useState<CustomTemplate[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [fetchErr, setFetchErr]   = useState<string | null>(null);
+
+  const [templateName, setTemplateName] = useState("");
+  const [pendingFile, setPendingFile]   = useState<File | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<"idle" | "uploading" | "processing" | "success" | "error">("idle");
+  const [uploadError, setUploadError]   = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setFetchErr(null);
+    fetchCustomTemplates(userId)
+      .then((data) => { if (!cancelled) { setTemplates(data); setLoading(false); } })
+      .catch((err) => { if (!cancelled) { setFetchErr(err?.message ?? "Failed to load templates."); setLoading(false); } });
+    return () => { cancelled = true; };
+  }, [userId]);
+
+  async function handleUpload() {
+    if (!pendingFile) return;
+    setUploadStatus("uploading");
+    setUploadError(null);
+    try {
+      const { path } = await uploadCustomTemplateFile(pendingFile, userId);
+      setUploadStatus("processing");
+      const saved = await registerCustomTemplate({
+        path,
+        filename: pendingFile.name,
+        name: templateName.trim() || pendingFile.name,
+        userId,
+      });
+      setTemplates((prev) => [saved, ...prev]);
+      setUploadStatus("success");
+      setPendingFile(null);
+      setTemplateName("");
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Upload failed. Please try again.");
+      setUploadStatus("error");
+    }
+  }
+
+  const busy = uploadStatus === "uploading" || uploadStatus === "processing";
+
+  return (
+    <div style={{ maxWidth: 900, margin: "0 auto", padding: "40px 40px 60px" }}>
+      <PageHeader
+        title="Manage Templates"
+        subtitle="Upload your school or district's Word lesson plan template — lessons are generated to fit your format, not the other way around."
+      />
+
+      {/* ── Upload card ── */}
+      <div className="card" style={{ padding: "24px 24px 28px", marginBottom: 28 }}>
+        <div className="space-y-6">
+          <div className="field">
+            <FieldLabel htmlFor="template-name" hint="Optional">Template Name</FieldLabel>
+            <input
+              id="template-name"
+              className="input"
+              value={templateName}
+              onChange={(e) => setTemplateName(e.target.value)}
+              placeholder="e.g. District Lesson Plan Format"
+            />
+          </div>
+
+          <div
+            className="fw-upload-area"
+            onClick={() => !busy && fileInputRef.current?.click()}
+            style={{ cursor: busy ? "default" : "pointer" }}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = ""; // allow re-selecting the same file later
+                if (file) {
+                  setPendingFile(file);
+                  setUploadStatus("idle");
+                  setUploadError(null);
+                }
+              }}
+            />
+            <div className="fw-upload-area-icon">↑</div>
+            <p className="fw-upload-area-label">Upload a .docx template with {"{{PLACEHOLDER}}"} tags</p>
+
+            <button
+              type="button"
+              className="btn-outline-sm"
+              disabled={busy}
+              onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+            >
+              Choose .docx File
+            </button>
+
+            {pendingFile && <p className="fw-upload-filename">{pendingFile.name}</p>}
+
+            {uploadStatus === "uploading" && <p className="fw-upload-status">Uploading…</p>}
+            {uploadStatus === "processing" && <p className="fw-upload-status">Detecting placeholders…</p>}
+            {uploadStatus === "success" && (
+              <p className="fw-upload-status fw-upload-status-success">Template uploaded.</p>
+            )}
+            {uploadStatus === "error" && (
+              <p className="fw-upload-status fw-upload-status-error">{uploadError}</p>
+            )}
+          </div>
+
+          {pendingFile && !busy && (
+            <button type="button" className="btn-primary" onClick={handleUpload} style={{ marginTop: 4 }}>
+              <Icon.Sparkles /> Upload Template
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ── Template list ── */}
+      {loading ? (
+        <p style={{ color: "var(--muted-fg)", fontSize: 14 }}>Loading templates…</p>
+      ) : fetchErr ? (
+        <div className="error-box">{fetchErr}</div>
+      ) : templates.length === 0 ? (
+        <p style={{ color: "var(--muted-fg)", fontSize: 14 }}>No custom templates uploaded yet.</p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {templates.map((t) => (
+            <div key={t.id} className="lib-card">
+              <div className="lib-card-top">
+                <span className={"lib-badge " + (t.status === "ready" ? "badge-ready" : t.status === "error" ? "badge-not" : "badge-needs")}>
+                  {t.status === "ready" ? "Ready" : t.status === "error" ? "Error" : "Processing"}
+                </span>
+                <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>{formatDate(t.created_at)}</span>
+              </div>
+              <p className="lib-card-title" style={{ marginBottom: 2 }}>{t.name}</p>
+              <p style={{ fontSize: 12.5, color: "var(--muted-fg)", marginBottom: 10 }}>{t.original_filename}</p>
+
+              {t.recognized_placeholders.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: t.unrecognized_placeholders.length > 0 ? 8 : 0 }}>
+                  {t.recognized_placeholders.map((p) => (
+                    <span key={p} className="lib-badge badge-ready" style={{ fontFamily: "monospace" }}>{`{{${p}}}`}</span>
+                  ))}
+                </div>
+              )}
+
+              {t.unrecognized_placeholders.length > 0 && (
+                <p style={{ fontSize: 12.5, color: "var(--destructive)", marginBottom: 0 }}>
+                  ⚠ Unrecognized (left blank on export): {t.unrecognized_placeholders.map((p) => `{{${p}}}`).join(", ")}
+                </p>
+              )}
+
+              {t.status === "error" && t.error_message && (
+                <p style={{ fontSize: 12.5, color: "var(--destructive)", marginTop: 6 }}>{t.error_message}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ── LibraryPage ── */
@@ -3314,6 +3546,7 @@ export default function App() {
   const [page, setPage] = useState<Page>("login");
   const [sharedLesson, setSharedLesson] = useState<Lesson | null>(null);
   const [sharedTemplate1Lesson, setSharedTemplate1Lesson] = useState<Template1Lesson | null>(null);
+  const [sharedCustomTemplateId, setSharedCustomTemplateId] = useState<string | null>(null);
   const [sharedLessonMeta, setSharedLessonMeta] = useState<LessonMeta | null>(null);
   const [generatedLessonId, setGeneratedLessonId] = useState<number | null>(null);
   const [autoEvaluate, setAutoEvaluate] = useState(false);
@@ -3394,6 +3627,7 @@ export default function App() {
   async function handleLogout() {
     setSharedLesson(null);
     setSharedTemplate1Lesson(null);
+    setSharedCustomTemplateId(null);
     setSharedLessonMeta(null);
     setGeneratedLessonId(null);
     setAutoEvaluate(false);
@@ -3420,8 +3654,10 @@ export default function App() {
               ? <GeneratorPage
                   sharedLesson={sharedLesson}
                   sharedTemplate1Lesson={sharedTemplate1Lesson}
+                  sharedCustomTemplateId={sharedCustomTemplateId}
                   onLessonGenerated={setSharedLesson}
                   onTemplate1LessonGenerated={setSharedTemplate1Lesson}
+                  onCustomTemplateSelected={setSharedCustomTemplateId}
                   onLessonSaved={setGeneratedLessonId}
                   onLessonMetaGenerated={setSharedLessonMeta}
                   onEvaluateLesson={() => { setAutoEvaluate(true); setPage("evaluator"); }}
@@ -3438,7 +3674,9 @@ export default function App() {
                   autoEvaluate={autoEvaluate}
                   onAutoEvaluateDone={() => setAutoEvaluate(false)}
                 />
-              : <LibraryPage userId={user!.id} />}
+              : page === "library"
+              ? <LibraryPage userId={user!.id} />
+              : <TemplatesPage userId={user!.id} />}
           </main>
         </div>
       )}
