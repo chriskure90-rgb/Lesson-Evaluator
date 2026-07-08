@@ -255,6 +255,8 @@ async function generateLesson(params: {
   goal: string;
   duration: number;
   model: string;
+  technologyReliance: number;
+  technologyUsage: string[];
 }): Promise<Lesson> {
   const res = await fetch("/api/generate", {
     method: "POST",
@@ -282,6 +284,8 @@ async function generateTemplate1Lesson(params: {
   goal: string;
   duration: number;
   model: string;
+  technologyReliance: number;
+  technologyUsage: string[];
   subjectLabel: string;
   gradeLabel: string;
 }): Promise<Template1Lesson> {
@@ -841,6 +845,20 @@ const FRAMEWORKS = [
   { value: "ccss", label: "Common Core"  },
 ];
 
+const TECH_USAGE_OPTIONS = [
+  "Chromebooks",
+  "iPads / Tablets",
+  "Interactive Whiteboard",
+  "Google Workspace",
+  "Microsoft Office",
+  "AI Tools",
+  "Simulations / Virtual Labs",
+  "LMS / Google Classroom",
+  "Video / Multimedia",
+  "Educational Apps",
+  "Other",
+];
+
 function GeneratorPage({
   sharedLesson,
   sharedTemplate1Lesson,
@@ -876,6 +894,8 @@ function GeneratorPage({
   const [topic, setTopic]             = useState("");
   const [goal, setGoal]               = useState("Help students understand how plants produce energy through photosynthesis.");
   const [duration, setDuration]       = useState(60);
+  const [technologyReliance, setTechnologyReliance] = useState(0); // 0-100
+  const [technologyUsage, setTechnologyUsage]       = useState<string[]>([]);
   const [loading, setLoading]         = useState(false);
   const [lesson, setLesson]           = useState<Lesson | null>(sharedLesson);
   const [error, setError]             = useState<string | null>(null);
@@ -1086,6 +1106,12 @@ function GeneratorPage({
     return [FRAMEWORKS.find((f) => f.value === framework)?.label ?? framework];
   }
 
+  function toggleTechnologyUsage(option: string) {
+    setTechnologyUsage((prev) =>
+      prev.includes(option) ? prev.filter((o) => o !== option) : [...prev, option]
+    );
+  }
+
   async function handleGenerate() {
     // "custom" reuses the identical Template1 generation branch below — a
     // custom template is only a different DOCX export skin over the same
@@ -1103,6 +1129,7 @@ function GeneratorPage({
         const previousTemplate1Lesson = template1Lesson;
         const result = await generateTemplate1Lesson({
           grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
+          technologyReliance, technologyUsage,
           subjectLabel: subject,
           gradeLabel: gradeBandLabel.replace(/^Grades\s*/, ""),
         });
@@ -1155,7 +1182,10 @@ function GeneratorPage({
       }
 
       const previousLesson = lesson; // capture before generation (null = first-time creation)
-      const result = await generateLesson({ grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model });
+      const result = await generateLesson({
+        grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
+        technologyReliance, technologyUsage,
+      });
       setLesson(result);
       setGeneratedFormat("standard");
       onLessonGenerated(result);   // share with the Evaluator
@@ -1473,6 +1503,41 @@ function GeneratorPage({
                     {d}<span style={{ fontWeight: 400, opacity: 0.7, marginLeft: 2 }}>m</span>
                   </button>
                 ))}
+              </div>
+            </div>
+
+            {/* Technology Integration */}
+            <div className="field">
+              <FieldLabel hint={`${technologyReliance}%`}>Technology Reliance</FieldLabel>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={technologyReliance}
+                onChange={(e) => setTechnologyReliance(Number(e.target.value))}
+                style={{ width: "100%", accentColor: "var(--accent-fg)" }}
+                aria-label="Technology reliance percentage"
+              />
+            </div>
+
+            <div className="field">
+              <FieldLabel>Technology Usage</FieldLabel>
+              <div className="fw-chip-row">
+                {TECH_USAGE_OPTIONS.map((opt) => {
+                  const active = technologyUsage.includes(opt);
+                  return (
+                    <button
+                      key={opt}
+                      type="button"
+                      className={`fw-chip${active ? " fw-chip-active" : ""}`}
+                      onClick={() => toggleTechnologyUsage(opt)}
+                      aria-pressed={active}
+                    >
+                      {opt}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
