@@ -199,18 +199,29 @@ function formatStandardsBlock(chunks) {
     .join("\n\n");
 }
 
+// technologyUsage is a single Low/Medium/High level (how much the lesson
+// should lean on technology overall); technologyTools is a separate
+// multi-select list of specific tools/platforms to use where appropriate.
 // Shared by both prompt builders (Standard and Template 1) — technology
 // integration is a cross-cutting input, not a format-specific one.
-function buildTechnologyIntegrationBlock(technologyReliance, technologyUsage) {
-  const reliance = Number.isFinite(technologyReliance) ? technologyReliance : 0;
-  const usageList = Array.isArray(technologyUsage) && technologyUsage.length > 0
-    ? technologyUsage.join(", ")
+const TECHNOLOGY_USAGE_LEVEL_LABELS = { low: "Low", medium: "Medium", high: "High" };
+const TECHNOLOGY_USAGE_LEVEL_DEFINITIONS = {
+  low:    "Technology plays a minimal supporting role in the lesson.",
+  medium: "Technology is used regularly to support instruction and learning activities.",
+  high:   "Technology is a central component throughout the lesson.",
+};
+
+function buildTechnologyIntegrationBlock(technologyUsage, technologyTools) {
+  const level = TECHNOLOGY_USAGE_LEVEL_LABELS[technologyUsage] ? technologyUsage : "medium";
+  const toolsList = Array.isArray(technologyTools) && technologyTools.length > 0
+    ? technologyTools.join(", ")
     : "No specific technologies selected — use technology only if it naturally fits the lesson.";
 
   return [
     "TECHNOLOGY INTEGRATION:",
-    `The lesson should rely on technology for approximately ${reliance}% of the instructional time.`,
-    `Use the following technologies where appropriate: ${usageList}.`,
+    `Technology Usage: ${TECHNOLOGY_USAGE_LEVEL_LABELS[level]}`,
+    TECHNOLOGY_USAGE_LEVEL_DEFINITIONS[level],
+    `Use the following technologies where appropriate: ${toolsList}.`,
     "Technology should support the learning objectives and should not be added unnecessarily.",
   ].join("\n");
 }
@@ -236,7 +247,7 @@ function buildTeachingStrategiesBlock(teachingStrategies) {
 // ── Prompt builder (Standard format) ─────────────────────────────────────────
 // Builds the full structured lesson-generation prompt from user inputs.
 // standardDescription is resolved by the handler (Supabase first, mock fallback).
-function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyReliance, technologyUsage, teachingStrategies }) {
+function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, technologyTools, teachingStrategies }) {
   const standardsLine =
     Array.isArray(frameworks) && frameworks.length > 0
       ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
@@ -261,7 +272,7 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
     "RELEVANT STANDARDS:",
     standardDescription,
     "",
-    buildTechnologyIntegrationBlock(technologyReliance, technologyUsage),
+    buildTechnologyIntegrationBlock(technologyUsage, technologyTools),
     "",
     buildTeachingStrategiesBlock(teachingStrategies),
     "",
@@ -327,7 +338,7 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
 // export both read. subjectGradeLevel/lessonDuration/teacherName are NOT
 // requested here; the client fills those in from known form values so the
 // model never has to (and can't) hallucinate them.
-function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyReliance, technologyUsage, teachingStrategies }) {
+function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, technologyTools, teachingStrategies }) {
   const standardsLine =
     Array.isArray(frameworks) && frameworks.length > 0
       ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
@@ -352,7 +363,7 @@ function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, d
     "RELEVANT STANDARDS:",
     standardDescription,
     "",
-    buildTechnologyIntegrationBlock(technologyReliance, technologyUsage),
+    buildTechnologyIntegrationBlock(technologyUsage, technologyTools),
     "",
     buildTeachingStrategiesBlock(teachingStrategies),
     "",
@@ -403,7 +414,7 @@ export default async function handler(req, res) {
   console.log("=== STANDARDS DIAGNOSTICS ENABLED ===");
   console.log("[standards:diag] /api/generate handler entered");
   try {
-    const { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat, technologyReliance, technologyUsage, teachingStrategies } = req.body;
+    const { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat, technologyUsage, technologyTools, teachingStrategies } = req.body;
 
     // Unrecognized/missing values fall back to "standard" so existing
     // clients (and the Standard Lesson Plan option) behave exactly as before.
@@ -426,10 +437,10 @@ export default async function handler(req, res) {
     // Standard schema with different phrasing) — see buildTemplate1Prompt.
     const isTemplate1 = normalizedLessonFormat === "template1";
     const prompt = isTemplate1
-      ? buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyReliance, technologyUsage, teachingStrategies })
-      : buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyReliance, technologyUsage, teachingStrategies });
+      ? buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, technologyTools, teachingStrategies })
+      : buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, technologyTools, teachingStrategies });
 
-    console.debug("[Generate] inputs:", { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat: normalizedLessonFormat, technologyReliance, technologyUsage, teachingStrategies });
+    console.debug("[Generate] inputs:", { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat: normalizedLessonFormat, technologyUsage, technologyTools, teachingStrategies });
     console.debug("[Generate] prompt:", prompt);
 
     if (model === "mistral" || model === "Mistral") {

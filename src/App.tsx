@@ -261,8 +261,8 @@ async function generateLesson(params: {
   goal: string;
   duration: number;
   model: string;
-  technologyReliance: number;
-  technologyUsage: string[];
+  technologyUsage: TechnologyUsageLevel;
+  technologyTools: string[];
   teachingStrategies: string[];
 }): Promise<Lesson> {
   const res = await fetch("/api/generate", {
@@ -291,8 +291,8 @@ async function generateTemplate1Lesson(params: {
   goal: string;
   duration: number;
   model: string;
-  technologyReliance: number;
-  technologyUsage: string[];
+  technologyUsage: TechnologyUsageLevel;
+  technologyTools: string[];
   teachingStrategies: string[];
   subjectLabel: string;
   gradeLabel: string;
@@ -866,7 +866,9 @@ const FRAMEWORKS = [
   { value: "ccss", label: "Common Core"  },
 ];
 
-const TECH_USAGE_OPTIONS = [
+// Specific tools/platforms a lesson might use — a separate concern from
+// *how much* the lesson leans on technology overall (TECHNOLOGY_USAGE_LEVELS).
+const TECH_TOOLS_OPTIONS = [
   "Chromebooks",
   "iPads / Tablets",
   "Interactive Whiteboard",
@@ -879,6 +881,23 @@ const TECH_USAGE_OPTIONS = [
   "Educational Apps",
   "Other",
 ];
+
+// How much the lesson should lean on technology overall. Single-select
+// (unlike TECH_TOOLS_OPTIONS, which is multi-select) — sent to the API/prompt
+// as "Technology Usage: Low|Medium|High".
+type TechnologyUsageLevel = "low" | "medium" | "high";
+
+const TECHNOLOGY_USAGE_LEVELS: { value: TechnologyUsageLevel; label: string }[] = [
+  { value: "low",    label: "Low"    },
+  { value: "medium", label: "Medium" },
+  { value: "high",   label: "High"   },
+];
+
+const TECHNOLOGY_USAGE_LEVEL_DEFINITIONS: Record<TechnologyUsageLevel, string> = {
+  low:    "Technology plays a minimal supporting role in the lesson.",
+  medium: "Technology is used regularly to support instruction and learning activities.",
+  high:   "Technology is a central component throughout the lesson.",
+};
 
 /** Renders the Literacy/Numeracy chip picker from whatever TeachingStrategy[]
  *  it's given — it has no knowledge of where that list came from (today, a
@@ -961,8 +980,8 @@ function GeneratorPage({
   const [topic, setTopic]             = useState("");
   const [goal, setGoal]               = useState("Help students understand how plants produce energy through photosynthesis.");
   const [duration, setDuration]       = useState(60);
-  const [technologyReliance, setTechnologyReliance] = useState(0); // 0-100
-  const [technologyUsage, setTechnologyUsage]       = useState<string[]>([]);
+  const [technologyUsage, setTechnologyUsage] = useState<TechnologyUsageLevel>("medium");
+  const [technologyTools, setTechnologyTools] = useState<string[]>([]);
   const [teachingStrategyCatalog, setTeachingStrategyCatalog] = useState<TeachingStrategy[]>([]);
   const [selectedStrategyIds, setSelectedStrategyIds]         = useState<string[]>([]);
 
@@ -1183,8 +1202,8 @@ function GeneratorPage({
     return [FRAMEWORKS.find((f) => f.value === framework)?.label ?? framework];
   }
 
-  function toggleTechnologyUsage(option: string) {
-    setTechnologyUsage((prev) =>
+  function toggleTechnologyTool(option: string) {
+    setTechnologyTools((prev) =>
       prev.includes(option) ? prev.filter((o) => o !== option) : [...prev, option]
     );
   }
@@ -1215,7 +1234,7 @@ function GeneratorPage({
         const previousTemplate1Lesson = template1Lesson;
         const result = await generateTemplate1Lesson({
           grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
-          technologyReliance, technologyUsage, teachingStrategies,
+          technologyUsage, technologyTools, teachingStrategies,
           subjectLabel: subject,
           gradeLabel: gradeBandLabel.replace(/^Grades\s*/, ""),
         });
@@ -1270,7 +1289,7 @@ function GeneratorPage({
       const previousLesson = lesson; // capture before generation (null = first-time creation)
       const result = await generateLesson({
         grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
-        technologyReliance, technologyUsage, teachingStrategies,
+        technologyUsage, technologyTools, teachingStrategies,
       });
       setLesson(result);
       setGeneratedFormat("standard");
@@ -1601,30 +1620,36 @@ function GeneratorPage({
                 <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
                   <AdvancedOptionGroup title="Technology Integration">
                     <div className="field">
-                      <FieldLabel hint={`${technologyReliance}%`}>Technology Reliance</FieldLabel>
-                      <input
-                        type="range"
-                        min={0}
-                        max={100}
-                        step={5}
-                        value={technologyReliance}
-                        onChange={(e) => setTechnologyReliance(Number(e.target.value))}
-                        style={{ width: "100%", accentColor: "var(--accent-fg)" }}
-                        aria-label="Technology reliance percentage"
-                      />
+                      <FieldLabel>Technology Usage</FieldLabel>
+                      <div className="duration-group">
+                        {TECHNOLOGY_USAGE_LEVELS.map((lvl) => (
+                          <button
+                            key={lvl.value}
+                            type="button"
+                            className={`duration-btn${technologyUsage === lvl.value ? " active" : ""}`}
+                            onClick={() => setTechnologyUsage(lvl.value)}
+                            aria-pressed={technologyUsage === lvl.value}
+                          >
+                            {lvl.label}
+                          </button>
+                        ))}
+                      </div>
+                      <p style={{ fontSize: 12.5, color: "var(--muted-fg)", marginTop: 8 }}>
+                        {TECHNOLOGY_USAGE_LEVEL_DEFINITIONS[technologyUsage]}
+                      </p>
                     </div>
 
                     <div className="field">
-                      <FieldLabel>Technology Usage</FieldLabel>
+                      <FieldLabel>Technology Tools</FieldLabel>
                       <div className="fw-chip-row">
-                        {TECH_USAGE_OPTIONS.map((opt) => {
-                          const active = technologyUsage.includes(opt);
+                        {TECH_TOOLS_OPTIONS.map((opt) => {
+                          const active = technologyTools.includes(opt);
                           return (
                             <button
                               key={opt}
                               type="button"
                               className={`fw-chip${active ? " fw-chip-active" : ""}`}
-                              onClick={() => toggleTechnologyUsage(opt)}
+                              onClick={() => toggleTechnologyTool(opt)}
                               aria-pressed={active}
                             >
                               {opt}
