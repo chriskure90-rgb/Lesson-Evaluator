@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useId } from "react";
 import "./index.css";
 import { supabase } from "./lib/supabase";
 import { ExportDropdown } from "./components/ExportDropdown";
@@ -23,6 +23,7 @@ import {
   TEACHING_STRATEGY_CATEGORY_LABELS,
   TEACHING_STRATEGY_CATEGORY_ORDER,
   type TeachingStrategy,
+  type TeachingStrategyCategory,
 } from "./data/teachingStrategies";
 
 /* ════════════════════════════════════════════════════════════
@@ -585,23 +586,32 @@ function AdvancedOptionGroup({ title, children }: { title: string; children: Rea
   );
 }
 
-/** Animated accordion item */
+/** Animated accordion item. Uncontrolled by default (manages its own open
+ *  state, as every existing usage relies on) — pass `open`/`onToggle` to
+ *  drive it externally instead (e.g. for an exclusive accordion group like
+ *  TeachingStrategiesPicker, where only one section may be open at a time). */
 export function AccordionItem({
   title,
   defaultOpen = false,
+  open: controlledOpen,
+  onToggle,
   children,
   right,
   isLast = false,
 }: {
   title: string;
   defaultOpen?: boolean;
+  open?: boolean;
+  onToggle?: () => void;
   children: React.ReactNode;
   right?: React.ReactNode;
   isLast?: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const bodyId = useId();
   const bodyRef = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState<number | "auto">(defaultOpen ? "auto" : 0);
+  const [height, setHeight] = useState<number | "auto">(open ? "auto" : 0);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -619,13 +629,19 @@ export function AccordionItem({
     }
   }, [open]);
 
+  function handleToggle() {
+    if (onToggle) onToggle();
+    else setUncontrolledOpen((v) => !v);
+  }
+
   return (
     <div className="accordion-item" style={isLast ? { borderBottom: "none" } : undefined}>
       <button
         type="button"
         className="accordion-trigger"
-        onClick={() => setOpen((v) => !v)}
+        onClick={handleToggle}
         aria-expanded={open}
+        aria-controls={bodyId}
       >
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <span>{title}</span>
@@ -637,6 +653,7 @@ export function AccordionItem({
       </button>
 
       <div
+        id={bodyId}
         ref={bodyRef}
         className="accordion-body"
         style={{
@@ -911,7 +928,13 @@ const INSTRUCTIONAL_APPROACH_DEFINITIONS: Record<InstructionalApproach, string> 
  *  came from (today, a local constant via fetchTeachingStrategies(); later,
  *  potentially a Supabase table), so swapping the source doesn't touch this
  *  component. Category display order follows TEACHING_STRATEGY_CATEGORY_ORDER
- *  (Marzano, then Literacy, then Numeracy) rather than array insertion order. */
+ *  (Marzano, then Literacy, then Numeracy) rather than array insertion order.
+ *
+ *  Categories form an exclusive accordion group — collapsed by default,
+ *  only one open at a time — driven by a single `openCategory` state passed
+ *  down as AccordionItem's controlled `open`/`onToggle` props. Collapsing a
+ *  category never touches `selectedIds`, so selections persist across
+ *  categories and across expand/collapse. */
 function TeachingStrategiesPicker({
   strategies,
   selectedIds,
@@ -923,34 +946,42 @@ function TeachingStrategiesPicker({
 }) {
   const presentCategories = new Set(strategies.map((s) => s.category));
   const categories = TEACHING_STRATEGY_CATEGORY_ORDER.filter((cat) => presentCategories.has(cat));
+  const [openCategory, setOpenCategory] = useState<TeachingStrategyCategory | null>(null);
+
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
-      {categories.map((cat, i) => (
-        <AccordionItem
-          key={cat}
-          title={TEACHING_STRATEGY_CATEGORY_LABELS[cat]}
-          defaultOpen
-          isLast={i === categories.length - 1}
-        >
-          <div className="fw-chip-row">
-            {strategies.filter((s) => s.category === cat).map((s) => {
-              const active = selectedIds.includes(s.id);
-              return (
-                <button
-                  key={s.id}
-                  type="button"
-                  className={`fw-chip${active ? " fw-chip-active" : ""}`}
-                  onClick={() => onToggle(s.id)}
-                  aria-pressed={active}
-                  title={s.description}
-                >
-                  {s.name}
-                </button>
-              );
-            })}
-          </div>
-        </AccordionItem>
-      ))}
+      {categories.map((cat, i) => {
+        const categoryStrategies = strategies.filter((s) => s.category === cat);
+        const selectedCount = categoryStrategies.filter((s) => selectedIds.includes(s.id)).length;
+        const label = TEACHING_STRATEGY_CATEGORY_LABELS[cat];
+        return (
+          <AccordionItem
+            key={cat}
+            title={selectedCount > 0 ? `${label} (${selectedCount})` : label}
+            open={openCategory === cat}
+            onToggle={() => setOpenCategory((prev) => (prev === cat ? null : cat))}
+            isLast={i === categories.length - 1}
+          >
+            <div className="fw-chip-row">
+              {categoryStrategies.map((s) => {
+                const active = selectedIds.includes(s.id);
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className={`fw-chip${active ? " fw-chip-active" : ""}`}
+                    onClick={() => onToggle(s.id)}
+                    aria-pressed={active}
+                    title={s.description}
+                  >
+                    {s.name}
+                  </button>
+                );
+              })}
+            </div>
+          </AccordionItem>
+        );
+      })}
     </div>
   );
 }
