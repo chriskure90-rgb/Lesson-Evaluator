@@ -262,7 +262,7 @@ async function generateLesson(params: {
   duration: number;
   model: string;
   technologyUsage: TechnologyUsageLevel;
-  technologyTools: string[];
+  studentTechnology: string;
   instructionalApproach: InstructionalApproach;
   teachingStrategies: string[];
 }): Promise<Lesson> {
@@ -293,7 +293,7 @@ async function generateTemplate1Lesson(params: {
   duration: number;
   model: string;
   technologyUsage: TechnologyUsageLevel;
-  technologyTools: string[];
+  studentTechnology: string;
   instructionalApproach: InstructionalApproach;
   teachingStrategies: string[];
   subjectLabel: string;
@@ -868,25 +868,9 @@ const FRAMEWORKS = [
   { value: "ccss", label: "Common Core"  },
 ];
 
-// Specific tools/platforms a lesson might use — a separate concern from
-// *how much* the lesson leans on technology overall (TECHNOLOGY_USAGE_LEVELS).
-const TECH_TOOLS_OPTIONS = [
-  "Chromebooks",
-  "iPads / Tablets",
-  "Interactive Whiteboard",
-  "Google Workspace",
-  "Microsoft Office",
-  "AI Tools",
-  "Simulations / Virtual Labs",
-  "LMS / Google Classroom",
-  "Video / Multimedia",
-  "Educational Apps",
-  "Other",
-];
-
-// How much the lesson should lean on technology overall. Single-select
-// (unlike TECH_TOOLS_OPTIONS, which is multi-select) — sent to the API/prompt
-// as "Technology Usage: Low|Medium|High".
+// How much the lesson should lean on technology overall — a separate concern
+// from *which* technology is available (studentTechnology, a free-text field
+// below). Single-select — sent to the API/prompt as "Technology Usage: Low|Medium|High".
 type TechnologyUsageLevel = "low" | "medium" | "high";
 
 const TECHNOLOGY_USAGE_LEVELS: { value: TechnologyUsageLevel; label: string }[] = [
@@ -999,7 +983,7 @@ function GeneratorPage({
   const [goal, setGoal]               = useState("Help students understand how plants produce energy through photosynthesis.");
   const [duration, setDuration]       = useState(60);
   const [technologyUsage, setTechnologyUsage] = useState<TechnologyUsageLevel>("medium");
-  const [technologyTools, setTechnologyTools] = useState<string[]>([]);
+  const [studentTechnology, setStudentTechnology] = useState("");
   const [instructionalApproach, setInstructionalApproach] = useState<InstructionalApproach>("balanced");
   const [teachingStrategyCatalog, setTeachingStrategyCatalog] = useState<TeachingStrategy[]>([]);
   const [selectedStrategyIds, setSelectedStrategyIds]         = useState<string[]>([]);
@@ -1221,12 +1205,6 @@ function GeneratorPage({
     return [FRAMEWORKS.find((f) => f.value === framework)?.label ?? framework];
   }
 
-  function toggleTechnologyTool(option: string) {
-    setTechnologyTools((prev) =>
-      prev.includes(option) ? prev.filter((o) => o !== option) : [...prev, option]
-    );
-  }
-
   function toggleTeachingStrategy(id: string) {
     setSelectedStrategyIds((prev) =>
       prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]
@@ -1253,7 +1231,7 @@ function GeneratorPage({
         const previousTemplate1Lesson = template1Lesson;
         const result = await generateTemplate1Lesson({
           grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
-          technologyUsage, technologyTools, instructionalApproach, teachingStrategies,
+          technologyUsage, studentTechnology, instructionalApproach, teachingStrategies,
           subjectLabel: subject,
           gradeLabel: gradeBandLabel.replace(/^Grades\s*/, ""),
         });
@@ -1308,7 +1286,7 @@ function GeneratorPage({
       const previousLesson = lesson; // capture before generation (null = first-time creation)
       const result = await generateLesson({
         grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
-        technologyUsage, technologyTools, instructionalApproach, teachingStrategies,
+        technologyUsage, studentTechnology, instructionalApproach, teachingStrategies,
       });
       setLesson(result);
       setGeneratedFormat("standard");
@@ -1659,23 +1637,14 @@ function GeneratorPage({
                     </div>
 
                     <div className="field">
-                      <FieldLabel>Technology Tools</FieldLabel>
-                      <div className="fw-chip-row">
-                        {TECH_TOOLS_OPTIONS.map((opt) => {
-                          const active = technologyTools.includes(opt);
-                          return (
-                            <button
-                              key={opt}
-                              type="button"
-                              className={`fw-chip${active ? " fw-chip-active" : ""}`}
-                              onClick={() => toggleTechnologyTool(opt)}
-                              aria-pressed={active}
-                            >
-                              {opt}
-                            </button>
-                          );
-                        })}
-                      </div>
+                      <FieldLabel>What technology will your students use?</FieldLabel>
+                      <input
+                        type="text"
+                        className="input"
+                        value={studentTechnology}
+                        onChange={(e) => setStudentTechnology(e.target.value)}
+                        placeholder="e.g., Chromebook, iPad, Google Classroom, specific software, or no technology"
+                      />
                     </div>
                   </AdvancedOptionGroup>
 
