@@ -47,6 +47,11 @@ export const Icon = {
       <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
     </svg>
   ),
+  Eye: () => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>
+    </svg>
+  ),
   ArrowUpRight: () => (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M7 7h10v10"/><path d="M7 17 17 7"/>

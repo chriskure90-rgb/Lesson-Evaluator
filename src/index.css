@@ -580,6 +580,33 @@ h1, h2, h3, h4, h5 {
   background: var(--primary-hover);
   border-color: var(--primary-hover);
 }
+
+/* Small "preview template" icon button sitting next to a format chip —
+   borderless and subtle by design (requirement: indicate it's clickable
+   without drawing too much attention), unlike the bordered .fw-chip itself. */
+.fw-chip-preview-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--muted-fg);
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.fw-chip-preview-btn:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.fw-chip-preview-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 .fw-upload-area {
   margin-top: 10px;
   border: 1.5px dashed var(--border);

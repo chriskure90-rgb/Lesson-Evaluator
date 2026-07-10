@@ -1525,7 +1525,7 @@ function GeneratorPage({
               <p className="drawer-eyebrow" style={{ marginBottom: 6 }}>Built-in</p>
               <div className="fw-chip-row" style={{ marginBottom: readyCustomTemplates.length > 0 ? 14 : 10 }}>
                 {LESSON_FORMATS.map((f) => (
-                  <div key={f.value} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <div key={f.value} style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
                     <button
                       type="button"
                       className={`fw-chip${lessonFormat === f.value ? " fw-chip-active" : ""}`}
@@ -1536,11 +1536,15 @@ function GeneratorPage({
                     </button>
                     <button
                       type="button"
-                      className="btn-outline-sm"
-                      style={{ height: 30, padding: "0 10px", fontSize: 11.5 }}
-                      onClick={() => setPreviewingTemplateId(f.value as BuiltInTemplateId)}
+                      className="fw-chip-preview-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPreviewingTemplateId(f.value as BuiltInTemplateId);
+                      }}
+                      title="Preview Template"
+                      aria-label={`Preview ${f.label} template`}
                     >
-                      Preview
+                      <Icon.Eye />
                     </button>
                   </div>
                 ))}
