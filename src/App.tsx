@@ -263,6 +263,7 @@ async function generateLesson(params: {
   model: string;
   technologyUsage: TechnologyUsageLevel;
   technologyTools: string[];
+  instructionalApproach: InstructionalApproach;
   teachingStrategies: string[];
 }): Promise<Lesson> {
   const res = await fetch("/api/generate", {
@@ -293,6 +294,7 @@ async function generateTemplate1Lesson(params: {
   model: string;
   technologyUsage: TechnologyUsageLevel;
   technologyTools: string[];
+  instructionalApproach: InstructionalApproach;
   teachingStrategies: string[];
   subjectLabel: string;
   gradeLabel: string;
@@ -899,6 +901,22 @@ const TECHNOLOGY_USAGE_LEVEL_DEFINITIONS: Record<TechnologyUsageLevel, string> =
   high:   "Technology is a central component throughout the lesson.",
 };
 
+// Who drives the lesson's instruction. Single-select — sent to the API/prompt
+// as "Instructional Approach: Teacher-Centered|Balanced|Student-Centered".
+type InstructionalApproach = "teacher-centered" | "balanced" | "student-centered";
+
+const INSTRUCTIONAL_APPROACH_OPTIONS: { value: InstructionalApproach; label: string }[] = [
+  { value: "teacher-centered", label: "Teacher-Centered" },
+  { value: "balanced",         label: "Balanced"         },
+  { value: "student-centered", label: "Student-Centered" },
+];
+
+const INSTRUCTIONAL_APPROACH_DEFINITIONS: Record<InstructionalApproach, string> = {
+  "teacher-centered": "The lesson is primarily led by the teacher through direct instruction, modeling, and guided practice.",
+  "balanced":         "The lesson combines teacher instruction with collaborative and independent student activities.",
+  "student-centered": "The lesson emphasizes student inquiry, collaboration, discussion, problem-solving, and active learning, with the teacher acting mainly as a facilitator.",
+};
+
 /** Renders the Literacy/Numeracy chip picker from whatever TeachingStrategy[]
  *  it's given — it has no knowledge of where that list came from (today, a
  *  local constant via fetchTeachingStrategies(); later, potentially a
@@ -982,6 +1000,7 @@ function GeneratorPage({
   const [duration, setDuration]       = useState(60);
   const [technologyUsage, setTechnologyUsage] = useState<TechnologyUsageLevel>("medium");
   const [technologyTools, setTechnologyTools] = useState<string[]>([]);
+  const [instructionalApproach, setInstructionalApproach] = useState<InstructionalApproach>("balanced");
   const [teachingStrategyCatalog, setTeachingStrategyCatalog] = useState<TeachingStrategy[]>([]);
   const [selectedStrategyIds, setSelectedStrategyIds]         = useState<string[]>([]);
 
@@ -1234,7 +1253,7 @@ function GeneratorPage({
         const previousTemplate1Lesson = template1Lesson;
         const result = await generateTemplate1Lesson({
           grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
-          technologyUsage, technologyTools, teachingStrategies,
+          technologyUsage, technologyTools, instructionalApproach, teachingStrategies,
           subjectLabel: subject,
           gradeLabel: gradeBandLabel.replace(/^Grades\s*/, ""),
         });
@@ -1289,7 +1308,7 @@ function GeneratorPage({
       const previousLesson = lesson; // capture before generation (null = first-time creation)
       const result = await generateLesson({
         grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
-        technologyUsage, technologyTools, teachingStrategies,
+        technologyUsage, technologyTools, instructionalApproach, teachingStrategies,
       });
       setLesson(result);
       setGeneratedFormat("standard");
@@ -1657,6 +1676,28 @@ function GeneratorPage({
                           );
                         })}
                       </div>
+                    </div>
+                  </AdvancedOptionGroup>
+
+                  <AdvancedOptionGroup title="Instructional Approach">
+                    <div className="field">
+                      <FieldLabel>Instructional Approach</FieldLabel>
+                      <div className="duration-group">
+                        {INSTRUCTIONAL_APPROACH_OPTIONS.map((opt) => (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            className={`duration-btn${instructionalApproach === opt.value ? " active" : ""}`}
+                            onClick={() => setInstructionalApproach(opt.value)}
+                            aria-pressed={instructionalApproach === opt.value}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                      <p style={{ fontSize: 12.5, color: "var(--muted-fg)", marginTop: 8 }}>
+                        {INSTRUCTIONAL_APPROACH_DEFINITIONS[instructionalApproach]}
+                      </p>
                     </div>
                   </AdvancedOptionGroup>
 

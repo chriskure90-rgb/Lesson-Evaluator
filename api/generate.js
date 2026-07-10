@@ -226,6 +226,31 @@ function buildTechnologyIntegrationBlock(technologyUsage, technologyTools) {
   ].join("\n");
 }
 
+// instructionalApproach is a single Teacher-Centered/Balanced/Student-Centered
+// value describing who drives the lesson's instruction. Shared by both
+// prompt builders — cross-cutting, not a format-specific input.
+const INSTRUCTIONAL_APPROACH_LABELS = {
+  "teacher-centered": "Teacher-Centered",
+  "balanced":         "Balanced",
+  "student-centered": "Student-Centered",
+};
+const INSTRUCTIONAL_APPROACH_DEFINITIONS = {
+  "teacher-centered": "The lesson is primarily led by the teacher through direct instruction, modeling, and guided practice.",
+  "balanced":         "The lesson combines teacher instruction with collaborative and independent student activities.",
+  "student-centered": "The lesson emphasizes student inquiry, collaboration, discussion, problem-solving, and active learning, with the teacher acting mainly as a facilitator.",
+};
+
+function buildInstructionalApproachBlock(instructionalApproach) {
+  const approach = INSTRUCTIONAL_APPROACH_LABELS[instructionalApproach] ? instructionalApproach : "balanced";
+
+  return [
+    "INSTRUCTIONAL APPROACH:",
+    `Instructional Approach: ${INSTRUCTIONAL_APPROACH_LABELS[approach]}`,
+    INSTRUCTIONAL_APPROACH_DEFINITIONS[approach],
+    "Shape the teacher/student actions throughout the lesson to reflect this approach.",
+  ].join("\n");
+}
+
 // Shared by both prompt builders — teaching strategies (from the Advanced
 // Lesson Options panel's Literacy/Numeracy chip picker) are a cross-cutting
 // input, not a format-specific one.
@@ -247,7 +272,7 @@ function buildTeachingStrategiesBlock(teachingStrategies) {
 // ── Prompt builder (Standard format) ─────────────────────────────────────────
 // Builds the full structured lesson-generation prompt from user inputs.
 // standardDescription is resolved by the handler (Supabase first, mock fallback).
-function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, technologyTools, teachingStrategies }) {
+function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, technologyTools, instructionalApproach, teachingStrategies }) {
   const standardsLine =
     Array.isArray(frameworks) && frameworks.length > 0
       ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
@@ -273,6 +298,8 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
     standardDescription,
     "",
     buildTechnologyIntegrationBlock(technologyUsage, technologyTools),
+    "",
+    buildInstructionalApproachBlock(instructionalApproach),
     "",
     buildTeachingStrategiesBlock(teachingStrategies),
     "",
@@ -338,7 +365,7 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
 // export both read. subjectGradeLevel/lessonDuration/teacherName are NOT
 // requested here; the client fills those in from known form values so the
 // model never has to (and can't) hallucinate them.
-function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, technologyTools, teachingStrategies }) {
+function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, technologyTools, instructionalApproach, teachingStrategies }) {
   const standardsLine =
     Array.isArray(frameworks) && frameworks.length > 0
       ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
@@ -364,6 +391,8 @@ function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, d
     standardDescription,
     "",
     buildTechnologyIntegrationBlock(technologyUsage, technologyTools),
+    "",
+    buildInstructionalApproachBlock(instructionalApproach),
     "",
     buildTeachingStrategiesBlock(teachingStrategies),
     "",
@@ -414,7 +443,7 @@ export default async function handler(req, res) {
   console.log("=== STANDARDS DIAGNOSTICS ENABLED ===");
   console.log("[standards:diag] /api/generate handler entered");
   try {
-    const { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat, technologyUsage, technologyTools, teachingStrategies } = req.body;
+    const { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat, technologyUsage, technologyTools, instructionalApproach, teachingStrategies } = req.body;
 
     // Unrecognized/missing values fall back to "standard" so existing
     // clients (and the Standard Lesson Plan option) behave exactly as before.
@@ -437,10 +466,10 @@ export default async function handler(req, res) {
     // Standard schema with different phrasing) — see buildTemplate1Prompt.
     const isTemplate1 = normalizedLessonFormat === "template1";
     const prompt = isTemplate1
-      ? buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, technologyTools, teachingStrategies })
-      : buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, technologyTools, teachingStrategies });
+      ? buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, technologyTools, instructionalApproach, teachingStrategies })
+      : buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, technologyTools, instructionalApproach, teachingStrategies });
 
-    console.debug("[Generate] inputs:", { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat: normalizedLessonFormat, technologyUsage, technologyTools, teachingStrategies });
+    console.debug("[Generate] inputs:", { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat: normalizedLessonFormat, technologyUsage, technologyTools, instructionalApproach, teachingStrategies });
     console.debug("[Generate] prompt:", prompt);
 
     if (model === "mistral" || model === "Mistral") {
