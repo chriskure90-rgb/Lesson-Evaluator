@@ -3,11 +3,11 @@ import { StandardTemplatePreview } from "./StandardTemplatePreview";
 import { Template1Preview } from "./Template1Preview";
 
 /* ── Template Preview Modal ────────────────────────────────────────────────────
-   Shows a scaled, structure-only mockup of a built-in template (layout,
-   section order/titles, tables/columns/borders, approximate spacing) so a
-   teacher can see what a template looks like before selecting it — never
-   real generated lesson content (see PreviewPlaceholders/StandardTemplate
-   Preview/Template1Preview).
+   Shows a scaled mockup of a built-in template (layout, section order/
+   titles, tables/columns/borders, approximate spacing) filled with a fixed,
+   illustrative sample lesson — so it reads like a completed document
+   rather than a loading skeleton — never real generated lesson content or
+   live template data (see StandardTemplatePreview/Template1Preview).
 
    Only built-in templates are supported for now (custom uploaded templates
    keep their current, unchanged behavior). Adding a future built-in template

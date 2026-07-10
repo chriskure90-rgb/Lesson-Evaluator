@@ -1,47 +1,50 @@
-import { PlaceholderBar, PlaceholderParagraph } from "./PreviewPlaceholders";
-
-/* ── Template 1 (PSU/GTEP-style) — structure-only preview ─────────────────────
+/* ── Template 1 (PSU/GTEP-style) — structure preview with sample content ──────
    Mirrors Template1LessonView's real table layout and section order exactly
    (Lesson Goals -> Objectives/Materials -> Lesson Plan Details ->
    Introduction -> Main Learning Activities -> Closure). The static
    boilerplate/instructional text (e.g. "Describe what you are teaching...")
-   is a fixed part of the template's own design, not generated content, so
-   it's reproduced verbatim — only the fields a generated lesson would
-   actually fill in are replaced with gray placeholder bars.
+   is a fixed part of the template's own design, so it's reproduced verbatim.
+
+   The rest is a fixed, illustrative sample lesson (never real generated
+   data, never connected to actual lesson generation) — it exists so the
+   preview reads like a completed document rather than a loading skeleton.
 ────────────────────────────────────────────────────────────────────────────── */
 
-function PhasePlaceholderRow({
+function PhasePreviewRow({
   phaseName,
   teacherHeading,
-  includeStudentSupport,
-  extraLabel,
+  teacherActions,
+  studentActions,
+  studentSupport,
+  extra,
 }: {
   phaseName: string;
   teacherHeading: string;
-  includeStudentSupport?: boolean;
-  extraLabel?: string;
+  teacherActions: string[];
+  studentActions: string[];
+  studentSupport?: string;
+  extra?: { label: string; text: string };
 }) {
   return (
     <tr>
       <td className="t1-cell">
         <p className="t1-label" style={{ marginTop: 0 }}>{teacherHeading}</p>
         <ol className="t1-list">
-          <li><PlaceholderBar width="90%" /></li>
-          <li><PlaceholderBar width="76%" /></li>
+          {teacherActions.map((a, i) => <li key={i}>{a}</li>)}
         </ol>
-        {includeStudentSupport && (
+        {studentSupport && (
           <>
             <p className="t1-label">Student Support:</p>
             <ul className="t1-list-dash">
-              <li><PlaceholderBar width="68%" /></li>
+              <li>{studentSupport}</li>
             </ul>
           </>
         )}
-        {extraLabel && (
+        {extra && (
           <>
-            <p className="t1-label">{extraLabel}</p>
+            <p className="t1-label">{extra.label}</p>
             <ul className="t1-list-dash">
-              <li><PlaceholderBar width="62%" /></li>
+              <li>{extra.text}</li>
             </ul>
           </>
         )}
@@ -49,8 +52,7 @@ function PhasePlaceholderRow({
       <td className="t1-cell">
         <p className="t1-label" style={{ marginTop: 0 }}>{phaseName}: What Students will do</p>
         <ul className="t1-list-dash">
-          <li><PlaceholderBar width="82%" /></li>
-          <li><PlaceholderBar width="64%" /></li>
+          {studentActions.map((a, i) => <li key={i}>{a}</li>)}
         </ul>
       </td>
     </tr>
@@ -62,9 +64,9 @@ export function Template1Preview() {
     <div className="t1-page">
       <h2 className="t1-title">PSU Graduate School of Education Lesson Plan Template</h2>
       <div className="t1-meta-row">
-        <span><strong>TC Name:</strong> <PlaceholderBar width={70} height={11} style={{ display: "inline-block", verticalAlign: "middle" }} /></span>
-        <span><strong>Subject/Grade level:</strong> <PlaceholderBar width={90} height={11} style={{ display: "inline-block", verticalAlign: "middle" }} /></span>
-        <span><strong>Time Duration of Lesson:</strong> <PlaceholderBar width={50} height={11} style={{ display: "inline-block", verticalAlign: "middle" }} /></span>
+        <span><strong>TC Name:</strong> Jane Smith</span>
+        <span><strong>Subject/Grade level:</strong> 5th Grade Science</span>
+        <span><strong>Time Duration of Lesson:</strong> 45 minutes</span>
       </div>
 
       <table className="t1-table">
@@ -78,10 +80,14 @@ export function Template1Preview() {
                   Describe what you are teaching. Describe the purpose for teaching this content. Describe how the standards apply to the learning strategy and skills learned.
                 </span>
               </p>
-              <div style={{ margin: "6px 0" }}><PlaceholderParagraph lines={2} /></div>
+              <p className="t1-body">
+                Students will investigate how different forces affect the motion of objects through hands-on activities and collaborative discussion.
+              </p>
               <p className="t1-label">Standard(s) Addressed:</p>
               <p className="t1-instructions-italic" style={{ margin: 0 }}>List all standards addressed during the lesson. (List number and text)</p>
-              <div style={{ margin: "6px 0" }}><PlaceholderBar width="55%" /></div>
+              <p className="t1-body">
+                NGSS 5-PS2-1: Support an argument that the gravitational force exerted by Earth on objects is directed toward the planet's center.
+              </p>
             </td>
           </tr>
 
@@ -89,15 +95,17 @@ export function Template1Preview() {
             <td className="t1-cell">
               <p className="t1-label" style={{ marginTop: 0 }}>Lesson Objectives:</p>
               <ol className="t1-list">
-                <li><PlaceholderBar width="88%" /></li>
-                <li><PlaceholderBar width="76%" /></li>
+                <li>Explain how force affects motion.</li>
+                <li>Collect and interpret observations from a simple investigation.</li>
               </ol>
             </td>
             <td className="t1-cell">
               <p className="t1-label" style={{ marginTop: 0 }}>Materials:</p>
               <ul className="t1-list-dash">
-                <li><PlaceholderBar width="70%" /></li>
-                <li><PlaceholderBar width="55%" /></li>
+                <li>Chromebook</li>
+                <li>Toy cars</li>
+                <li>Ramp</li>
+                <li>Measuring tape</li>
               </ul>
             </td>
           </tr>
@@ -114,20 +122,26 @@ export function Template1Preview() {
             </td>
           </tr>
 
-          <PhasePlaceholderRow
+          <PhasePreviewRow
             phaseName="Introduction"
             teacherHeading="Introduction: What Teacher Will Do to Engage Students."
-            includeStudentSupport
+            teacherActions={["Introduce the concept of force through a short demonstration using a ball and a ramp.", "Ask students to predict what will happen before each demonstration."]}
+            studentActions={["Observe the demonstration and share initial predictions about how force affects motion."]}
+            studentSupport="Provide visual aids and sentence starters to help students articulate their predictions."
           />
-          <PhasePlaceholderRow
+          <PhasePreviewRow
             phaseName="Main Learning Activities"
             teacherHeading="Main Learning Activities: What Teacher Will Do"
-            includeStudentSupport
+            teacherActions={["Guide small groups through a hands-on investigation, rolling toy cars down ramps of varying heights.", "Circulate to support data collection and ask probing questions."]}
+            studentActions={["Work in small groups to conduct the investigation, measure results, and record data in a science journal."]}
+            studentSupport="Pair students strategically and provide simplified data tables for recording observations."
           />
-          <PhasePlaceholderRow
+          <PhasePreviewRow
             phaseName="Closure"
             teacherHeading="Closure: What Teacher Will Do"
-            extraLabel="How will you assess the objectives?"
+            teacherActions={["Facilitate a class discussion where groups share their findings and connect results to the concept of force."]}
+            studentActions={["Discuss findings and compare results across groups."]}
+            extra={{ label: "How will you assess the objectives?", text: "Students complete an exit ticket explaining how force influenced the motion of their object using evidence from the investigation." }}
           />
         </tbody>
       </table>
