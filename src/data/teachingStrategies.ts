@@ -1,7 +1,9 @@
 /* ── Teaching strategies catalog ───────────────────────────────────────────────
-   Source of truth (for now): "Teaching Strategy.pdf" in the project root.
-   Strategy names are preserved verbatim from the document; descriptions are
-   short paraphrases of each strategy's "Overview" section.
+   Source of truth (for now): "Teaching Strategy.pdf" in the project root for
+   Literacy/Numeracy; Marzano's nine high-yield instructional strategies for
+   the "marzano" category. Strategy names are preserved verbatim from their
+   source; descriptions are short paraphrases (Literacy/Numeracy) or the
+   canonical instructional guidance (Marzano).
 
    Concept Mapping and Graphic Organizers appear under both the Literacy and
    Numeracy sections of the PDF — each is listed here ONCE (category:
@@ -9,27 +11,111 @@
    shape only allows a strategy to belong to a single category. That's what
    keeps the picker UI from ever showing the same strategy as two chips.
 
+   promptDescription is optional and only populated for categories that need
+   to inject real instructional guidance into the generation prompt (Marzano
+   today) rather than just a bare name — see resolveMarzanoStrategies() and
+   buildMarzanoStrategiesBlock() in api/generate.js. Literacy/Numeracy strategies
+   are untouched: they have no promptDescription and continue to be sent to
+   the prompt as plain names via resolveTeachingStrategyNames(), exactly as
+   before.
+
    This is a plain local constant today. It's intentionally shaped like a
-   table row (id/name/category/description) so a future swap to a Supabase
-   `teaching_strategies` table only touches fetchTeachingStrategies() below —
-   nothing that reads TeachingStrategy[] elsewhere needs to change.
+   table row (id/name/category/description/promptDescription) so a future
+   swap to a Supabase `teaching_strategies` table only touches
+   fetchTeachingStrategies() below — nothing that reads TeachingStrategy[]
+   elsewhere needs to change.
 ────────────────────────────────────────────────────────────────────────────── */
 
-export type TeachingStrategyCategory = "literacy" | "numeracy";
+export type TeachingStrategyCategory = "marzano" | "literacy" | "numeracy";
 
 export type TeachingStrategy = {
   id: string;
   name: string;
   category: TeachingStrategyCategory;
   description: string;
+  /** LLM-facing instructional guidance. Only present for categories (like
+   *  Marzano) whose selections should inject real guidance into the
+   *  generation prompt instead of just a name. */
+  promptDescription?: string;
 };
 
 export const TEACHING_STRATEGY_CATEGORY_LABELS: Record<TeachingStrategyCategory, string> = {
+  marzano:  "Marzano Strategies",
   literacy: "Literacy",
   numeracy: "Numeracy",
 };
 
+/** Explicit display order for the picker's categories — Marzano first, then
+ *  Literacy, then Numeracy — independent of insertion order in
+ *  TEACHING_STRATEGIES below. */
+export const TEACHING_STRATEGY_CATEGORY_ORDER: TeachingStrategyCategory[] = ["marzano", "literacy", "numeracy"];
+
 export const TEACHING_STRATEGIES: TeachingStrategy[] = [
+  // ── Marzano Strategies ───────────────────────────────────────────────────
+  {
+    id: "identifying-similarities-differences",
+    name: "Identifying Similarities & Differences",
+    category: "marzano",
+    description: "Help students compare, classify, create analogies, or identify patterns.",
+    promptDescription: "Help students compare, classify, create analogies, or identify patterns.",
+  },
+  {
+    id: "summarizing-note-taking",
+    name: "Summarizing & Note Taking",
+    category: "marzano",
+    description: "Include opportunities for students to summarize key ideas and organize information in their own words.",
+    promptDescription: "Include opportunities for students to summarize key ideas and organize information in their own words.",
+  },
+  {
+    id: "reinforcing-effort-recognition",
+    name: "Reinforcing Effort & Providing Recognition",
+    category: "marzano",
+    description: "Encourage student effort through meaningful recognition and reflection on progress.",
+    promptDescription: "Encourage student effort through meaningful recognition and reflection on progress.",
+  },
+  {
+    id: "homework-practice",
+    name: "Homework & Practice",
+    category: "marzano",
+    description: "Include intentional practice activities that reinforce the lesson objectives.",
+    promptDescription: "Include intentional practice activities that reinforce the lesson objectives.",
+  },
+  {
+    id: "non-linguistic-representations",
+    name: "Non-Linguistic Representations",
+    category: "marzano",
+    description: "Include diagrams, graphic organizers, models, visuals, gestures, or other non-text representations.",
+    promptDescription: "Include diagrams, graphic organizers, models, visuals, gestures, or other non-text representations.",
+  },
+  {
+    id: "cooperative-learning",
+    name: "Cooperative Learning",
+    category: "marzano",
+    description: "Include structured collaborative learning activities where students work toward a shared learning goal.",
+    promptDescription: "Include structured collaborative learning activities where students work toward a shared learning goal.",
+  },
+  {
+    id: "setting-objectives-feedback",
+    name: "Setting Objectives & Providing Feedback",
+    category: "marzano",
+    description: "Clearly communicate learning objectives and include opportunities for teacher or peer feedback throughout the lesson.",
+    promptDescription: "Clearly communicate learning objectives and include opportunities for teacher or peer feedback throughout the lesson.",
+  },
+  {
+    id: "generating-testing-hypotheses",
+    name: "Generating & Testing Hypotheses",
+    category: "marzano",
+    description: "Include prediction, investigation, experimentation, or problem-solving activities followed by reflection.",
+    promptDescription: "Include prediction, investigation, experimentation, or problem-solving activities followed by reflection.",
+  },
+  {
+    id: "questions-cues-advance-organizers",
+    name: "Questions, Cues & Advance Organizers",
+    category: "marzano",
+    description: "Activate prior knowledge using purposeful questioning, cues, or graphic organizers before introducing new concepts.",
+    promptDescription: "Activate prior knowledge using purposeful questioning, cues, or graphic organizers before introducing new concepts.",
+  },
+
   // ── Literacy ──────────────────────────────────────────────────────────────
   {
     id: "concept-mapping",
@@ -150,8 +236,23 @@ export async function fetchTeachingStrategies(): Promise<TeachingStrategy[]> {
   return TEACHING_STRATEGIES;
 }
 
-/** Resolves selected strategy ids back to their (LLM-facing) display names. */
+/** Resolves selected strategy ids back to their (LLM-facing) display names —
+ *  Literacy/Numeracy only. Marzano selections are resolved separately via
+ *  resolveMarzanoStrategies() since they carry a promptDescription instead
+ *  of being sent as bare names, so a strategy is never represented twice
+ *  in the generation payload. */
 export function resolveTeachingStrategyNames(ids: string[]): string[] {
   const idSet = new Set(ids);
-  return TEACHING_STRATEGIES.filter((s) => idSet.has(s.id)).map((s) => s.name);
+  return TEACHING_STRATEGIES
+    .filter((s) => s.category !== "marzano" && idSet.has(s.id))
+    .map((s) => s.name);
+}
+
+/** Resolves selected Marzano strategy ids to their name + LLM-facing
+ *  instructional description, for the dedicated Marzano prompt block. */
+export function resolveMarzanoStrategies(ids: string[]): { name: string; promptDescription: string }[] {
+  const idSet = new Set(ids);
+  return TEACHING_STRATEGIES
+    .filter((s) => s.category === "marzano" && idSet.has(s.id))
+    .map((s) => ({ name: s.name, promptDescription: s.promptDescription ?? "" }));
 }

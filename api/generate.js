@@ -255,7 +255,10 @@ function buildInstructionalApproachBlock(instructionalApproach) {
 
 // Shared by both prompt builders — teaching strategies (from the Advanced
 // Lesson Options panel's Literacy/Numeracy chip picker) are a cross-cutting
-// input, not a format-specific one.
+// input, not a format-specific one. Marzano strategy selections are NOT
+// included here — they carry their own instructional descriptions and are
+// sent to the prompt via buildMarzanoStrategiesBlock() below instead, so a
+// strategy is never represented twice in the same prompt.
 function buildTeachingStrategiesBlock(teachingStrategies) {
   if (!Array.isArray(teachingStrategies) || teachingStrategies.length === 0) {
     return [
@@ -271,10 +274,34 @@ function buildTeachingStrategiesBlock(teachingStrategies) {
   ].join("\n");
 }
 
+// marzanoStrategies is an array of { name, promptDescription } pairs resolved
+// client-side from src/data/teachingStrategies.ts (via resolveMarzanoStrategies) —
+// the actual instructional descriptions live in that one config module, never
+// duplicated here, so this function only ever formats whatever it's given.
+function buildMarzanoStrategiesBlock(marzanoStrategies) {
+  if (!Array.isArray(marzanoStrategies) || marzanoStrategies.length === 0) {
+    return [
+      "MARZANO INSTRUCTIONAL STRATEGIES:",
+      "No Marzano strategies were selected for this lesson.",
+    ].join("\n");
+  }
+
+  const strategyLines = marzanoStrategies
+    .map((s) => `- ${s.name}:\n${s.promptDescription}`)
+    .join("\n\n");
+
+  return [
+    "MARZANO INSTRUCTIONAL STRATEGIES:",
+    strategyLines,
+    "",
+    "The generated lesson should naturally incorporate these strategies into the instructional activities — do not simply mention the strategy names.",
+  ].join("\n");
+}
+
 // ── Prompt builder (Standard format) ─────────────────────────────────────────
 // Builds the full structured lesson-generation prompt from user inputs.
 // standardDescription is resolved by the handler (Supabase first, mock fallback).
-function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies }) {
+function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies }) {
   const standardsLine =
     Array.isArray(frameworks) && frameworks.length > 0
       ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
@@ -304,6 +331,8 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
     buildInstructionalApproachBlock(instructionalApproach),
     "",
     buildTeachingStrategiesBlock(teachingStrategies),
+    "",
+    buildMarzanoStrategiesBlock(marzanoStrategies),
     "",
     "CONSTRAINTS:",
     `- Do not exceed ${duration} minutes total across all activities.`,
@@ -367,7 +396,7 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
 // export both read. subjectGradeLevel/lessonDuration/teacherName are NOT
 // requested here; the client fills those in from known form values so the
 // model never has to (and can't) hallucinate them.
-function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies }) {
+function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies }) {
   const standardsLine =
     Array.isArray(frameworks) && frameworks.length > 0
       ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
@@ -397,6 +426,8 @@ function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, d
     buildInstructionalApproachBlock(instructionalApproach),
     "",
     buildTeachingStrategiesBlock(teachingStrategies),
+    "",
+    buildMarzanoStrategiesBlock(marzanoStrategies),
     "",
     "CONSTRAINTS:",
     `- The teacherActions/studentActions across introduction, mainLearningActivities, and closure combined should fit within ${duration} minutes.`,
@@ -445,7 +476,7 @@ export default async function handler(req, res) {
   console.log("=== STANDARDS DIAGNOSTICS ENABLED ===");
   console.log("[standards:diag] /api/generate handler entered");
   try {
-    const { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies } = req.body;
+    const { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies } = req.body;
 
     // Unrecognized/missing values fall back to "standard" so existing
     // clients (and the Standard Lesson Plan option) behave exactly as before.
@@ -468,10 +499,10 @@ export default async function handler(req, res) {
     // Standard schema with different phrasing) — see buildTemplate1Prompt.
     const isTemplate1 = normalizedLessonFormat === "template1";
     const prompt = isTemplate1
-      ? buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies })
-      : buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies });
+      ? buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies })
+      : buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies });
 
-    console.debug("[Generate] inputs:", { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat: normalizedLessonFormat, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies });
+    console.debug("[Generate] inputs:", { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat: normalizedLessonFormat, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies });
     console.debug("[Generate] prompt:", prompt);
 
     if (model === "mistral" || model === "Mistral") {

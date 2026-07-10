@@ -19,7 +19,9 @@ import {
 import {
   fetchTeachingStrategies,
   resolveTeachingStrategyNames,
+  resolveMarzanoStrategies,
   TEACHING_STRATEGY_CATEGORY_LABELS,
+  TEACHING_STRATEGY_CATEGORY_ORDER,
   type TeachingStrategy,
 } from "./data/teachingStrategies";
 
@@ -266,6 +268,7 @@ async function generateLesson(params: {
   studentTechnology: string;
   instructionalApproach: InstructionalApproach;
   teachingStrategies: string[];
+  marzanoStrategies: { name: string; promptDescription: string }[];
 }): Promise<Lesson> {
   const res = await fetch("/api/generate", {
     method: "POST",
@@ -297,6 +300,7 @@ async function generateTemplate1Lesson(params: {
   studentTechnology: string;
   instructionalApproach: InstructionalApproach;
   teachingStrategies: string[];
+  marzanoStrategies: { name: string; promptDescription: string }[];
   subjectLabel: string;
   gradeLabel: string;
 }): Promise<Template1Lesson> {
@@ -902,10 +906,12 @@ const INSTRUCTIONAL_APPROACH_DEFINITIONS: Record<InstructionalApproach, string> 
   "student-centered": "The lesson emphasizes student inquiry, collaboration, discussion, problem-solving, and active learning, with the teacher acting mainly as a facilitator.",
 };
 
-/** Renders the Literacy/Numeracy chip picker from whatever TeachingStrategy[]
- *  it's given — it has no knowledge of where that list came from (today, a
- *  local constant via fetchTeachingStrategies(); later, potentially a
- *  Supabase table), so swapping the source doesn't touch this component. */
+/** Renders the Marzano/Literacy/Numeracy chip picker from whatever
+ *  TeachingStrategy[] it's given — it has no knowledge of where that list
+ *  came from (today, a local constant via fetchTeachingStrategies(); later,
+ *  potentially a Supabase table), so swapping the source doesn't touch this
+ *  component. Category display order follows TEACHING_STRATEGY_CATEGORY_ORDER
+ *  (Marzano, then Literacy, then Numeracy) rather than array insertion order. */
 function TeachingStrategiesPicker({
   strategies,
   selectedIds,
@@ -915,7 +921,8 @@ function TeachingStrategiesPicker({
   selectedIds: string[];
   onToggle: (id: string) => void;
 }) {
-  const categories = Array.from(new Set(strategies.map((s) => s.category)));
+  const presentCategories = new Set(strategies.map((s) => s.category));
+  const categories = TEACHING_STRATEGY_CATEGORY_ORDER.filter((cat) => presentCategories.has(cat));
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
       {categories.map((cat, i) => (
@@ -1226,14 +1233,18 @@ function GeneratorPage({
     setError(null);
     // The picker tracks selection by id (stable even if a strategy's display
     // name changes); the API/prompt only cares about human-readable names.
+    // Marzano selections are resolved separately (name + promptDescription)
+    // so the prompt can inject real instructional guidance for those, while
+    // Literacy/Numeracy stay exactly as before (names only).
     const teachingStrategies = resolveTeachingStrategyNames(selectedStrategyIds);
+    const marzanoStrategies = resolveMarzanoStrategies(selectedStrategyIds);
     try {
       if (lessonFormat === "template1" || lessonFormat === "custom") {
         const isCustom = lessonFormat === "custom";
         const previousTemplate1Lesson = template1Lesson;
         const result = await generateTemplate1Lesson({
           grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
-          technologyUsage, studentTechnology, instructionalApproach, teachingStrategies,
+          technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies,
           subjectLabel: subject,
           gradeLabel: gradeBandLabel.replace(/^Grades\s*/, ""),
         });
@@ -1288,7 +1299,7 @@ function GeneratorPage({
       const previousLesson = lesson; // capture before generation (null = first-time creation)
       const result = await generateLesson({
         grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
-        technologyUsage, studentTechnology, instructionalApproach, teachingStrategies,
+        technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies,
       });
       setLesson(result);
       setGeneratedFormat("standard");
