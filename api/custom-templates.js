@@ -1,5 +1,7 @@
 import PizZip from "pizzip";
 import Docxtemplater from "docxtemplater";
+import { PDFParse } from "pdf-parse";
+import { Document, Packer, Paragraph, TextRun } from "docx";
 import { supabase } from "./lib/supabase.js";
 
 /* ── Custom DOCX template routes, combined into one function ──────────────────
@@ -75,12 +77,110 @@ function detectPlaceholders(buffer) {
   };
 }
 
+// ── PDF template conversion ──────────────────────────────────────────────────
+// A PDF has no editable {{PLACEHOLDER}} tags and isn't a reflowable format
+// docxtemplater can merge into directly, so an uploaded PDF is converted
+// once, at registration time, into a synthesized .docx that DOES use our
+// normal {{TOKEN}} placeholder syntax. From that point on it's stored and
+// treated exactly like any other custom template — same table, same export
+// path, same everything (see handleRegister below). storage_path ends up
+// pointing at the synthesized file, not the original PDF.
+//
+// Keyword -> catalog token mapping used to recognize section headings in the
+// PDF's extracted plain text. Deliberately keyword-based rather than a
+// generic layout/heading detector, since pdf-parse only returns flat text
+// with no font-size/bold metadata to lean on — lesson-plan templates
+// reliably use these words as section labels, which keeps false positives
+// low. Table structure isn't reconstructed (not reliably possible from flat
+// PDF text without page-position data) — only section titles/order carry
+// over.
+const PDF_SECTION_KEYWORDS = [
+  { tokens: ["LESSON_TITLE"],                     pattern: /\blesson\s*title\b|^title$/i },
+  { tokens: ["GRADE_LEVEL"],                      pattern: /\bgrade(\s*level)?\b/i },
+  { tokens: ["OBJECTIVES"],                        pattern: /\bobjectives?\b|\blearning\s*goals?\b/i },
+  { tokens: ["MATERIALS"],                         pattern: /\bmaterials?\b|\bresources?\b/i },
+  { tokens: ["INTRO_TEACHER", "INTRO_STUDENTS"],    pattern: /\bintroduction\b|\bwarm[\s-]?up\b|\bopening\b|\bhook\b/i },
+  { tokens: ["MAIN_TEACHER", "MAIN_STUDENTS"],      pattern: /\bprocedure\b|\bactivit(y|ies)\b|\bmain\s*(lesson|activity|activities)\b|\binstruction(al)?\s*steps?\b/i },
+  { tokens: ["CLOSURE"],                            pattern: /\bclosure\b|\bconclusion\b|\bwrap[\s-]?up\b|\bsummary\b/i },
+  { tokens: ["ASSESSMENT"],                         pattern: /\bassessment\b|\bevaluation\b|\bexit\s*ticket\b/i },
+];
+
+// Scans extracted PDF text line by line for section-heading candidates
+// (short lines that don't end in sentence punctuation) matching a known
+// keyword, preserving the order they appear in. Each token is only ever
+// claimed once, so a keyword mentioned again later in body text doesn't
+// spawn a duplicate section.
+function detectPdfSections(text) {
+  const lines = (text || "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const sections = [];
+  const claimedTokens = new Set();
+
+  for (const line of lines) {
+    if (line.length > 70 || /[.?!]$/.test(line)) continue;
+
+    for (const entry of PDF_SECTION_KEYWORDS) {
+      if (!entry.pattern.test(line)) continue;
+      const tokens = entry.tokens.filter((t) => !claimedTokens.has(t));
+      if (tokens.length === 0) break; // this concept was already captured under an earlier heading
+      tokens.forEach((t) => claimedTokens.add(t));
+      sections.push({ heading: line.replace(/:\s*$/, ""), tokens });
+      break;
+    }
+  }
+
+  return sections;
+}
+
+// Builds a new .docx (via the `docx` library) reproducing the detected
+// sections in their original order: each as a bold heading (the PDF's own
+// wording) followed by one {{TOKEN}} placeholder paragraph per mapped
+// token — a real docxtemplater-compatible template from here on.
+async function synthesizeDocxFromPdfSections(sections) {
+  const children = [];
+  for (const section of sections) {
+    children.push(new Paragraph({
+      children: [new TextRun({ text: section.heading, bold: true, size: 26 })],
+      spacing: { before: 240, after: 100 },
+    }));
+    for (const token of section.tokens) {
+      // A heading like "Introduction" maps to two tokens (teacher + student
+      // actions) — label each so the exported document reads clearly rather
+      // than running both blocks of text together.
+      const label = token.endsWith("_TEACHER") ? "Teacher: " : token.endsWith("_STUDENTS") ? "Students: " : null;
+      children.push(new Paragraph({
+        children: label
+          ? [new TextRun({ text: label, bold: true }), new TextRun(`{{${token}}}`)]
+          : [new TextRun(`{{${token}}}`)],
+        spacing: { after: 200 },
+      }));
+    }
+  }
+  const doc = new Document({ sections: [{ children }] });
+  return Packer.toBuffer(doc);
+}
+
+async function extractPdfText(buffer) {
+  const parser = new PDFParse({ data: new Uint8Array(buffer) });
+  try {
+    const result = await parser.getText();
+    return result.text;
+  } finally {
+    await parser.destroy();
+  }
+}
+
 // ── action: "upload-init" ──────────────────────────────────────────────────────
 // Issues a short-lived signed upload URL so the browser can PUT the file
 // straight into Supabase Storage without routing the bytes through this
 // function (which has a ~4.5MB request body cap on Vercel). Private,
 // permanent bucket — unlike standards-uploads (a relay that gets deleted
-// after processing), the uploaded .docx here IS the export source of truth.
+// after processing), the uploaded file here IS the export source of truth
+// (for a .docx directly; for a .pdf, register converts it into one — see
+// handleRegister).
 async function handleUploadInit(req, res) {
   const { filename, userId } = req.body ?? {};
   const trimmedName = (filename || "").trim();
@@ -89,8 +189,8 @@ async function handleUploadInit(req, res) {
   if (!userId) {
     return res.status(400).json({ error: "Missing userId." });
   }
-  if (!trimmedName || !lower.endsWith(".docx")) {
-    return res.status(400).json({ error: "Please upload a .docx file." });
+  if (!trimmedName || (!lower.endsWith(".docx") && !lower.endsWith(".pdf"))) {
+    return res.status(400).json({ error: "Please upload a .docx or .pdf file." });
   }
 
   const safeName = trimmedName.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -120,6 +220,7 @@ async function handleRegister(req, res) {
   if (!userId) return res.status(400).json({ error: "Missing userId." });
 
   const templateName = (name || filename || "Untitled Template").trim();
+  const isPdf = (filename || path || "").toLowerCase().endsWith(".pdf");
 
   const { data: fileData, error: downloadError } = await supabase.storage
     .from(BUCKET)
@@ -130,29 +231,79 @@ async function handleRegister(req, res) {
     return res.status(400).json({ error: "Could not read the uploaded file." });
   }
 
-  const buffer = Buffer.from(await fileData.arrayBuffer());
-
+  let buffer = Buffer.from(await fileData.arrayBuffer());
+  let storagePath = path;
   let detected = { all: [], recognized: [], unrecognized: [] };
   let status = "ready";
   let errorMessage = null;
 
-  try {
-    detected = detectPlaceholders(buffer);
-    if (detected.recognized.length === 0) {
+  // A PDF isn't a template docxtemplater can merge into directly, so convert
+  // it once into a synthesized {{TOKEN}}-based .docx first. storagePath then
+  // points at that synthesized file, never the original PDF — from there on,
+  // placeholder detection below (and every other action) treats it exactly
+  // like a normal uploaded .docx.
+  if (isPdf) {
+    try {
+      const text = await extractPdfText(buffer);
+      if (!text || !text.trim()) {
+        status = "error";
+        errorMessage = "Could not extract any text from this PDF. It may be a scanned image rather than a text-based document.";
+      } else {
+        const sections = detectPdfSections(text);
+        if (sections.length === 0) {
+          status = "error";
+          errorMessage = "Could not detect any recognizable lesson-plan sections in this PDF (e.g. Objectives, Materials, Procedure, Assessment). Try a Word (.docx) template instead, or add clearer section headings.";
+        } else {
+          const synthesizedBuffer = await synthesizeDocxFromPdfSections(sections);
+          const synthesizedPath = `${path.replace(/\.pdf$/i, "")}-converted.docx`;
+
+          const { error: uploadError } = await supabase.storage
+            .from(BUCKET)
+            .upload(synthesizedPath, synthesizedBuffer, {
+              contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            });
+
+          if (uploadError) {
+            console.error("[custom-templates:register] synthesized docx upload error:", uploadError.message);
+            status = "error";
+            errorMessage = "Could not save the converted template. Please try again.";
+          } else {
+            buffer = synthesizedBuffer;
+            storagePath = synthesizedPath;
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[custom-templates:register] PDF conversion failed:", err.message);
       status = "error";
-      errorMessage = "No recognized placeholders were found in this document. Check that it uses tags like {{LESSON_TITLE}}, {{OBJECTIVES}}, etc.";
+      errorMessage = "Could not read this PDF. It may be corrupted, password-protected, or in an unsupported format.";
     }
-  } catch (err) {
-    console.error("[custom-templates:register] placeholder detection failed:", err.message);
-    status = "error";
-    errorMessage = "Could not read this file as a valid Word template. It may be corrupted or use unsupported formatting.";
+  }
+
+  // Skip placeholder detection if the PDF branch above already failed —
+  // buffer/storagePath point at a real .docx either way otherwise (the
+  // original upload, or the just-synthesized one).
+  if (status !== "error") {
+    try {
+      detected = detectPlaceholders(buffer);
+      if (detected.recognized.length === 0) {
+        status = "error";
+        errorMessage = isPdf
+          ? "Could not map any detected sections to a supported placeholder. Try a Word (.docx) template instead."
+          : "No recognized placeholders were found in this document. Check that it uses tags like {{LESSON_TITLE}}, {{OBJECTIVES}}, etc.";
+      }
+    } catch (err) {
+      console.error("[custom-templates:register] placeholder detection failed:", err.message);
+      status = "error";
+      errorMessage = "Could not read this file as a valid Word template. It may be corrupted or use unsupported formatting.";
+    }
   }
 
   const insertPayload = {
     user_id:                   userId,
     name:                      templateName,
     original_filename:         filename || path,
-    storage_path:              path,
+    storage_path:              storagePath,
     placeholders:              detected.all,
     recognized_placeholders:   detected.recognized,
     unrecognized_placeholders: detected.unrecognized,

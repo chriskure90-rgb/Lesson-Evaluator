@@ -3097,7 +3097,7 @@ function ManageTemplatesModal({
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.pdf,application/pdf"
                   style={{ display: "none" }}
                   onChange={(e) => {
                     const file = e.target.files?.[0];
@@ -3110,7 +3110,9 @@ function ManageTemplatesModal({
                   }}
                 />
                 <div className="fw-upload-area-icon">↑</div>
-                <p className="fw-upload-area-label">Upload a .docx template with {"{{PLACEHOLDER}}"} tags</p>
+                <p className="fw-upload-area-label">
+                  Upload a .docx template with {"{{PLACEHOLDER}}"} tags, or a .pdf lesson plan template — we'll detect its sections automatically. Both formats are supported.
+                </p>
 
                 <button
                   type="button"
@@ -3118,13 +3120,17 @@ function ManageTemplatesModal({
                   disabled={busy}
                   onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
                 >
-                  Choose .docx File
+                  Choose .docx or .pdf File
                 </button>
 
                 {pendingFile && <p className="fw-upload-filename">{pendingFile.name}</p>}
 
                 {uploadStatus === "uploading" && <p className="fw-upload-status">Uploading…</p>}
-                {uploadStatus === "processing" && <p className="fw-upload-status">Detecting placeholders…</p>}
+                {uploadStatus === "processing" && (
+                  <p className="fw-upload-status">
+                    {pendingFile?.name.toLowerCase().endsWith(".pdf") ? "Converting PDF and detecting sections…" : "Detecting placeholders…"}
+                  </p>
+                )}
                 {uploadStatus === "success" && (
                   <p className="fw-upload-status fw-upload-status-success">Template uploaded.</p>
                 )}
@@ -3179,7 +3185,12 @@ function ManageTemplatesModal({
                       <p className="lib-card-title" style={{ marginBottom: 2 }}>{t.name}</p>
                     )}
 
-                    <p style={{ fontSize: 12.5, color: "var(--muted-fg)", marginBottom: 10 }}>{t.original_filename}</p>
+                    <p style={{ fontSize: 12.5, color: "var(--muted-fg)", marginBottom: 10 }}>
+                      {t.original_filename}
+                      {t.original_filename.toLowerCase().endsWith(".pdf") && (
+                        <span className="lib-badge badge-needs" style={{ marginLeft: 8 }}>Converted from PDF</span>
+                      )}
+                    </p>
 
                     {t.recognized_placeholders.length > 0 && (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: t.unrecognized_placeholders.length > 0 ? 8 : 0 }}>
