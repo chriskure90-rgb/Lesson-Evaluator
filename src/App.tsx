@@ -1643,7 +1643,7 @@ function GeneratorPage({
                         className="input"
                         value={studentTechnology}
                         onChange={(e) => setStudentTechnology(e.target.value)}
-                        placeholder="e.g., Chromebook, iPad, Google Classroom, specific software, or no technology"
+                        placeholder="e.g., Chromebook, iPad, Google Classroom, etc."
                       />
                     </div>
                   </AdvancedOptionGroup>
