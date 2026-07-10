@@ -1544,7 +1544,7 @@ function GeneratorPage({
                       title="Preview Template"
                       aria-label={`Preview ${f.label} template`}
                     >
-                      <Icon.Eye />
+                      <Icon.Eye /> Preview
                     </button>
                   </div>
                 ))}
