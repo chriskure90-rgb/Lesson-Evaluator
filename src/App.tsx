@@ -5,6 +5,7 @@ import { ExportDropdown } from "./components/ExportDropdown";
 import { slugifyFilename, type ExportDocument } from "./lib/export";
 import { buildTemplate1LessonDocx } from "./lib/template1-docx";
 import { TemplateRenderer } from "./components/lesson-templates/TemplateRenderer";
+import { TemplatePreviewModal, type BuiltInTemplateId } from "./components/lesson-templates/TemplatePreviewModal";
 import { Icon } from "./components/Icon";
 import {
   fetchCustomTemplates,
@@ -1023,6 +1024,7 @@ function GeneratorPage({
   const [customTemplates, setCustomTemplates] = useState<CustomTemplate[]>([]);
   const [selectedCustomTemplateId, setSelectedCustomTemplateId] = useState<string | null>(sharedCustomTemplateId);
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
+  const [previewingTemplateId, setPreviewingTemplateId] = useState<BuiltInTemplateId | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1523,15 +1525,24 @@ function GeneratorPage({
               <p className="drawer-eyebrow" style={{ marginBottom: 6 }}>Built-in</p>
               <div className="fw-chip-row" style={{ marginBottom: readyCustomTemplates.length > 0 ? 14 : 10 }}>
                 {LESSON_FORMATS.map((f) => (
-                  <button
-                    key={f.value}
-                    type="button"
-                    className={`fw-chip${lessonFormat === f.value ? " fw-chip-active" : ""}`}
-                    onClick={() => setLessonFormat(f.value)}
-                    aria-pressed={lessonFormat === f.value}
-                  >
-                    {f.label}
-                  </button>
+                  <div key={f.value} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <button
+                      type="button"
+                      className={`fw-chip${lessonFormat === f.value ? " fw-chip-active" : ""}`}
+                      onClick={() => setLessonFormat(f.value)}
+                      aria-pressed={lessonFormat === f.value}
+                    >
+                      {f.label}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-outline-sm"
+                      style={{ height: 30, padding: "0 10px", fontSize: 11.5 }}
+                      onClick={() => setPreviewingTemplateId(f.value as BuiltInTemplateId)}
+                    >
+                      Preview
+                    </button>
+                  </div>
                 ))}
               </div>
 
@@ -1925,6 +1936,18 @@ function GeneratorPage({
           templates={customTemplates}
           onTemplatesChange={handleCustomTemplatesChange}
           onClose={() => setShowTemplatesModal(false)}
+        />
+      )}
+
+      {previewingTemplateId && (
+        <TemplatePreviewModal
+          templateId={previewingTemplateId}
+          isSelected={lessonFormat === previewingTemplateId}
+          onClose={() => setPreviewingTemplateId(null)}
+          onUseTemplate={() => {
+            setLessonFormat(previewingTemplateId);
+            setPreviewingTemplateId(null);
+          }}
         />
       )}
     </div>

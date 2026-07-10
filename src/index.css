@@ -2092,6 +2092,85 @@ details[open] .scoring-rules-trigger::before { transform: rotate(90deg); }
   border-radius: var(--radius);
 }
 
+/* ── Template Preview Modal ──────────────────────────────────
+   Centered dialog (unlike the drawer/slide-over panels above) — a full
+   document mockup reads better centered with room on both sides than
+   pinned to the screen edge. Reuses the same overlay dimming, border/
+   radius/shadow tokens, and button classes as the rest of the app. */
+.template-preview-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgb(30 28 25 / 0.35);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: fadeIn 160ms ease;
+}
+
+.template-preview-modal {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 2px);
+  box-shadow: var(--shadow-soft);
+  width: min(720px, 100%);
+  max-height: min(88vh, 900px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: previewModalIn 160ms ease;
+}
+@keyframes previewModalIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.template-preview-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+  flex-shrink: 0;
+}
+
+.template-preview-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 24px;
+  background: var(--muted);
+}
+
+.template-preview-doc {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 28px;
+  max-width: 100%;
+}
+
+.template-preview-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+  background: var(--card);
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .template-preview-backdrop { padding: 0; }
+  .template-preview-modal { width: 100%; max-height: 100vh; height: 100%; border-radius: 0; }
+  .template-preview-doc { padding: 18px; }
+}
+
 /* ── Login page ──────────────────────────────────────────── */
 .login-shell {
   min-height: 100vh;
