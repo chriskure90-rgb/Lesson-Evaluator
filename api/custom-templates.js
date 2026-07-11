@@ -180,6 +180,39 @@ async function synthesizeDocxFromPdfSections(sections) {
   return Packer.toBuffer(doc);
 }
 
+// pdfjs-dist's legacy Node build (used by pdf-parse) polyfills DOMMatrix/
+// ImageData/Path2D onto globalThis from @napi-rs/canvas at module-load time —
+// but it does so via an indirect `require()` constructed through
+// process.getBuiltinModule("module").createRequire(...), which Vercel's
+// function bundler (@vercel/nft) doesn't reliably trace as a real dependency
+// of this file. Result: @napi-rs/canvas is missing from the deployed
+// function bundle, that indirect require throws, pdfjs-dist's own try/catch
+// swallows it and just warns ("Cannot polyfill `DOMMatrix`..."), and parsing
+// later crashes with "ReferenceError: DOMMatrix is not defined" the first
+// time pdf.js actually calls `new DOMMatrix(...)`. Importing @napi-rs/canvas
+// directly and explicitly here — a literal `import()` in OUR file — makes it
+// a traceable dependency the bundler will actually include, and setting the
+// globals ourselves beforehand means pdfjs-dist's own polyfill attempt finds
+// them already set and is a no-op either way.
+let canvasPolyfillsReady = false;
+async function ensureNodeCanvasPolyfills() {
+  if (canvasPolyfillsReady) return;
+  try {
+    const canvas = await import("@napi-rs/canvas");
+    if (!globalThis.DOMMatrix) globalThis.DOMMatrix = canvas.DOMMatrix;
+    if (!globalThis.ImageData) globalThis.ImageData = canvas.ImageData;
+    if (!globalThis.Path2D) globalThis.Path2D = canvas.Path2D;
+    console.log("[custom-templates:extract-pdf] @napi-rs/canvas polyfills installed:", {
+      DOMMatrix: !!globalThis.DOMMatrix,
+      ImageData: !!globalThis.ImageData,
+      Path2D: !!globalThis.Path2D,
+    });
+  } catch (err) {
+    console.error("[custom-templates:extract-pdf] failed to load @napi-rs/canvas for polyfills:", err?.message);
+  }
+  canvasPolyfillsReady = true;
+}
+
 async function extractPdfText(buffer) {
   // Sanity-check the buffer itself before handing it to the parser — this is
   // the only way to tell "we got a truncated/non-PDF buffer from Storage"
@@ -193,6 +226,7 @@ async function extractPdfText(buffer) {
     looksLikePdf: header.startsWith("%PDF-"),
   });
 
+  await ensureNodeCanvasPolyfills();
   const { PDFParse } = await import("pdf-parse");
   // pdf-parse's own constructor already converts a Buffer to Uint8Array
   // internally (see node_modules/pdf-parse .../PDFParse.js), so passing the
