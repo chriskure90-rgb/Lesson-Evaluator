@@ -1,6 +1,13 @@
 import PizZip from "pizzip";
 import Docxtemplater from "docxtemplater";
+import { randomUUID } from "node:crypto";
 import { supabase } from "./lib/supabase.js";
+
+// Dev-mode-only: surface the real error message in the response so upload
+// failures are debuggable locally without digging through server logs. Never
+// exposed in production (gated on VERCEL_ENV, which Vercel always sets in
+// deployed environments but is absent locally).
+const IS_DEV = process.env.VERCEL_ENV !== "production";
 
 // pdf-parse and docx are imported lazily (inside extractPdfText/
 // synthesizeDocxFromPdfSections below) rather than statically at the top of
@@ -196,27 +203,48 @@ async function handleUploadInit(req, res) {
   const { filename, userId } = req.body ?? {};
   const trimmedName = (filename || "").trim();
   const lower = trimmedName.toLowerCase();
+  const extension = lower.includes(".") ? lower.slice(lower.lastIndexOf(".")) : "(none)";
+
+  console.log("[custom-templates:upload-init] request:", {
+    filename: trimmedName || "(empty)",
+    extension,
+    userId: userId || "(missing)",
+  });
 
   if (!userId) {
     return res.status(400).json({ error: "Missing userId." });
   }
   if (!trimmedName || (!lower.endsWith(".docx") && !lower.endsWith(".pdf"))) {
+    console.log("[custom-templates:upload-init] rejected: unsupported extension", extension);
     return res.status(400).json({ error: "Please upload a .docx or .pdf file." });
   }
 
   const safeName = trimmedName.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const path = `${userId}/${Date.now()}-${crypto.randomUUID()}-${safeName}`;
+  const path = `${userId}/${Date.now()}-${randomUUID()}-${safeName}`;
+  console.log("[custom-templates:upload-init] validation passed, storage path:", path);
 
-  const { data, error } = await supabase.storage
-    .from(BUCKET)
-    .createSignedUploadUrl(path);
+  try {
+    const { data, error } = await supabase.storage
+      .from(BUCKET)
+      .createSignedUploadUrl(path);
 
-  if (error) {
-    console.error("[custom-templates:upload-init] createSignedUploadUrl error:", error.message);
-    return res.status(500).json({ error: "Could not prepare upload." });
+    if (error) {
+      console.error("[custom-templates:upload-init] createSignedUploadUrl error:", error);
+      return res.status(500).json({
+        error: "Could not prepare upload.",
+        ...(IS_DEV ? { details: error.message } : {}),
+      });
+    }
+
+    console.log("[custom-templates:upload-init] signed URL created:", data.path);
+    return res.status(200).json({ path: data.path, token: data.token });
+  } catch (err) {
+    console.error("[custom-templates:upload-init] unexpected error:", err);
+    return res.status(500).json({
+      error: "Could not prepare upload.",
+      ...(IS_DEV ? { details: err?.message || String(err) } : {}),
+    });
   }
-
-  return res.status(200).json({ path: data.path, token: data.token });
 }
 
 // ── action: "register" ─────────────────────────────────────────────────────────
