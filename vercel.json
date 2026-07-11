@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "api/custom-templates.js": {
+      "includeFiles": "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"
+    },
+    "api/upload-standards-process.js": {
+      "includeFiles": "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"
+    }
+  }
+}

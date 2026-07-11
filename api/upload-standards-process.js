@@ -3,6 +3,7 @@ import mammoth              from "mammoth";
 import { supabase }         from "./lib/supabase.js";
 import { splitIntoChunks }  from "./lib/chunk-text.js";
 import { embedBatch }       from "./lib/embeddings.js";
+import { ensurePdfEnvironmentReady } from "./lib/pdf-node-setup.js";
 
 const BUCKET          = "standards-uploads";
 const EMBED_BATCH_SIZE = 20;
@@ -11,6 +12,11 @@ async function extractText(buffer, filename) {
   const lower = (filename || "").toLowerCase();
 
   if (lower.endsWith(".pdf")) {
+    // Same pdf-parse/pdfjs-dist Node-serverless setup custom-templates.js
+    // needs — see api/lib/pdf-node-setup.js. This route hits the identical
+    // "Setting up fake worker failed" / "DOMMatrix is not defined" crash on
+    // Vercel without it, since it also parses PDFs directly.
+    await ensurePdfEnvironmentReady();
     const parser = new PDFParse({ data: new Uint8Array(buffer) });
     const result = await parser.getText();
     await parser.destroy();
