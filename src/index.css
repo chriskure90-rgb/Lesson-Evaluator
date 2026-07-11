@@ -390,6 +390,48 @@ h1, h2, h3, h4, h5 {
   .custom-tpl-grid-cell { grid-column: 1 / -1 !important; grid-row: auto !important; }
 }
 
+/* Table-grid layout (checklist-heavy templates — see CHECKLIST_TABLE_LAYOUT
+   in custom-template-layouts.ts): a 3-column pastel header row, a full-width
+   Unit Goal row, then narrative-writing-area / checklist-panel row pairs.
+   Header cell/checklist backgrounds are set inline per layout (the actual
+   colors are layout metadata, not fixed CSS) — these classes supply the
+   shared box chrome, spacing, and the small-screen stacking fallback. */
+.custom-tpl-table {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.custom-tpl-table-header-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.custom-tpl-table-header-cell {
+  border: 1px solid rgb(48 44 39 / 0.35);
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-height: 60px;
+}
+.custom-tpl-table-unitgoal {
+  border: 1px solid rgb(48 44 39 / 0.55);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.custom-tpl-table-body-row {
+  display: grid;
+  gap: 12px;
+}
+.custom-tpl-table-cell-left,
+.custom-tpl-table-cell-right {
+  border: 1px solid rgb(48 44 39 / 0.55);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+@media (max-width: 720px) {
+  .custom-tpl-table-header-row { grid-template-columns: 1fr !important; }
+  .custom-tpl-table-body-row { grid-template-columns: 1fr !important; }
+}
+
 /* ── Export dropdown ─────────────────────────────────────── */
 .export-dropdown {
   display: inline-flex;

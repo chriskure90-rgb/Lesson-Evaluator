@@ -1,23 +1,36 @@
 import type { Template1Lesson } from "../../App";
 import type { CustomTemplate } from "../../lib/custom-templates";
 import { PLACEHOLDER_CATALOG } from "../../lib/custom-template-placeholders";
-import { getLayoutForTemplate, extractDiscoverFieldContent, type GridFieldContent } from "../../lib/custom-template-layouts";
+import {
+  getLayoutForTemplate,
+  extractDiscoverFieldContent,
+  extractChecklistTableFieldContent,
+  findStructuredFieldByLabel,
+  type GridFieldContent,
+} from "../../lib/custom-template-layouts";
 import { Icon } from "../Icon";
 
 /* ── Custom template lesson preview ────────────────────────────────────────────
-   Two render paths:
-   1. Grid — for templates recognized by getLayoutForTemplate (name/filename
-      match against a hand-built layout; PDF text extraction has no bounding
-      boxes to derive real positions from — see custom-template-layouts.ts).
-      Mirrors the source document's actual row/column layout.
-   2. Vertical fallback — for every other custom template. Section order
+   Three render paths, in priority order:
+   1. Table-grid — for templates whose detected structured fields fingerprint-
+      match a known checklist-heavy layout (see getLayoutForTemplate /
+      matchesChecklistTableFingerprint in custom-template-layouts.ts): a
+      3-column pastel header, a full-width Unit Goal row, then narrative-
+      writing-area / checklist-panel row pairs.
+   2. Grid — for templates recognized by filename (e.g. Discover, which has
+      no structured fields of its own to fingerprint against). A fixed
+      column/row layout mirroring that specific source document.
+   3. Vertical fallback — for every other custom template. Section order
       comes from CustomTemplate.recognized_placeholders, which preserves the
       order sections were detected in the teacher's uploaded file (see
       detectPdfSections/detectPlaceholders in api/custom-templates.js).
 
-   Neither path affects DOCX export — that always merges lessonData into the
-   real uploaded/synthesized template via docxtemplater, independent of
-   what's rendered here.
+   None of these affect DOCX export — that always merges lessonData into the
+   real uploaded/synthesized template via docxtemplater, independent of what's
+   rendered here. PDF/DOCX text extraction has no bounding boxes to derive
+   real positions from, so every layout here is hand-built metadata for a
+   recognized template shape, not something computed from arbitrary uploads —
+   see custom-template-layouts.ts for the full explanation.
 ────────────────────────────────────────────────────────────────────────────── */
 
 function splitSentences(text: string): string[] {
@@ -126,7 +139,52 @@ export function CustomTemplateLessonView({
 
       <h2 className="t1-title">{template.name}</h2>
 
-      {layout ? (
+      {layout?.type === "table-grid" ? (
+        <div className="custom-tpl-table">
+          <div className="custom-tpl-table-header-row">
+            {layout.headerCells.map((cell) => (
+              <div key={cell.key} className="custom-tpl-table-header-cell" style={{ background: cell.bg }}>
+                <p className="custom-tpl-grid-label">{cell.label}</p>
+                <GridFieldValue content={extractChecklistTableFieldContent(cell.key, lessonData)} />
+              </div>
+            ))}
+          </div>
+
+          <div className="custom-tpl-table-unitgoal">
+            <p className="custom-tpl-grid-label">{layout.unitGoalLabel}</p>
+            <GridFieldValue content={extractChecklistTableFieldContent(layout.unitGoalKey, lessonData)} />
+          </div>
+
+          {layout.rows.map((row, i) => {
+            const field = findStructuredFieldByLabel(structuredFields, row.rightMatch);
+            const rightOptions = Array.isArray(field?.options) ? field.options : [];
+            const selected = new Set(field ? (lessonData.customFieldSelections?.[field.field] ?? []) : []);
+            return (
+              <div
+                key={i}
+                className="custom-tpl-table-body-row"
+                style={{
+                  gridTemplateColumns: `${layout.columnFractions[0]}fr ${layout.columnFractions[1]}fr`,
+                  minHeight: row.minHeight,
+                }}
+              >
+                <div className="custom-tpl-table-cell-left">
+                  <p className="custom-tpl-grid-label">{row.leftLabel}</p>
+                  <GridFieldValue content={extractChecklistTableFieldContent(row.leftKey, lessonData)} />
+                </div>
+                <div className="custom-tpl-table-cell-right" style={{ background: layout.checklistBg }}>
+                  <p className="custom-tpl-grid-label">{field?.label ?? row.rightFallbackLabel}</p>
+                  {field ? (
+                    <ChecklistValue options={rightOptions} selected={selected} />
+                  ) : (
+                    <p className="t1-body" style={{ margin: "4px 0 0" }}>No matching checklist detected in this template.</p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : layout?.type === "grid" ? (
         <div className="custom-tpl-grid" style={{ gridTemplateColumns: `repeat(${layout.columns}, 1fr)` }}>
           {layout.sections.map((section) => (
             <div
