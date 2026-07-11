@@ -27,6 +27,20 @@ function splitSentences(text: string): string[] {
     .filter(Boolean);
 }
 
+// Mirrors buildRenderData's ☑/☐ marking in api/custom-templates.js, so the
+// web preview shows the same selections the DOCX export will contain.
+function ChecklistValue({ options, selected }: { options: string[]; selected: Set<string> }) {
+  return (
+    <ul style={{ margin: "4px 0 0", padding: 0, listStyle: "none" }}>
+      {options.map((opt, i) => (
+        <li key={i} style={{ marginBottom: 3 }}>
+          {selected.has(opt) ? "☑" : "☐"} {opt}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function GridFieldValue({ content }: { content: GridFieldContent }) {
   if (content.kind === "list") {
     if (content.value.length === 0) return null;
@@ -117,27 +131,38 @@ export function CustomTemplateLessonView({
           <p className="t1-instructions-italic" style={{ margin: "0 0 14px" }}>
             Layout follows the sections detected in your uploaded template.
           </p>
-          {tokens.length === 0 ? (
+          {tokens.length === 0 && template.structured_fields.length === 0 ? (
             <p className="t1-body">No recognized sections were found for this template.</p>
           ) : (
-            tokens.map((token) => {
-              const entry = PLACEHOLDER_CATALOG[token];
-              const value = entry.extract(lessonData);
-              return (
-                <div key={token} className="custom-tpl-section">
-                  <p className="t1-section-label">{entry.label}</p>
-                  {entry.kind === "list" && Array.isArray(value) ? (
-                    <ul className="t1-list-dash">
-                      {value.map((v, i) => <li key={i}>{v}</li>)}
-                    </ul>
-                  ) : (
-                    <ol className="t1-list">
-                      {splitSentences(String(value ?? "")).map((s, i) => <li key={i}>{s}</li>)}
-                    </ol>
-                  )}
+            <>
+              {tokens.map((token) => {
+                const entry = PLACEHOLDER_CATALOG[token];
+                const value = entry.extract(lessonData);
+                return (
+                  <div key={token} className="custom-tpl-section">
+                    <p className="t1-section-label">{entry.label}</p>
+                    {entry.kind === "list" && Array.isArray(value) ? (
+                      <ul className="t1-list-dash">
+                        {value.map((v, i) => <li key={i}>{v}</li>)}
+                      </ul>
+                    ) : (
+                      <ol className="t1-list">
+                        {splitSentences(String(value ?? "")).map((s, i) => <li key={i}>{s}</li>)}
+                      </ol>
+                    )}
+                  </div>
+                );
+              })}
+              {template.structured_fields.map((field) => (
+                <div key={field.field} className="custom-tpl-section">
+                  <p className="t1-section-label">{field.label}</p>
+                  <ChecklistValue
+                    options={field.options}
+                    selected={new Set(lessonData.customFieldSelections?.[field.field] ?? [])}
+                  />
                 </div>
-              );
-            })
+              ))}
+            </>
           )}
         </>
       )}

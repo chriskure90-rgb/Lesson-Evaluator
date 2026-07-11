@@ -396,11 +396,35 @@ function buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, dura
 // export both read. subjectGradeLevel/lessonDuration/teacherName are NOT
 // requested here; the client fills those in from known form values so the
 // model never has to (and can't) hallucinate them.
-function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies }) {
+// The selected custom template's detected checklist/option-list fields
+// (see detectStructuredFields in api/custom-templates.js) — e.g. a
+// "Teaching Strategy" heading followed by "□ Direct instruction / □ Group
+// work / □ Stations" — are fixed option sets, not narrative text. Rather
+// than have the model write prose for them, this asks it to pick the
+// option(s) that fit this specific lesson from the exact list detected in
+// the template, returned as a separate customFieldSelections object so
+// buildRenderData (api/custom-templates.js) can mark the corresponding
+// boxes ☑/☐ at export time instead of leaving them all blank.
+function buildStructuredFieldsPrompt(structuredFields) {
+  if (!Array.isArray(structuredFields) || structuredFields.length === 0) return "";
+  const fieldLines = structuredFields.map(
+    (f) => `- "${f.field}" (${f.label}): choose from [${f.options.map((o) => `"${o}"`).join(", ")}].`
+  );
+  return [
+    "TEMPLATE OPTION FIELDS:",
+    "The teacher's uploaded template includes the following checklist/option fields. For each, select the option(s) that best fit this specific lesson from the exact list given — do not invent new options, reword the given ones, or select an option that isn't listed.",
+    ...fieldLines,
+    'Return your selections in a top-level "customFieldSelections" object, keyed by field name, each value an array containing only the selected option strings copied exactly as given (use an empty array if none apply).',
+  ].join("\n");
+}
+
+function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies, structuredFields = [] }) {
   const standardsLine =
     Array.isArray(frameworks) && frameworks.length > 0
       ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
       : code || "Not specified";
+
+  const hasStructuredFields = Array.isArray(structuredFields) && structuredFields.length > 0;
 
   return [
     "ROLE:",
@@ -429,6 +453,8 @@ function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, d
     "",
     buildMarzanoStrategiesBlock(marzanoStrategies),
     "",
+    buildStructuredFieldsPrompt(structuredFields),
+    "",
     "CONSTRAINTS:",
     `- The teacherActions/studentActions across introduction, mainLearningActivities, and closure combined should fit within ${duration} minutes.`,
     "- Use vocabulary appropriate for the grade level.",
@@ -453,7 +479,8 @@ function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, d
     '  "introduction": { "teacherActions": "string", "studentActions": "string", "studentSupport": "string" },',
     '  "mainLearningActivities": { "teacherActions": "string", "studentActions": "string", "studentSupport": "string" },',
     '  "closure": { "teacherActions": "string", "studentActions": "string" },',
-    '  "assessment": { "howObjectivesAssessed": "string" }',
+    '  "assessment": { "howObjectivesAssessed": "string" }' + (hasStructuredFields ? "," : ""),
+    ...(hasStructuredFields ? ['  "customFieldSelections": { "<fieldName>": ["string"] }'] : []),
     "}",
     "",
     "OUTPUT RULES:",
@@ -468,6 +495,9 @@ function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, d
     "- assessment.howObjectivesAssessed: describe how the lesson goal/objectives will be assessed.",
     "- Every field must be a plain string; lessonObjectives and materials must be arrays of plain strings.",
     "- Do not include lessonTitle-unrelated fields such as teacherName, subjectGradeLevel, or lessonDuration — those are filled in separately.",
+    ...(hasStructuredFields
+      ? ["- customFieldSelections: include this key exactly as instructed in TEMPLATE OPTION FIELDS above, with one entry per listed field."]
+      : []),
   ].join("\n");
 }
 
@@ -482,26 +512,33 @@ export default async function handler(req, res) {
     // clients (and the Standard Lesson Plan option) behave exactly as before.
     const normalizedLessonFormat = lessonFormat === "template1" ? "template1" : "standard";
 
-    // customTemplateId/customTemplateName are metadata only — a custom
-    // template is a different DOCX *skin* applied at export time (see
-    // api/custom-templates.js's handleExport), never a different generation
-    // schema, so nothing below changes behavior based on them. They're
-    // logged here purely so the selected template is traceable end-to-end
-    // through the generation request, and — when present — the template row
-    // is loaded and logged too, to confirm the id the client sent actually
-    // resolves to a real, ready template rather than a stale/deleted one.
+    // customTemplateId/customTemplateName are still just metadata for the
+    // FIXED Template1Lesson content — a custom template is a different DOCX
+    // *skin* applied at export time (see api/custom-templates.js's
+    // handleExport), never a different generation schema for that part.
+    // structured_fields is the one exception: when the selected template has
+    // detected checklist/option-list sections (see detectStructuredFields),
+    // buildStructuredFieldsPrompt below asks the model to choose applicable
+    // option(s) per field instead of leaving them blank, and the selections
+    // are returned as an additional customFieldSelections key alongside the
+    // normal lesson content (rendered into the exported docx at export time
+    // — see buildRenderData). The template row is always logged when
+    // present, to confirm the id the client sent actually resolves to a
+    // real, ready template rather than a stale/deleted one.
+    let customTemplateStructuredFields = [];
     if (customTemplateId) {
       console.log("[Generate] custom template selected:", { customTemplateId, customTemplateName });
       if (supabase) {
         const { data: templateRow, error: templateLookupError } = await supabase
           .from("custom_templates")
-          .select("id, name, status, recognized_placeholders")
+          .select("id, name, status, recognized_placeholders, structured_fields")
           .eq("id", customTemplateId)
           .single();
         if (templateLookupError) {
           console.warn("[Generate] custom template lookup failed:", templateLookupError.message);
         } else {
           console.log("[Generate] custom template data loaded by backend:", templateRow);
+          customTemplateStructuredFields = templateRow?.structured_fields || [];
         }
       }
     }
@@ -523,7 +560,7 @@ export default async function handler(req, res) {
     // Standard schema with different phrasing) — see buildTemplate1Prompt.
     const isTemplate1 = normalizedLessonFormat === "template1";
     const prompt = isTemplate1
-      ? buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies })
+      ? buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies, structuredFields: customTemplateStructuredFields })
       : buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies });
 
     console.debug("[Generate] inputs:", { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat: normalizedLessonFormat, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies });

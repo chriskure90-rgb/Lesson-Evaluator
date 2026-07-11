@@ -3,6 +3,18 @@ import type { Template1Lesson } from "../App";
 
 export type CustomTemplateStatus = "processing" | "ready" | "error";
 
+// A detected checklist / repeated-option-list section (e.g. a "Teaching
+// Strategy" heading followed by checkbox options) — see detectStructuredFields
+// in api/custom-templates.js. Distinct from placeholders/recognized_placeholders,
+// which cover free-narrative sections mapped to the fixed PLACEHOLDER_CATALOG.
+export type CustomTemplateStructuredField = {
+  type: "checklist" | "list";
+  field: string;
+  label: string;
+  token: string;
+  options: string[];
+};
+
 export type CustomTemplate = {
   id: string;
   user_id: string;
@@ -12,6 +24,7 @@ export type CustomTemplate = {
   placeholders: string[];
   recognized_placeholders: string[];
   unrecognized_placeholders: string[];
+  structured_fields: CustomTemplateStructuredField[];
   status: CustomTemplateStatus;
   error_message: string | null;
   created_at: string;
@@ -96,7 +109,7 @@ export async function registerCustomTemplate(params: {
 export async function fetchCustomTemplates(userId: string): Promise<CustomTemplate[]> {
   const { data, error } = await supabase
     .from("custom_templates")
-    .select("id, user_id, name, original_filename, storage_path, placeholders, recognized_placeholders, unrecognized_placeholders, status, error_message, created_at")
+    .select("id, user_id, name, original_filename, storage_path, placeholders, recognized_placeholders, unrecognized_placeholders, structured_fields, status, error_message, created_at")
     .eq("user_id", userId)
     .order("created_at", { ascending: false });
   if (error) throw error;
@@ -110,7 +123,7 @@ export async function fetchCustomTemplates(userId: string): Promise<CustomTempla
 export async function fetchCustomTemplateById(id: string): Promise<CustomTemplate | null> {
   const { data, error } = await supabase
     .from("custom_templates")
-    .select("id, user_id, name, original_filename, storage_path, placeholders, recognized_placeholders, unrecognized_placeholders, status, error_message, created_at")
+    .select("id, user_id, name, original_filename, storage_path, placeholders, recognized_placeholders, unrecognized_placeholders, structured_fields, status, error_message, created_at")
     .eq("id", id)
     .maybeSingle();
   if (error) throw error;

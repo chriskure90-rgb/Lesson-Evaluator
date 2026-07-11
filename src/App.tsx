@@ -77,6 +77,12 @@ export type Template1Lesson = {
   mainLearningActivities: Template1TeacherStudentPhase;
   closure: Template1ClosurePhase;
   assessment: { howObjectivesAssessed: string };
+  // Only present when generated against a custom template with detected
+  // checklist/option-list fields (see structured_fields on CustomTemplate) —
+  // keyed by field name, each value the option(s) the model selected from
+  // that field's fixed option list. Absent (undefined) for Standard/plain
+  // Template 1 lessons and for custom templates with no structured fields.
+  customFieldSelections?: Record<string, string[]>;
 };
 
 // Coerces a raw /api/generate response (Template 1 format) into a safe
@@ -111,6 +117,21 @@ function normaliseTemplate1Lesson(
   };
   const assessmentRaw = (r.assessment ?? {}) as Record<string, unknown>;
 
+  // Model-provided, per selected custom template's structured (checklist)
+  // fields only — absent for Standard/plain Template 1. Defensive against a
+  // model returning something other than string[] per key (e.g. a bare
+  // string, or omitting the key for a field entirely) since this is the one
+  // part of the response schema that varies per template rather than being
+  // fixed, so it's more likely to drift from what was asked for.
+  const rawSelections = r.customFieldSelections;
+  let customFieldSelections: Record<string, string[]> | undefined;
+  if (rawSelections && typeof rawSelections === "object" && !Array.isArray(rawSelections)) {
+    customFieldSelections = {};
+    for (const [key, value] of Object.entries(rawSelections as Record<string, unknown>)) {
+      customFieldSelections[key] = ensureArr(value).map(ensureStr);
+    }
+  }
+
   return {
     lessonTitle: ensureStr(r.lessonTitle),
     teacherName: "",
@@ -124,6 +145,7 @@ function normaliseTemplate1Lesson(
     mainLearningActivities: ensurePhase(r.mainLearningActivities),
     closure: ensureClosure(r.closure),
     assessment: { howObjectivesAssessed: ensureStr(assessmentRaw.howObjectivesAssessed) },
+    ...(customFieldSelections ? { customFieldSelections } : {}),
   };
 }
 

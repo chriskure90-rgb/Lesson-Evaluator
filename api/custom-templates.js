@@ -56,7 +56,17 @@ const KNOWN_PLACEHOLDER_TOKENS = Object.keys(PLACEHOLDER_CATALOG);
 // uploaded template has a single {{TOKEN}}, not a loop construct, so an array
 // value is rendered as one multi-line block (linebreaks: true in the
 // Docxtemplater options turns the "\n" below into real Word line breaks).
-function buildRenderData(lesson, recognizedTokens) {
+//
+// structuredFields (template.structured_fields — checklists/option lists,
+// see detectStructuredFields) render the same way: one {{FIELD_TOKEN}} per
+// field, its full option list rendered as one block with a checked/unchecked
+// box per option — ☑ for options present in
+// lesson.customFieldSelections[field.field] (populated at generation time,
+// see api/generate.js's buildStructuredFieldsPrompt), ☐ otherwise. A lesson
+// generated before this feature existed (or against a template with no
+// structured fields) simply has no customFieldSelections — every option
+// renders unchecked rather than erroring.
+function buildRenderData(lesson, recognizedTokens, structuredFields) {
   const data = {};
   for (const token of recognizedTokens || []) {
     const entry = PLACEHOLDER_CATALOG[token];
@@ -67,6 +77,12 @@ function buildRenderData(lesson, recognizedTokens) {
     } else {
       data[token] = value ?? "";
     }
+  }
+  for (const field of structuredFields || []) {
+    const selected = new Set(lesson?.customFieldSelections?.[field.field] || []);
+    data[field.token] = field.options
+      .map((opt) => `${selected.has(opt) ? "☑" : "☐"} ${opt}`)
+      .join("\n");
   }
   return data;
 }
@@ -86,10 +102,17 @@ function detectPlaceholders(buffer) {
   const fullText = doc.getFullText();
   const matches = [...fullText.matchAll(/\{\{([A-Z0-9_]+)\}\}/g)].map((m) => m[1]);
   const unique = Array.from(new Set(matches));
+  // FIELD_* tokens are structured-field placeholders emitted by
+  // synthesizeDocxFromPdfSections (see detectStructuredFields) — not in
+  // PLACEHOLDER_CATALOG (a fixed narrative-only catalog), but not "left
+  // blank on export" either: buildRenderData renders them separately from
+  // template.structured_fields. Excluded from `unrecognized` so the UI's
+  // "⚠ Unrecognized (left blank on export)" warning doesn't misreport them.
+  const isFieldToken = (t) => t.startsWith("FIELD_");
   return {
     all: unique,
     recognized: unique.filter((t) => KNOWN_PLACEHOLDER_TOKENS.includes(t)),
-    unrecognized: unique.filter((t) => !KNOWN_PLACEHOLDER_TOKENS.includes(t)),
+    unrecognized: unique.filter((t) => !KNOWN_PLACEHOLDER_TOKENS.includes(t) && !isFieldToken(t)),
   };
 }
 
@@ -129,21 +152,30 @@ const PDF_SECTION_KEYWORDS = [
   { tokens: ["ASSESSMENT"],                         pattern: /\bassessment\b|\bevaluation\b|\bexit\s*ticket\b/i },
 ];
 
+function splitTextLines(text) {
+  return (text || "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
 // Scans extracted plain text (PDF or DOCX) line by line for section-heading
 // candidates (short lines that don't end in sentence punctuation) matching a
 // known keyword, preserving the order they appear in. Each token is only
 // ever claimed once, so a keyword mentioned again later in body text doesn't
-// spawn a duplicate section.
-function detectPdfSections(text) {
-  const lines = (text || "")
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
+// spawn a duplicate section. `skipHeadingLines` (a Set of trimmed line
+// strings) lets analyzeTemplateText below exclude headings already claimed
+// by detectStructuredFields, so e.g. a "Teaching Strategy" heading followed
+// by checkboxes becomes a checklist field, not ALSO a MAIN_TEACHER/
+// MAIN_STUDENTS narrative section.
+function detectPdfSections(text, skipHeadingLines = null) {
+  const lines = splitTextLines(text);
 
   const sections = [];
   const claimedTokens = new Set();
 
   for (const line of lines) {
+    if (skipHeadingLines?.has(line)) continue;
     if (line.length > 70 || /[.?!]$/.test(line)) continue;
 
     for (const entry of PDF_SECTION_KEYWORDS) {
@@ -159,11 +191,121 @@ function detectPdfSections(text) {
   return sections;
 }
 
+// ── Structured form controls (checklists / repeated option lists) ────────────
+// A checklist section like:
+//   Teaching Strategy
+//   □ Direct instruction
+//   □ Group work
+//   □ Stations
+// isn't narrative text to fill in — it's a fixed set of options the AI
+// should pick applicable one(s) from at generation time (see
+// buildStructuredFieldsPrompt in api/generate.js) rather than replace with
+// prose. Detected the same way as narrative sections (line-scanning; no
+// font/position metadata available — see the file header comment above),
+// but kept as a separate `{ type, field, label, token, options }` list
+// rather than mapped into PLACEHOLDER_CATALOG, since the option set (and
+// therefore the field) is different for every template, not a fixed catalog
+// entry. Table-based checklists/two-column layouts are not yet detected —
+// mammoth/pdf-parse's plain-text output flattens tables into running text
+// with no cell boundaries, so that needs a materially different (HTML/table-
+// aware) extraction path than this line scanner.
+const CHECKBOX_LINE = /^(?:[□☐▢☑☒]|\[\s?[xX]?\s?\])\s*(.+)$/;
+const BULLET_LINE = /^(?:[•\-*]|\d+[.)])\s*(.+)$/;
+
+// "Teaching Strategy" -> "teachingStrategy" (for a future structured
+// lesson-data field, mirroring the app's other camelCase field names).
+function fieldKeyFromLabel(label) {
+  const words = (label || "").replace(/[^a-zA-Z0-9\s]/g, " ").trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "field";
+  return words
+    .map((w, i) => (i === 0 ? w.toLowerCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()))
+    .join("");
+}
+
+// "Teaching Strategy" -> "FIELD_TEACHING_STRATEGY" — the {{TOKEN}} emitted
+// into the synthesized docx (see synthesizeDocxFromPdfSections) and later
+// rendered at export time from the lesson's customFieldSelections.
+function fieldTokenFromLabel(label) {
+  const words = (label || "").replace(/[^a-zA-Z0-9\s]/g, " ").trim().split(/\s+/).filter(Boolean);
+  return `FIELD_${words.map((w) => w.toUpperCase()).join("_") || "OPTIONS"}`;
+}
+
+// Scans the same line list detectPdfSections uses for a heading immediately
+// followed by 2+ checkbox-prefixed lines (checklist) or, failing that and
+// only when the heading doesn't already match a narrative keyword above,
+// 2+ plain bulleted/numbered lines (a "repeated option list" with no literal
+// checkboxes — still a fixed set of options, not prose). Checklist detection
+// always takes priority over a narrative keyword match for the same
+// heading — see the file header comment. Returns the detected fields plus
+// the set of heading-line strings they consumed, for detectPdfSections to skip.
+function detectStructuredFields(lines) {
+  const fields = [];
+  const consumedHeadingLines = new Set();
+  const usedIndices = new Set();
+
+  for (let i = 0; i < lines.length; i++) {
+    if (usedIndices.has(i)) continue;
+    const line = lines[i];
+    if (line.length > 70 || /[.?!]$/.test(line) || CHECKBOX_LINE.test(line) || BULLET_LINE.test(line)) continue;
+
+    let j = i + 1;
+    const checklistOptions = [];
+    while (j < lines.length && CHECKBOX_LINE.test(lines[j])) {
+      checklistOptions.push(lines[j].match(CHECKBOX_LINE)[1].trim());
+      j++;
+    }
+    if (checklistOptions.length >= 2) {
+      const label = line.replace(/:\s*$/, "");
+      fields.push({ type: "checklist", field: fieldKeyFromLabel(label), label, token: fieldTokenFromLabel(label), options: checklistOptions });
+      consumedHeadingLines.add(line);
+      for (let k = i; k < j; k++) usedIndices.add(k);
+      i = j - 1;
+      continue;
+    }
+
+    if (!PDF_SECTION_KEYWORDS.some((entry) => entry.pattern.test(line))) {
+      let k = i + 1;
+      const listOptions = [];
+      while (k < lines.length && BULLET_LINE.test(lines[k])) {
+        listOptions.push(lines[k].match(BULLET_LINE)[1].trim());
+        k++;
+      }
+      if (listOptions.length >= 2) {
+        const label = line.replace(/:\s*$/, "");
+        fields.push({ type: "list", field: fieldKeyFromLabel(label), label, token: fieldTokenFromLabel(label), options: listOptions });
+        consumedHeadingLines.add(line);
+        for (let m = i; m < k; m++) usedIndices.add(m);
+        i = k - 1;
+        continue;
+      }
+    }
+  }
+
+  return { fields, consumedHeadingLines };
+}
+
+// Single entry point combining both detectors over the same text — used by
+// convertHeadingsToPlaceholderDocx below instead of calling detectPdfSections
+// directly, so structured fields and narrative sections never claim the same
+// heading twice.
+function analyzeTemplateText(text) {
+  const lines = splitTextLines(text);
+  const { fields, consumedHeadingLines } = detectStructuredFields(lines);
+  const sections = detectPdfSections(text, consumedHeadingLines);
+  return { sections, structuredFields: fields };
+}
+
 // Builds a new .docx (via the `docx` library) reproducing the detected
 // sections in their original order: each as a bold heading (the PDF's own
 // wording) followed by one {{TOKEN}} placeholder paragraph per mapped
-// token — a real docxtemplater-compatible template from here on.
-async function synthesizeDocxFromPdfSections(sections) {
+// token — a real docxtemplater-compatible template from here on. Structured
+// fields (checklists/option lists) are appended after the narrative
+// sections, each as its own heading + single {{FIELD_TOKEN}} placeholder
+// (rendered at export time from the lesson's customFieldSelections — see
+// buildRenderData) — narrative/structured relative ordering isn't preserved
+// against each other, only within each group, since they're detected as two
+// separate passes over the same text (see analyzeTemplateText).
+async function synthesizeDocxFromPdfSections(sections, structuredFields = []) {
   const { Document, Packer, Paragraph, TextRun } = await import("docx");
 
   const children = [];
@@ -184,6 +326,16 @@ async function synthesizeDocxFromPdfSections(sections) {
         spacing: { after: 200 },
       }));
     }
+  }
+  for (const field of structuredFields) {
+    children.push(new Paragraph({
+      children: [new TextRun({ text: field.label, bold: true, size: 26 })],
+      spacing: { before: 240, after: 100 },
+    }));
+    children.push(new Paragraph({
+      children: [new TextRun(`{{${field.token}}}`)],
+      spacing: { after: 200 },
+    }));
   }
   const doc = new Document({ sections: [{ children }] });
   return Packer.toBuffer(doc);
@@ -245,18 +397,18 @@ async function extractDocxText(buffer) {
 }
 
 // Shared by the PDF branch and the tag-free-DOCX fallback in handleRegister:
-// given plain extracted text and the original storage path, detects
-// heading-keyword sections and — if any are found — synthesizes a real
-// {{TOKEN}} docx from them and uploads it. Returns null (no sections found)
-// or { ok: false } (synthesis/upload failed) so each caller can set its own
-// precise, format-appropriate error message; never throws for those two
-// cases (only lets unexpected exceptions from extraction/synthesis
-// propagate to the caller's own try/catch).
+// given plain extracted text and the original storage path, detects both
+// narrative sections and structured fields (checklists/option lists) and —
+// if either is found — synthesizes a real {{TOKEN}} docx from them and
+// uploads it. Returns { ok: false, reason: "no-sections" | "upload-failed" }
+// so each caller can set its own precise, format-appropriate error message;
+// never throws for those two cases (only lets unexpected exceptions from
+// extraction/synthesis propagate to the caller's own try/catch).
 async function convertHeadingsToPlaceholderDocx(text, originalPath) {
-  const sections = detectPdfSections(text);
-  if (sections.length === 0) return { ok: false, reason: "no-sections" };
+  const { sections, structuredFields } = analyzeTemplateText(text);
+  if (sections.length === 0 && structuredFields.length === 0) return { ok: false, reason: "no-sections" };
 
-  const synthesizedBuffer = await synthesizeDocxFromPdfSections(sections);
+  const synthesizedBuffer = await synthesizeDocxFromPdfSections(sections, structuredFields);
   const synthesizedPath = `${originalPath.replace(/\.(pdf|docx)$/i, "")}-converted.docx`;
 
   const { error: uploadError } = await supabase.storage
@@ -270,7 +422,7 @@ async function convertHeadingsToPlaceholderDocx(text, originalPath) {
     return { ok: false, reason: "upload-failed" };
   }
 
-  return { ok: true, buffer: synthesizedBuffer, storagePath: synthesizedPath };
+  return { ok: true, buffer: synthesizedBuffer, storagePath: synthesizedPath, structuredFields };
 }
 
 // ── action: "upload-init" ──────────────────────────────────────────────────────
@@ -394,6 +546,7 @@ async function handleRegister(req, res) {
   let buffer = Buffer.from(await fileData.arrayBuffer());
   let storagePath = path;
   let detected = { all: [], recognized: [], unrecognized: [] };
+  let structuredFields = [];
   let status = "ready";
   let errorMessage = null;
 
@@ -409,28 +562,16 @@ async function handleRegister(req, res) {
         status = "error";
         errorMessage = "Could not extract any text from this PDF. It may be a scanned image rather than a text-based document.";
       } else {
-        const sections = detectPdfSections(text);
-        if (sections.length === 0) {
+        const converted = await convertHeadingsToPlaceholderDocx(text, path);
+        if (!converted.ok) {
           status = "error";
-          errorMessage = "Could not detect any recognizable lesson-plan sections in this PDF (e.g. Objectives, Materials, Procedure, Assessment). Try a Word (.docx) template instead, or add clearer section headings.";
+          errorMessage = converted.reason === "upload-failed"
+            ? "Could not save the converted template. Please try again."
+            : "Could not detect any recognizable lesson-plan sections in this PDF (e.g. Objectives, Materials, Procedure, Assessment). Try a Word (.docx) template instead, or add clearer section headings.";
         } else {
-          const synthesizedBuffer = await synthesizeDocxFromPdfSections(sections);
-          const synthesizedPath = `${path.replace(/\.pdf$/i, "")}-converted.docx`;
-
-          const { error: uploadError } = await supabase.storage
-            .from(BUCKET)
-            .upload(synthesizedPath, synthesizedBuffer, {
-              contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            });
-
-          if (uploadError) {
-            console.error("[custom-templates:register] synthesized docx upload error:", uploadError.message);
-            status = "error";
-            errorMessage = "Could not save the converted template. Please try again.";
-          } else {
-            buffer = synthesizedBuffer;
-            storagePath = synthesizedPath;
-          }
+          buffer = converted.buffer;
+          storagePath = converted.storagePath;
+          structuredFields = converted.structuredFields;
         }
       }
     } catch (err) {
@@ -495,6 +636,7 @@ async function handleRegister(req, res) {
             buffer = converted.buffer;
             storagePath = converted.storagePath;
             usedHeadingFallback = true;
+            structuredFields = converted.structuredFields;
           }
         }
       } catch (err) {
@@ -515,7 +657,10 @@ async function handleRegister(req, res) {
   if (status !== "error") {
     try {
       detected = detectPlaceholders(buffer);
-      if (detected.recognized.length === 0) {
+      // A template can be entirely structured fields (e.g. a document made
+      // up of nothing but checklists) with zero PLACEHOLDER_CATALOG matches
+      // — that's still a valid, ready template, not an error.
+      if (detected.recognized.length === 0 && structuredFields.length === 0) {
         status = "error";
         errorMessage = isPdf
           ? "Could not map any detected sections to a supported placeholder. Try a Word (.docx) template instead."
@@ -530,6 +675,8 @@ async function handleRegister(req, res) {
     }
   }
 
+  console.log("[custom-templates:register] detected structured fields:", structuredFields);
+
   const insertPayload = {
     user_id:                   userId,
     name:                      templateName,
@@ -538,15 +685,33 @@ async function handleRegister(req, res) {
     placeholders:              detected.all,
     recognized_placeholders:   detected.recognized,
     unrecognized_placeholders: detected.unrecognized,
+    structured_fields:         structuredFields,
     status,
     error_message:             errorMessage,
   };
 
-  const { data: saved, error: insertError } = await supabase
+  let { data: saved, error: insertError } = await supabase
     .from("custom_templates")
     .insert([insertPayload])
     .select("*")
     .single();
+
+  // structured_fields is a new column (see scripts/sql/add-structured-
+  // fields-column.sql) — every registration, not just checklist-detected
+  // ones, includes it in the insert now, so until that migration is run
+  // every template upload would otherwise start failing. Retry once without
+  // it rather than hard-failing registration for an unrelated deploy-vs-
+  // migration ordering issue; structured fields are simply dropped for this
+  // one request until the column exists.
+  if (insertError && /structured_fields/i.test(insertError.message || "")) {
+    console.warn("[custom-templates:register] structured_fields column missing — retrying insert without it. Run scripts/sql/add-structured-fields-column.sql to enable structured-field detection.");
+    const { structured_fields, ...payloadWithoutStructuredFields } = insertPayload;
+    ({ data: saved, error: insertError } = await supabase
+      .from("custom_templates")
+      .insert([payloadWithoutStructuredFields])
+      .select("*")
+      .single());
+  }
 
   if (insertError) {
     console.error("[custom-templates:register] insert error:", insertError.message);
@@ -648,7 +813,7 @@ async function handleExport(req, res) {
     nullGetter: () => "", // any tag not in recognized_placeholders resolves to blank rather than throwing
   });
 
-  const renderData = buildRenderData(lessonData, template.recognized_placeholders || []);
+  const renderData = buildRenderData(lessonData, template.recognized_placeholders || [], template.structured_fields || []);
   doc.render(renderData);
 
   const outBuffer = doc.getZip().generate({ type: "nodebuffer" });
