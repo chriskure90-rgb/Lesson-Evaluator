@@ -1,7 +1,7 @@
-import { generateLessonWithMistral } from "./providers/mistral.js";
-import { generateLessonWithGemini  } from "./providers/gemini.js";
-import { supabase }                  from "./lib/supabase.js";
-import { openai }                    from "./lib/openai.js";
+import { generateLessonWithMistral } from "../server-lib/providers/mistral.js";
+import { generateLessonWithGemini  } from "../server-lib/providers/gemini.js";
+import { supabase }                  from "../server-lib/supabase.js";
+import { openai }                    from "../server-lib/openai.js";
 
 const EMBEDDING_MODEL       = "text-embedding-3-small";
 const VECTOR_MATCH_COUNT    = 5;

@@ -1,4 +1,4 @@
-import { evaluateLessonWithMistral } from "./providers/mistral.js";
+import { evaluateLessonWithMistral } from "../server-lib/providers/mistral.js";
 
 // ── The 10 rubric criteria ────────────────────────────────────────────────────
 // Defined here so the prompt builder can inject titles and descriptions

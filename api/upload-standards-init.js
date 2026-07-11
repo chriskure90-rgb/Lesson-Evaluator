@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { supabase } from "./lib/supabase.js";
+import { supabase } from "../server-lib/supabase.js";
 
 // Bucket used purely as a relay: the browser uploads the raw file here
 // directly (bypassing the serverless function body-size limit), then

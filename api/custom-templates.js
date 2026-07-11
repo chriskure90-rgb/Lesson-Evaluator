@@ -1,8 +1,8 @@
 import PizZip from "pizzip";
 import Docxtemplater from "docxtemplater";
 import { randomUUID } from "node:crypto";
-import { supabase, SUPABASE_KEY_SOURCE } from "./lib/supabase.js";
-import { ensurePdfEnvironmentReady } from "./lib/pdf-node-setup.js";
+import { supabase, SUPABASE_KEY_SOURCE } from "../server-lib/supabase.js";
+import { ensurePdfEnvironmentReady } from "../server-lib/pdf-node-setup.js";
 
 // Dev-mode-only: surface the real error message in the response so upload
 // failures are debuggable locally without digging through server logs. Never
@@ -196,7 +196,7 @@ async function extractPdfText(buffer) {
 
   // Installs the @napi-rs/canvas DOMMatrix/ImageData/Path2D polyfills and
   // points pdfjs-dist's fake-worker loader at an absolute, resolved path to
-  // pdf.worker.mjs — see api/lib/pdf-node-setup.js for why both are needed
+  // pdf.worker.mjs — see server-lib/pdf-node-setup.js for why both are needed
   // in a Vercel serverless function specifically.
   await ensurePdfEnvironmentReady();
   const { PDFParse } = await import("pdf-parse");
