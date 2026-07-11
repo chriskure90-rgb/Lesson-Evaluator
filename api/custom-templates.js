@@ -181,11 +181,42 @@ async function synthesizeDocxFromPdfSections(sections) {
 }
 
 async function extractPdfText(buffer) {
+  // Sanity-check the buffer itself before handing it to the parser — this is
+  // the only way to tell "we got a truncated/non-PDF buffer from Storage"
+  // apart from "pdf-parse choked on a structurally valid PDF", which are two
+  // very different bugs with the same user-facing symptom.
+  const header = buffer.subarray(0, 8).toString("latin1");
+  console.log("[custom-templates:extract-pdf] buffer diagnostics:", {
+    byteLength: buffer.length,
+    isBuffer: Buffer.isBuffer(buffer),
+    header, // a valid PDF always starts with "%PDF-1.x"
+    looksLikePdf: header.startsWith("%PDF-"),
+  });
+
   const { PDFParse } = await import("pdf-parse");
+  // pdf-parse's own constructor already converts a Buffer to Uint8Array
+  // internally (see node_modules/pdf-parse .../PDFParse.js), so passing the
+  // Buffer straight through is equivalent to the manual `new Uint8Array(buffer)`
+  // wrap that used to be here — kept explicit only for clarity.
   const parser = new PDFParse({ data: new Uint8Array(buffer) });
   try {
     const result = await parser.getText();
+    console.log("[custom-templates:extract-pdf] extracted text length:", result.text?.length ?? 0);
     return result.text;
+  } catch (err) {
+    // pdf-parse normalizes pdfjs-dist failures into named exception types
+    // (InvalidPDFException, PasswordException, FormatError,
+    // UnknownErrorException w/ .details, ResponseException w/ .status) —
+    // log every field individually since a bare Error passed to
+    // console.error can render as "{}" in some log pipelines.
+    console.error("[custom-templates:extract-pdf] parser threw —", {
+      name: err?.name,
+      message: err?.message,
+      details: err?.details,
+      status: err?.status,
+      stack: err?.stack,
+    });
+    throw err;
   } finally {
     await parser.destroy();
   }
@@ -352,13 +383,23 @@ async function handleRegister(req, res) {
         }
       }
     } catch (err) {
-      // Logged in full (not just err.message) since this is the one place
-      // a serverless-environment-specific failure (e.g. a pdf-parse/docx
-      // dependency issue) is most likely to show up — detailed diagnostics
-      // stay server-side; the teacher only ever sees the message below.
-      console.error("[custom-templates:register] PDF conversion failed:", err);
+      // Logged field-by-field (not the bare Error object) since this is the
+      // one place a serverless-environment-specific failure (e.g. a
+      // pdf-parse/docx dependency issue) is most likely to show up, and a
+      // bare Error passed to console.error can collapse to "{}" in some log
+      // pipelines — that's what made the previous version of this handler's
+      // logs go dark right here.
+      console.error("[custom-templates:register] PDF conversion failed —", {
+        name: err?.name,
+        message: err?.message,
+        details: err?.details,
+        status: err?.status,
+        stack: err?.stack,
+      });
       status = "error";
-      errorMessage = "Could not read this PDF. It may be corrupted, password-protected, or in an unsupported format.";
+      errorMessage = IS_DEV
+        ? `Could not read this PDF. [dev] ${err?.name || "Error"}: ${err?.message || String(err)}`
+        : "Could not read this PDF. It may be corrupted, password-protected, or in an unsupported format.";
     }
   }
 
