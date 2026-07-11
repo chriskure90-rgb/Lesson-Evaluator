@@ -209,13 +209,12 @@ async function extractPdfText(buffer) {
     // UnknownErrorException w/ .details, ResponseException w/ .status) —
     // log every field individually since a bare Error passed to
     // console.error can render as "{}" in some log pipelines.
-    console.error("[custom-templates:extract-pdf] parser threw —", {
-      name: err?.name,
-      message: err?.message,
-      details: err?.details,
-      status: err?.status,
-      stack: err?.stack,
-    });
+    console.error("[custom-templates:extract-pdf] parser threw — name:", err?.name);
+    console.error("[custom-templates:extract-pdf] parser threw — message:", err?.message);
+    console.error("[custom-templates:extract-pdf] parser threw — details:", err?.details);
+    console.error("[custom-templates:extract-pdf] parser threw — status:", err?.status);
+    console.error("[custom-templates:extract-pdf] parser threw — statusCode:", err?.statusCode);
+    console.error("[custom-templates:extract-pdf] parser threw — stack:", err?.stack);
     throw err;
   } finally {
     await parser.destroy();
@@ -389,16 +388,15 @@ async function handleRegister(req, res) {
       // bare Error passed to console.error can collapse to "{}" in some log
       // pipelines — that's what made the previous version of this handler's
       // logs go dark right here.
-      console.error("[custom-templates:register] PDF conversion failed —", {
-        name: err?.name,
-        message: err?.message,
-        details: err?.details,
-        status: err?.status,
-        stack: err?.stack,
-      });
+      console.error("[custom-templates:register] PDF conversion failed — name:", err?.name);
+      console.error("[custom-templates:register] PDF conversion failed — message:", err?.message);
+      console.error("[custom-templates:register] PDF conversion failed — details:", err?.details);
+      console.error("[custom-templates:register] PDF conversion failed — status:", err?.status);
+      console.error("[custom-templates:register] PDF conversion failed — statusCode:", err?.statusCode);
+      console.error("[custom-templates:register] PDF conversion failed — stack:", err?.stack);
       status = "error";
       errorMessage = IS_DEV
-        ? `Could not read this PDF. [dev] ${err?.name || "Error"}: ${err?.message || String(err)}`
+        ? `Could not read this PDF. [dev] ${err?.name || "Error"} (status=${err?.status ?? "n/a"}, statusCode=${err?.statusCode ?? "n/a"}): ${err?.message || String(err)}`
         : "Could not read this PDF. It may be corrupted, password-protected, or in an unsupported format.";
     }
   }
