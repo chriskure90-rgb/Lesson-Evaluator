@@ -476,11 +476,35 @@ export default async function handler(req, res) {
   console.log("=== STANDARDS DIAGNOSTICS ENABLED ===");
   console.log("[standards:diag] /api/generate handler entered");
   try {
-    const { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies } = req.body;
+    const { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat, customTemplateId, customTemplateName, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies } = req.body;
 
     // Unrecognized/missing values fall back to "standard" so existing
     // clients (and the Standard Lesson Plan option) behave exactly as before.
     const normalizedLessonFormat = lessonFormat === "template1" ? "template1" : "standard";
+
+    // customTemplateId/customTemplateName are metadata only — a custom
+    // template is a different DOCX *skin* applied at export time (see
+    // api/custom-templates.js's handleExport), never a different generation
+    // schema, so nothing below changes behavior based on them. They're
+    // logged here purely so the selected template is traceable end-to-end
+    // through the generation request, and — when present — the template row
+    // is loaded and logged too, to confirm the id the client sent actually
+    // resolves to a real, ready template rather than a stale/deleted one.
+    if (customTemplateId) {
+      console.log("[Generate] custom template selected:", { customTemplateId, customTemplateName });
+      if (supabase) {
+        const { data: templateRow, error: templateLookupError } = await supabase
+          .from("custom_templates")
+          .select("id, name, status, recognized_placeholders")
+          .eq("id", customTemplateId)
+          .single();
+        if (templateLookupError) {
+          console.warn("[Generate] custom template lookup failed:", templateLookupError.message);
+        } else {
+          console.log("[Generate] custom template data loaded by backend:", templateRow);
+        }
+      }
+    }
 
     // Resolve the standards section: exact code match (priority) + pgvector
     // semantic search over the teacher's inputs, falling back to the mock

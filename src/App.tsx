@@ -304,11 +304,20 @@ async function generateTemplate1Lesson(params: {
   marzanoStrategies: { name: string; promptDescription: string }[];
   subjectLabel: string;
   gradeLabel: string;
+  // Metadata only — generation content is identical regardless of which
+  // custom template (if any) is selected; a custom template only changes
+  // which DOCX gets used at export time. Sent so the request is traceable
+  // end-to-end and the backend can confirm the id resolves to a real
+  // template (see api/generate.js).
+  customTemplateId?: string | null;
+  customTemplateName?: string | null;
 }): Promise<Template1Lesson> {
+  const requestBody = { ...params, lessonFormat: "template1" };
+  console.log("[generateTemplate1Lesson] request payload:", requestBody);
   const res = await fetch("/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...params, lessonFormat: "template1" }),
+    body: JSON.stringify(requestBody),
   });
   if (!res.ok) {
     const msg = await res.text().catch(() => `HTTP ${res.status}`);
@@ -1272,12 +1281,24 @@ function GeneratorPage({
     try {
       if (lessonFormat === "template1" || lessonFormat === "custom") {
         const isCustom = lessonFormat === "custom";
+        const selectedCustomTemplate = isCustom
+          ? customTemplates.find((t) => t.id === selectedCustomTemplateId) ?? null
+          : null;
+        console.log("[handleGenerate] selected template state:", {
+          lessonFormat,
+          isCustom,
+          selectedCustomTemplateId,
+          selectedCustomTemplateName: selectedCustomTemplate?.name ?? null,
+          recognizedPlaceholders: selectedCustomTemplate?.recognized_placeholders ?? null,
+        });
         const previousTemplate1Lesson = template1Lesson;
         const result = await generateTemplate1Lesson({
           grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
           technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies,
           subjectLabel: subject,
           gradeLabel: gradeBandLabel.replace(/^Grades\s*/, ""),
+          customTemplateId: isCustom ? selectedCustomTemplateId : null,
+          customTemplateName: isCustom ? selectedCustomTemplate?.name ?? null : null,
         });
         setTemplate1Lesson(result);
         setGeneratedFormat(isCustom ? "custom" : "template1");
@@ -1776,7 +1797,13 @@ function GeneratorPage({
             />
           ) : (
             <>
-              <TemplateRenderer templateType={generatedFormat} lessonData={template1Lesson} breadcrumb={breadcrumb} onEdit={handleStartTemplate1Edit} />
+              <TemplateRenderer
+                templateType={generatedFormat}
+                lessonData={template1Lesson}
+                customTemplate={generatedFormat === "custom" ? customTemplates.find((t) => t.id === selectedCustomTemplateId) ?? null : null}
+                breadcrumb={breadcrumb}
+                onEdit={handleStartTemplate1Edit}
+              />
               <div className="preview-evaluate-strip">
                 <ExportDropdown
                   label="Export lesson"

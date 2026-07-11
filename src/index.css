@@ -348,6 +348,18 @@ h1, h2, h3, h4, h5 {
 .t1-list-dash li { margin-bottom: 3px; }
 .t1-list-dash li::before { content: "- "; }
 
+/* Custom-template preview (CustomTemplateLessonView) reuses the t1-* text
+   styles above for visual consistency, but its sections stack in a plain
+   flow (one per recognized placeholder, in the uploaded template's own
+   order) rather than a fixed table — .t1-cell assumes a <table> layout
+   (50% width, vertical-align) that doesn't apply here. */
+.custom-tpl-section {
+  border: 1px solid rgb(48 44 39 / 0.55);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
 /* ── Export dropdown ─────────────────────────────────────── */
 .export-dropdown {
   display: inline-flex;
