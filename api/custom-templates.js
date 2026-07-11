@@ -93,7 +93,7 @@ function detectPlaceholders(buffer) {
   };
 }
 
-// ── PDF template conversion ──────────────────────────────────────────────────
+// ── Heading-based template conversion (PDF, and tag-free DOCX) ────────────────
 // A PDF has no editable {{PLACEHOLDER}} tags and isn't a reflowable format
 // docxtemplater can merge into directly, so an uploaded PDF is converted
 // once, at registration time, into a synthesized .docx that DOES use our
@@ -102,29 +102,37 @@ function detectPlaceholders(buffer) {
 // path, same everything (see handleRegister below). storage_path ends up
 // pointing at the synthesized file, not the original PDF.
 //
+// The same heading detection also serves as a fallback for an uploaded
+// .docx that has no {{PLACEHOLDER}} tags at all (an ordinary lesson-plan
+// document a teacher wrote without knowing about the placeholder syntax) —
+// mammoth's extracted text (see extractDocxText below) is just as "flat" as
+// pdf-parse's, so the same line-scanning heuristic applies either way. A
+// docx that DOES have {{...}} tags, even unrecognized ones, never goes
+// through this path — see handleRegister's isPdf/no-tags branching.
+//
 // Keyword -> catalog token mapping used to recognize section headings in the
-// PDF's extracted plain text. Deliberately keyword-based rather than a
-// generic layout/heading detector, since pdf-parse only returns flat text
-// with no font-size/bold metadata to lean on — lesson-plan templates
+// extracted plain text. Deliberately keyword-based rather than a generic
+// layout/heading detector, since neither pdf-parse nor mammoth's plain-text
+// output has font-size/bold metadata to lean on — lesson-plan templates
 // reliably use these words as section labels, which keeps false positives
 // low. Table structure isn't reconstructed (not reliably possible from flat
-// PDF text without page-position data) — only section titles/order carry
+// text without page/run-position data) — only section titles/order carry
 // over.
 const PDF_SECTION_KEYWORDS = [
   { tokens: ["LESSON_TITLE"],                     pattern: /\blesson\s*title\b|^title$/i },
   { tokens: ["GRADE_LEVEL"],                      pattern: /\bgrade(\s*level)?\b/i },
-  { tokens: ["OBJECTIVES"],                        pattern: /\bobjectives?\b|\blearning\s*goals?\b/i },
-  { tokens: ["MATERIALS"],                         pattern: /\bmaterials?\b|\bresources?\b/i },
+  { tokens: ["OBJECTIVES"],                        pattern: /\bobjectives?\b|\blearning\s*(goals?|targets?)\b/i },
+  { tokens: ["MATERIALS"],                         pattern: /\bmaterials?\b|\bresources?\b|\bitems?\s*needed\b/i },
   { tokens: ["INTRO_TEACHER", "INTRO_STUDENTS"],    pattern: /\bintroduction\b|\bwarm[\s-]?up\b|\bopening\b|\bhook\b/i },
-  { tokens: ["MAIN_TEACHER", "MAIN_STUDENTS"],      pattern: /\bprocedure\b|\bactivit(y|ies)\b|\bmain\s*(lesson|activity|activities)\b|\binstruction(al)?\s*steps?\b/i },
-  { tokens: ["CLOSURE"],                            pattern: /\bclosure\b|\bconclusion\b|\bwrap[\s-]?up\b|\bsummary\b/i },
+  { tokens: ["MAIN_TEACHER", "MAIN_STUDENTS"],      pattern: /\bprocedure\b|\bactivit(y|ies)\b|\bmain\s*(lesson|activity|activities)\b|\binstruction(al)?\s*steps?\b|\bteaching\s*strateg(y|ies)\b/i },
+  { tokens: ["CLOSURE"],                            pattern: /\bclosure\b|\bconclusion\b|\bwrap[\s-]?up\b|\bsummary\b|\breflection\b/i },
   { tokens: ["ASSESSMENT"],                         pattern: /\bassessment\b|\bevaluation\b|\bexit\s*ticket\b/i },
 ];
 
-// Scans extracted PDF text line by line for section-heading candidates
-// (short lines that don't end in sentence punctuation) matching a known
-// keyword, preserving the order they appear in. Each token is only ever
-// claimed once, so a keyword mentioned again later in body text doesn't
+// Scans extracted plain text (PDF or DOCX) line by line for section-heading
+// candidates (short lines that don't end in sentence punctuation) matching a
+// known keyword, preserving the order they appear in. Each token is only
+// ever claimed once, so a keyword mentioned again later in body text doesn't
 // spawn a duplicate section.
 function detectPdfSections(text) {
   const lines = (text || "")
@@ -225,6 +233,44 @@ async function extractPdfText(buffer) {
   } finally {
     await parser.destroy();
   }
+}
+
+// Plain-text extraction for the "no {{PLACEHOLDER}} tags" DOCX fallback —
+// mammoth is imported lazily (like pdf-parse/docx above) so a module-load
+// failure can't crash the whole route, only this specific conversion attempt.
+async function extractDocxText(buffer) {
+  const { default: mammoth } = await import("mammoth");
+  const result = await mammoth.extractRawText({ buffer });
+  return result.value;
+}
+
+// Shared by the PDF branch and the tag-free-DOCX fallback in handleRegister:
+// given plain extracted text and the original storage path, detects
+// heading-keyword sections and — if any are found — synthesizes a real
+// {{TOKEN}} docx from them and uploads it. Returns null (no sections found)
+// or { ok: false } (synthesis/upload failed) so each caller can set its own
+// precise, format-appropriate error message; never throws for those two
+// cases (only lets unexpected exceptions from extraction/synthesis
+// propagate to the caller's own try/catch).
+async function convertHeadingsToPlaceholderDocx(text, originalPath) {
+  const sections = detectPdfSections(text);
+  if (sections.length === 0) return { ok: false, reason: "no-sections" };
+
+  const synthesizedBuffer = await synthesizeDocxFromPdfSections(sections);
+  const synthesizedPath = `${originalPath.replace(/\.(pdf|docx)$/i, "")}-converted.docx`;
+
+  const { error: uploadError } = await supabase.storage
+    .from(BUCKET)
+    .upload(synthesizedPath, synthesizedBuffer, {
+      contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+
+  if (uploadError) {
+    console.error("[custom-templates:register] synthesized docx upload error:", uploadError.message);
+    return { ok: false, reason: "upload-failed" };
+  }
+
+  return { ok: true, buffer: synthesizedBuffer, storagePath: synthesizedPath };
 }
 
 // ── action: "upload-init" ──────────────────────────────────────────────────────
@@ -407,9 +453,65 @@ async function handleRegister(req, res) {
     }
   }
 
-  // Skip placeholder detection if the PDF branch above already failed —
+  // A .docx with no {{PLACEHOLDER}} tags at all (an ordinary lesson-plan
+  // document, not one written for this feature) falls back to the same
+  // heading-keyword detection the PDF pipeline uses, then gets converted
+  // into a synthesized {{TOKEN}} docx exactly like a PDF upload — from
+  // there on it's indistinguishable from any other custom template. A docx
+  // that DOES have {{...}} tags — even ones that don't match a known
+  // token — is left alone here; it still goes through the normal
+  // "unrecognized placeholder" path below rather than being silently
+  // reinterpreted by heading, since a teacher who attempted the tag syntax
+  // likely wants to know their tags didn't match, not have them ignored.
+  let usedHeadingFallback = false;
+  if (!isPdf && status !== "error") {
+    let initialDetected;
+    try {
+      // Same call the later block below makes — done early here only to
+      // decide whether to attempt heading detection at all. Guarded the
+      // same way: an unreadable/corrupted .docx must fail with the normal
+      // "not a valid Word template" message, not an unhandled exception.
+      initialDetected = detectPlaceholders(buffer);
+    } catch (err) {
+      console.error("[custom-templates:register] initial placeholder scan failed:", err.message);
+      status = "error";
+      errorMessage = "Could not read this file as a valid Word template. It may be corrupted or use unsupported formatting.";
+    }
+    if (status !== "error" && initialDetected.all.length === 0) {
+      console.log("[custom-templates:register] no {{PLACEHOLDER}} tags found in DOCX — trying heading detection");
+      try {
+        const text = await extractDocxText(buffer);
+        if (!text || !text.trim()) {
+          status = "error";
+          errorMessage = "Could not extract any text from this document.";
+        } else {
+          const converted = await convertHeadingsToPlaceholderDocx(text, path);
+          if (!converted.ok) {
+            status = "error";
+            errorMessage = converted.reason === "upload-failed"
+              ? "Could not save the converted template. Please try again."
+              : "No {{PLACEHOLDER}} tags or recognizable section headings (e.g. Objectives, Materials, Procedure, Assessment) were found in this document.";
+          } else {
+            buffer = converted.buffer;
+            storagePath = converted.storagePath;
+            usedHeadingFallback = true;
+          }
+        }
+      } catch (err) {
+        console.error("[custom-templates:register] heading-based DOCX conversion failed — name:", err?.name);
+        console.error("[custom-templates:register] heading-based DOCX conversion failed — message:", err?.message);
+        console.error("[custom-templates:register] heading-based DOCX conversion failed — stack:", err?.stack);
+        status = "error";
+        errorMessage = IS_DEV
+          ? `Could not analyze this document's headings. [dev] ${err?.name || "Error"}: ${err?.message || String(err)}`
+          : "Could not analyze this document's structure. Please try again, or use {{PLACEHOLDER}} tags instead.";
+      }
+    }
+  }
+
+  // Skip placeholder detection if an earlier branch above already failed —
   // buffer/storagePath point at a real .docx either way otherwise (the
-  // original upload, or the just-synthesized one).
+  // original upload, or a just-synthesized one from either fallback).
   if (status !== "error") {
     try {
       detected = detectPlaceholders(buffer);
@@ -417,6 +519,8 @@ async function handleRegister(req, res) {
         status = "error";
         errorMessage = isPdf
           ? "Could not map any detected sections to a supported placeholder. Try a Word (.docx) template instead."
+          : usedHeadingFallback
+          ? "Could not map any detected section headings to a supported placeholder. Try adding clearer headings (e.g. Objectives, Materials, Procedure, Assessment)."
           : "No recognized placeholders were found in this document. Check that it uses tags like {{LESSON_TITLE}}, {{OBJECTIVES}}, etc.";
       }
     } catch (err) {
