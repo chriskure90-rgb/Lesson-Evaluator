@@ -19,6 +19,28 @@ export type CustomTemplate = {
 
 const BUCKET = "custom-templates";
 
+// A server-side crash (e.g. a serverless function invocation failure) can
+// return a plain-text/HTML error page instead of JSON — calling
+// response.json() unconditionally on that throws a confusing
+// "Unexpected token ... is not valid JSON" error instead of a useful
+// message. This checks the content-type first: parses JSON when the server
+// actually sent JSON (including error responses shaped like { error }),
+// and otherwise logs the raw body (for debugging) while surfacing
+// `fallbackErrorMessage` to the caller instead of the raw server output.
+async function parseCustomTemplatesResponse<T>(res: Response, fallbackErrorMessage: string): Promise<T> {
+  const contentType = res.headers.get("content-type") || "";
+
+  if (contentType.includes("application/json")) {
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || fallbackErrorMessage);
+    return data as T;
+  }
+
+  const rawText = await res.text().catch(() => "");
+  console.error("[custom-templates] non-JSON response:", res.status, rawText.slice(0, 500));
+  throw new Error(fallbackErrorMessage);
+}
+
 /* ── Custom DOCX template upload ───────────────────────────────────────────────
    Same two-step signed-upload-URL pattern as the standards upload (see
    uploadFileToStorage in App.tsx): the browser PUTs the file straight into
@@ -38,15 +60,17 @@ export async function uploadCustomTemplateFile(file: File, userId: string): Prom
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "upload-init", filename: file.name, userId }),
   });
-  const initData = await initRes.json();
-  if (!initRes.ok) throw new Error(initData.error || "Could not prepare upload.");
+  const initData = await parseCustomTemplatesResponse<{ path: string; token: string }>(
+    initRes,
+    "Could not prepare the upload. Please try again."
+  );
 
   const { error: storageError } = await supabase.storage
     .from(BUCKET)
     .uploadToSignedUrl(initData.path, initData.token, file);
   if (storageError) throw new Error(storageError.message);
 
-  return { path: initData.path as string };
+  return { path: initData.path };
 }
 
 export async function registerCustomTemplate(params: {
@@ -60,9 +84,13 @@ export async function registerCustomTemplate(params: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "register", ...params }),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Could not register template.");
-  return data as CustomTemplate;
+  const isPdf = params.filename.toLowerCase().endsWith(".pdf");
+  return parseCustomTemplatesResponse<CustomTemplate>(
+    res,
+    isPdf
+      ? "PDF processing failed. Please try another PDF or upload a DOCX file."
+      : "Could not register this template. Please try again."
+  );
 }
 
 export async function fetchCustomTemplates(userId: string): Promise<CustomTemplate[]> {
@@ -96,8 +124,8 @@ export async function deleteCustomTemplate(id: string, userId: string): Promise<
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "delete", customTemplateId: id, userId }),
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "Could not delete template.");
+  if (res.ok) return;
+  await parseCustomTemplatesResponse(res, "Could not delete template. Please try again.");
 }
 
 // Server-side merge (docxtemplater) of the teacher's uploaded .docx with the

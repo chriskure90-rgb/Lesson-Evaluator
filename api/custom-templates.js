@@ -1,8 +1,16 @@
 import PizZip from "pizzip";
 import Docxtemplater from "docxtemplater";
-import { PDFParse } from "pdf-parse";
-import { Document, Packer, Paragraph, TextRun } from "docx";
 import { supabase } from "./lib/supabase.js";
+
+// pdf-parse and docx are imported lazily (inside extractPdfText/
+// synthesizeDocxFromPdfSections below) rather than statically at the top of
+// the file. If either ever fails to load in the deployed serverless
+// environment (e.g. a native-dependency or bundling issue), a static import
+// would crash the whole module at cold start — breaking upload-init/delete/
+// export/docx-only register too, not just PDF processing. A lazy import
+// confines any such failure to the try/catch that already wraps the PDF
+// branch in handleRegister, which turns it into a normal status:"error" row
+// instead of an unhandled function crash.
 
 /* ── Custom DOCX template routes, combined into one function ──────────────────
    Vercel's Hobby plan caps a project at 12 Serverless Functions, and every
@@ -140,6 +148,8 @@ function detectPdfSections(text) {
 // wording) followed by one {{TOKEN}} placeholder paragraph per mapped
 // token — a real docxtemplater-compatible template from here on.
 async function synthesizeDocxFromPdfSections(sections) {
+  const { Document, Packer, Paragraph, TextRun } = await import("docx");
+
   const children = [];
   for (const section of sections) {
     children.push(new Paragraph({
@@ -164,6 +174,7 @@ async function synthesizeDocxFromPdfSections(sections) {
 }
 
 async function extractPdfText(buffer) {
+  const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: new Uint8Array(buffer) });
   try {
     const result = await parser.getText();
@@ -274,7 +285,11 @@ async function handleRegister(req, res) {
         }
       }
     } catch (err) {
-      console.error("[custom-templates:register] PDF conversion failed:", err.message);
+      // Logged in full (not just err.message) since this is the one place
+      // a serverless-environment-specific failure (e.g. a pdf-parse/docx
+      // dependency issue) is most likely to show up — detailed diagnostics
+      // stay server-side; the teacher only ever sees the message below.
+      console.error("[custom-templates:register] PDF conversion failed:", err);
       status = "error";
       errorMessage = "Could not read this PDF. It may be corrupted, password-protected, or in an unsupported format.";
     }
