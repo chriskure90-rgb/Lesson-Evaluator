@@ -14,6 +14,7 @@ export function TemplateRenderer({
   templateType,
   lessonData,
   customTemplate,
+  date,
   breadcrumb,
   onEdit,
 }: {
@@ -26,6 +27,10 @@ export function TemplateRenderer({
   // Template 1 view rather than crashing — same content, just not laid out
   // per the uploaded template's own section order.
   customTemplate?: CustomTemplate | null;
+  // Passed through to CustomTemplateLessonView's recognized-layout Date box
+  // only (e.g. LibraryPage passes the lesson's created_at). Template1Lesson
+  // has no date field of its own — omit to leave that box blank.
+  date?: string | null;
   // Only meaningful for the Template 1 view (rendered inside its bordered
   // box). DefaultLessonView has no header of its own — see its file comment.
   breadcrumb?: string;
@@ -37,7 +42,7 @@ export function TemplateRenderer({
       customTemplateName: customTemplate.name,
       recognizedPlaceholders: customTemplate.recognized_placeholders,
     });
-    return <CustomTemplateLessonView template={customTemplate} lessonData={lessonData as Template1Lesson} breadcrumb={breadcrumb} onEdit={onEdit} />;
+    return <CustomTemplateLessonView template={customTemplate} lessonData={lessonData as Template1Lesson} date={date} breadcrumb={breadcrumb} onEdit={onEdit} />;
   }
   if (templateType === "template1" || templateType === "custom") {
     console.log("[TemplateRenderer] preview component selected: Template1LessonView", { templateType, hadCustomTemplate: !!customTemplate });

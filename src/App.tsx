@@ -3683,7 +3683,7 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
           {lesson && (
             <section className="drawer-section">
               <h3 className="drawer-section-title">Lesson Plan</h3>
-              <TemplateRenderer templateType={row.template_type} lessonData={lesson} customTemplate={customTemplate} />
+              <TemplateRenderer templateType={row.template_type} lessonData={lesson} customTemplate={customTemplate} date={formatDate(row.created_at)} />
             </section>
           )}
 

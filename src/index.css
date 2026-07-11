@@ -360,6 +360,36 @@ h1, h2, h3, h4, h5 {
   margin-bottom: 12px;
 }
 
+/* Grid layout for recognized templates (e.g. Discover) — mirrors the source
+   PDF's own row/column arrangement instead of stacking every section as an
+   equal-height card. gridTemplateColumns/gridColumn/gridRow are set inline
+   per layout (custom-template-layouts.ts defines the columns/spans), this
+   just supplies the shared box chrome and the small-screen fallback. */
+.custom-tpl-grid {
+  display: grid;
+  gap: 12px;
+}
+.custom-tpl-grid-cell {
+  border: 1px solid rgb(48 44 39 / 0.55);
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-height: 76px;
+}
+.custom-tpl-grid-cell-compact { min-height: 52px; }
+.custom-tpl-grid-cell-tall { min-height: 150px; }
+.custom-tpl-grid-label {
+  font-weight: 700;
+  margin: 0;
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: rgb(48 44 39 / 0.7);
+}
+@media (max-width: 720px) {
+  .custom-tpl-grid { grid-template-columns: 1fr !important; }
+  .custom-tpl-grid-cell { grid-column: 1 / -1 !important; grid-row: auto !important; }
+}
+
 /* ── Export dropdown ─────────────────────────────────────── */
 .export-dropdown {
   display: inline-flex;
