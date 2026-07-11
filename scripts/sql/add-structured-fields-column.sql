@@ -9,10 +9,17 @@
 -- See detectStructuredFields in api/custom-templates.js.
 --
 -- Run this once in the Supabase SQL editor (Dashboard → SQL Editor).
--- Safe to re-run: ADD COLUMN IF NOT EXISTS is idempotent.
+-- Safe to re-run: ADD COLUMN IF NOT EXISTS + the UPDATE below are both
+-- idempotent. No NOT NULL constraint — existing rows added before this
+-- migration runs would otherwise need it enforced retroactively; the
+-- explicit backfill below covers them without relying on that.
 
 alter table custom_templates
-  add column if not exists structured_fields jsonb not null default '[]'::jsonb;
+  add column if not exists structured_fields jsonb default '[]'::jsonb;
+
+update custom_templates
+set structured_fields = '[]'::jsonb
+where structured_fields is null;
 
 -- Verify afterwards:
 -- select id, name, structured_fields from custom_templates order by created_at desc;

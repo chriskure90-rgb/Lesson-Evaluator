@@ -2,6 +2,7 @@ import type { Lesson, Template1Lesson } from "../../App";
 import type { CustomTemplate } from "../../lib/custom-templates";
 import { Template1LessonView } from "./Template1LessonView";
 import { CustomTemplateLessonView } from "./CustomTemplateLessonView";
+import { CustomTemplateErrorBoundary } from "./CustomTemplateErrorBoundary";
 import { DefaultLessonView } from "./DefaultLessonView";
 
 /* ── TemplateRenderer ─────────────────────────────────────────────────────────
@@ -42,7 +43,11 @@ export function TemplateRenderer({
       customTemplateName: customTemplate.name,
       recognizedPlaceholders: customTemplate.recognized_placeholders,
     });
-    return <CustomTemplateLessonView template={customTemplate} lessonData={lessonData as Template1Lesson} date={date} breadcrumb={breadcrumb} onEdit={onEdit} />;
+    return (
+      <CustomTemplateErrorBoundary>
+        <CustomTemplateLessonView template={customTemplate} lessonData={lessonData as Template1Lesson} date={date} breadcrumb={breadcrumb} onEdit={onEdit} />
+      </CustomTemplateErrorBoundary>
+    );
   }
   if (templateType === "template1" || templateType === "custom") {
     console.log("[TemplateRenderer] preview component selected: Template1LessonView", { templateType, hadCustomTemplate: !!customTemplate });

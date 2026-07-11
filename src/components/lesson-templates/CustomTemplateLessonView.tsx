@@ -29,10 +29,14 @@ function splitSentences(text: string): string[] {
 
 // Mirrors buildRenderData's ☑/☐ marking in api/custom-templates.js, so the
 // web preview shows the same selections the DOCX export will contain.
-function ChecklistValue({ options, selected }: { options: string[]; selected: Set<string> }) {
+// options isn't guaranteed to be an array — a malformed/hand-edited
+// structured_fields entry (or a future schema change) could omit it.
+function ChecklistValue({ options, selected }: { options: unknown; selected: Set<string> }) {
+  const safeOptions = Array.isArray(options) ? options : [];
+  if (safeOptions.length === 0) return <p className="t1-body" style={{ margin: "4px 0 0" }}>No options detected for this field.</p>;
   return (
     <ul style={{ margin: "4px 0 0", padding: 0, listStyle: "none" }}>
-      {options.map((opt, i) => (
+      {safeOptions.map((opt, i) => (
         <li key={i} style={{ marginBottom: 3 }}>
           {selected.has(opt) ? "☑" : "☐"} {opt}
         </li>
@@ -92,7 +96,20 @@ export function CustomTemplateLessonView({
   onEdit?: () => void;
 }) {
   const layout = getLayoutForTemplate(template);
-  const tokens = template.recognized_placeholders.filter((t) => PLACEHOLDER_CATALOG[t]);
+  // recognized_placeholders/structured_fields are declared as required
+  // arrays in the CustomTemplate type, but that's only a compile-time
+  // guarantee — a row fetched mid-migration (e.g. the structured_fields
+  // column not applied yet, or an old row never backfilled) can still come
+  // back from Supabase with null/undefined here at runtime. Never trust
+  // either without checking; this is the one component that renders
+  // directly from that row shape.
+  const recognizedPlaceholders = Array.isArray(template?.recognized_placeholders)
+    ? template.recognized_placeholders
+    : [];
+  const structuredFields = Array.isArray(template?.structured_fields)
+    ? template.structured_fields
+    : [];
+  const tokens = recognizedPlaceholders.filter((t) => PLACEHOLDER_CATALOG[t]);
 
   return (
     <div className="t1-page">
@@ -131,7 +148,7 @@ export function CustomTemplateLessonView({
           <p className="t1-instructions-italic" style={{ margin: "0 0 14px" }}>
             Layout follows the sections detected in your uploaded template.
           </p>
-          {tokens.length === 0 && template.structured_fields.length === 0 ? (
+          {tokens.length === 0 && structuredFields.length === 0 ? (
             <p className="t1-body">No recognized sections were found for this template.</p>
           ) : (
             <>
@@ -153,12 +170,12 @@ export function CustomTemplateLessonView({
                   </div>
                 );
               })}
-              {template.structured_fields.map((field) => (
-                <div key={field.field} className="custom-tpl-section">
-                  <p className="t1-section-label">{field.label}</p>
+              {structuredFields.map((field, i) => (
+                <div key={field?.field ?? i} className="custom-tpl-section">
+                  <p className="t1-section-label">{field?.label ?? "Untitled field"}</p>
                   <ChecklistValue
-                    options={field.options}
-                    selected={new Set(lessonData.customFieldSelections?.[field.field] ?? [])}
+                    options={field?.options}
+                    selected={new Set(lessonData.customFieldSelections?.[field?.field] ?? [])}
                   />
                 </div>
               ))}

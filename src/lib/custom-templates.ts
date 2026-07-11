@@ -106,14 +106,54 @@ export async function registerCustomTemplate(params: {
   );
 }
 
+// structured_fields (scripts/sql/add-structured-fields-column.sql) is a
+// recent column — a database that hasn't had the migration applied yet
+// returns a hard 400 ("column ... does not exist", PostgREST code 42703)
+// for ANY select that names it, which would otherwise break every custom-
+// template fetch (not just ones that care about structured fields) the
+// moment this client code deploys ahead of the migration. Try the full
+// select first; on that specific error, retry with the previous column set
+// so the rest of the app keeps working, and normalize the result so callers
+// can still always trust structured_fields is an array (defaults to []).
+const FULL_SELECT_COLUMNS =
+  "id, user_id, name, original_filename, storage_path, placeholders, recognized_placeholders, unrecognized_placeholders, structured_fields, status, error_message, created_at";
+const FALLBACK_SELECT_COLUMNS =
+  "id, user_id, name, original_filename, storage_path, placeholders, recognized_placeholders, unrecognized_placeholders, status, error_message, created_at";
+
+function isMissingStructuredFieldsColumn(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  return error.code === "42703" || /structured_fields/i.test(error.message || "");
+}
+
+function normalizeCustomTemplateRow(row: Record<string, unknown>): CustomTemplate {
+  return {
+    ...(row as Omit<CustomTemplate, "structured_fields">),
+    structured_fields: Array.isArray(row.structured_fields)
+      ? (row.structured_fields as CustomTemplateStructuredField[])
+      : [],
+  };
+}
+
 export async function fetchCustomTemplates(userId: string): Promise<CustomTemplate[]> {
-  const { data, error } = await supabase
+  let data: Record<string, unknown>[] | null;
+  let error: { code?: string; message?: string } | null;
+  ({ data, error } = await supabase
     .from("custom_templates")
-    .select("id, user_id, name, original_filename, storage_path, placeholders, recognized_placeholders, unrecognized_placeholders, structured_fields, status, error_message, created_at")
+    .select(FULL_SELECT_COLUMNS)
     .eq("user_id", userId)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false }));
+
+  if (error && isMissingStructuredFieldsColumn(error)) {
+    console.warn("[custom-templates] structured_fields column not available yet — retrying without it. Run scripts/sql/add-structured-fields-column.sql.");
+    ({ data, error } = await supabase
+      .from("custom_templates")
+      .select(FALLBACK_SELECT_COLUMNS)
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false }));
+  }
+
   if (error) throw error;
-  return (data ?? []) as CustomTemplate[];
+  return (data ?? []).map(normalizeCustomTemplateRow);
 }
 
 // Single-row lookup for reopening/evaluating a lesson that was generated
@@ -121,13 +161,25 @@ export async function fetchCustomTemplates(userId: string): Promise<CustomTempla
 // flows only have the id (from lesson_generation.custom_template_id), not
 // the full list uploaded-templates state that GeneratorPage already holds.
 export async function fetchCustomTemplateById(id: string): Promise<CustomTemplate | null> {
-  const { data, error } = await supabase
+  let data: Record<string, unknown> | null;
+  let error: { code?: string; message?: string } | null;
+  ({ data, error } = await supabase
     .from("custom_templates")
-    .select("id, user_id, name, original_filename, storage_path, placeholders, recognized_placeholders, unrecognized_placeholders, structured_fields, status, error_message, created_at")
+    .select(FULL_SELECT_COLUMNS)
     .eq("id", id)
-    .maybeSingle();
+    .maybeSingle());
+
+  if (error && isMissingStructuredFieldsColumn(error)) {
+    console.warn("[custom-templates] structured_fields column not available yet — retrying without it. Run scripts/sql/add-structured-fields-column.sql.");
+    ({ data, error } = await supabase
+      .from("custom_templates")
+      .select(FALLBACK_SELECT_COLUMNS)
+      .eq("id", id)
+      .maybeSingle());
+  }
+
   if (error) throw error;
-  return (data as CustomTemplate) ?? null;
+  return data ? normalizeCustomTemplateRow(data) : null;
 }
 
 // Renaming is just a metadata update (no Storage/service-role work needed),

@@ -474,7 +474,7 @@ type UserProfile = { id: number; user_id: string; email: string; created_at: str
 async function loadOrCreateProfile(userId: string, email: string): Promise<UserProfile | null> {
   // Try to load an existing profile
   const { data: existing } = await supabase
-    .from("profiles")
+    .from("profile")
     .select("*")
     .eq("user_id", userId)
     .single();
@@ -483,7 +483,7 @@ async function loadOrCreateProfile(userId: string, email: string): Promise<UserP
 
   // No profile yet — create one (handles email-confirmed signups on first login)
   const { data: created } = await supabase
-    .from("profiles")
+    .from("profile")
     .insert({ user_id: userId, email })
     .select()
     .single();
@@ -3784,7 +3784,7 @@ function LoginPage({ forceRecovery }: { forceRecovery: boolean }) {
         setError(authError.message);
         setLoading(false);
       } else if (data.user && data.session) {
-        await supabase.from("profiles").insert({
+        await supabase.from("profile").insert({
           user_id: data.user.id,
           email:   data.user.email ?? email,
         });
