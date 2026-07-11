@@ -103,6 +103,20 @@ export async function fetchCustomTemplates(userId: string): Promise<CustomTempla
   return (data ?? []) as CustomTemplate[];
 }
 
+// Single-row lookup for reopening/evaluating a lesson that was generated
+// against a specific custom template (EvaluatorPage, LibraryPage) — those
+// flows only have the id (from lesson_generation.custom_template_id), not
+// the full list uploaded-templates state that GeneratorPage already holds.
+export async function fetchCustomTemplateById(id: string): Promise<CustomTemplate | null> {
+  const { data, error } = await supabase
+    .from("custom_templates")
+    .select("id, user_id, name, original_filename, storage_path, placeholders, recognized_placeholders, unrecognized_placeholders, status, error_message, created_at")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as CustomTemplate) ?? null;
+}
+
 // Renaming is just a metadata update (no Storage/service-role work needed),
 // so it goes straight through the browser's Supabase client, same as other
 // direct row updates in this app (e.g. lesson_json edits).

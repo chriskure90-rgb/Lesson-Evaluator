@@ -9,6 +9,7 @@ import { TemplatePreviewModal, type BuiltInTemplateId } from "./components/lesso
 import { Icon } from "./components/Icon";
 import {
   fetchCustomTemplates,
+  fetchCustomTemplateById,
   uploadCustomTemplateFile,
   registerCustomTemplate,
   renameCustomTemplate,
@@ -2323,6 +2324,7 @@ function EvalSection({
 function EvaluatorPage({
   lesson,
   template1Lesson,
+  customTemplateId,
   lessonId,
   userId,
   lessonMeta,
@@ -2331,6 +2333,10 @@ function EvaluatorPage({
 }: {
   lesson: Lesson | null;
   template1Lesson: Template1Lesson | null;
+  // Present only when the shared Template1Lesson was generated against a
+  // custom template (see App's sharedCustomTemplateId, set from
+  // GeneratorPage's onCustomTemplateSelected). Null for plain Template 1.
+  customTemplateId?: string | null;
   lessonId: number | null;
   userId: string;
   lessonMeta?: LessonMeta | null;
@@ -2340,6 +2346,21 @@ function EvaluatorPage({
   const [evalResult, setEvalResult]   = useState<EvaluationResult | null>(null);
   const [evaluating, setEvaluating]   = useState(false);
   const [evalError, setEvalError]     = useState<string | null>(null);
+
+  // Loads the CustomTemplate row so TemplateRenderer can render
+  // CustomTemplateLessonView (its own section order) instead of falling
+  // back to the generic Template1LessonView for template_type "custom".
+  const [customTemplate, setCustomTemplate] = useState<CustomTemplate | null>(null);
+  useEffect(() => {
+    console.log("[EvaluatorPage] selected template state:", { customTemplateId, hasTemplate1Lesson: !!template1Lesson });
+    if (!customTemplateId) { setCustomTemplate(null); return; }
+    let cancelled = false;
+    fetchCustomTemplateById(customTemplateId)
+      .then((t) => { if (!cancelled) setCustomTemplate(t); })
+      .catch((err) => { console.error("[EvaluatorPage] fetchCustomTemplateById failed:", err); if (!cancelled) setCustomTemplate(null); });
+    return () => { cancelled = true; };
+  }, [customTemplateId]);
+  const template1FormatType = customTemplateId && customTemplate ? "custom" : "template1";
 
   // Lifted teacher overrides keyed by section id — shared across all EvalSections
   const [teacherOverrides, setTeacherOverrides] = useState<Record<string, RubricRating | null>>({});
@@ -2730,7 +2751,7 @@ function EvaluatorPage({
       {/* ── Expandable lesson plan panel ── */}
       {showLesson && (
         template1Lesson ? (
-          <TemplateRenderer templateType="template1" lessonData={template1Lesson} />
+          <TemplateRenderer templateType={template1FormatType} lessonData={template1Lesson} customTemplate={customTemplate} />
         ) : (
           <div className="lesson-panel">
             <div className="lesson-panel-header">
@@ -2830,7 +2851,8 @@ type LibraryReadiness =
 type LibraryRow = {
   id: number;
   title: string;            // lesson_json.title / .lessonTitle ?? lesson_topic
-  template_type: string | null; // "template1" or "standard"/null
+  template_type: string | null; // "template1", "custom", or "standard"/null
+  custom_template_id: string | null; // set only when template_type === "custom"
   lesson_topic: string;
   api_model: string;
   grade_level: string;
@@ -2881,6 +2903,7 @@ function formatDate(iso: string) {
 type RawLesson = {
   id: number;
   template_type: string | null;
+  custom_template_id: string | null;
   lesson_topic: string;
   api_model: string;
   grade_level: string;
@@ -2904,7 +2927,7 @@ type RawEval = {
 async function fetchLibrary(userId: string): Promise<LibraryRow[]> {
   const { data: lessons, error: lessonErr } = await supabase
     .from("lesson_generation")
-    .select("id, template_type, lesson_topic, api_model, grade_level, subject, standards_framework, duration, created_at, lesson_json")
+    .select("id, template_type, custom_template_id, lesson_topic, api_model, grade_level, subject, standards_framework, duration, created_at, lesson_json")
     .eq("is_demo", false)
     .eq("user_id", userId)
     .order("created_at", { ascending: false });
@@ -2945,6 +2968,7 @@ async function fetchLibrary(userId: string): Promise<LibraryRow[]> {
       id:                  l.id,
       title:               lessonTitle,
       template_type:       l.template_type,
+      custom_template_id:  l.custom_template_id ?? null,
       lesson_topic:        l.lesson_topic,
       api_model:           l.api_model,
       grade_level:         l.grade_level,
@@ -3491,6 +3515,20 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
   const lesson  = row.lesson_json;
   const hasEval = row.eval_id !== null;
 
+  // Loads the CustomTemplate row so TemplateRenderer can render
+  // CustomTemplateLessonView (its own section order) instead of falling
+  // back to the generic Template1LessonView for template_type "custom".
+  const [customTemplate, setCustomTemplate] = useState<CustomTemplate | null>(null);
+  useEffect(() => {
+    console.log("[LessonDetailDrawer] selected template state:", { template_type: row.template_type, custom_template_id: row.custom_template_id });
+    if (row.template_type !== "custom" || !row.custom_template_id) { setCustomTemplate(null); return; }
+    let cancelled = false;
+    fetchCustomTemplateById(row.custom_template_id)
+      .then((t) => { if (!cancelled) setCustomTemplate(t); })
+      .catch((err) => { console.error("[LessonDetailDrawer] fetchCustomTemplateById failed:", err); if (!cancelled) setCustomTemplate(null); });
+    return () => { cancelled = true; };
+  }, [row.template_type, row.custom_template_id]);
+
   // Partition rubric items by final_rating
   const rubricEntries = row.rubric_json ? Object.entries(row.rubric_json) : [];
   const goodItems      = rubricEntries.filter(([, v]) => v.final_rating === "high");
@@ -3645,7 +3683,7 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
           {lesson && (
             <section className="drawer-section">
               <h3 className="drawer-section-title">Lesson Plan</h3>
-              <TemplateRenderer templateType={row.template_type} lessonData={lesson} />
+              <TemplateRenderer templateType={row.template_type} lessonData={lesson} customTemplate={customTemplate} />
             </section>
           )}
 
@@ -4133,6 +4171,7 @@ export default function App() {
               ? <EvaluatorPage
                   lesson={sharedLesson}
                   template1Lesson={sharedTemplate1Lesson}
+                  customTemplateId={sharedCustomTemplateId}
                   lessonId={generatedLessonId}
                   userId={user!.id}
                   lessonMeta={sharedLessonMeta}
