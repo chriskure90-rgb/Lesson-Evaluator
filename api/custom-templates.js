@@ -1,7 +1,7 @@
 import PizZip from "pizzip";
 import Docxtemplater from "docxtemplater";
 import { randomUUID } from "node:crypto";
-import { supabase } from "./lib/supabase.js";
+import { supabase, SUPABASE_KEY_SOURCE } from "./lib/supabase.js";
 
 // Dev-mode-only: surface the real error message in the response so upload
 // failures are debuggable locally without digging through server logs. Never
@@ -199,8 +199,21 @@ async function extractPdfText(buffer) {
 // after processing), the uploaded file here IS the export source of truth
 // (for a .docx directly; for a .pdf, register converts it into one — see
 // handleRegister).
+// Logs every field of a caught error individually (message/name/status/
+// statusCode/stack) rather than passing the raw object to console.error —
+// some log pipelines (Vercel's included) collapse a bare Error object down
+// to "{}" or drop everything after the first arg, which is exactly why the
+// prior version of this handler's logs went dark right at this call.
+function logFullError(label, error) {
+  console.error(`${label} message:`, error?.message);
+  console.error(`${label} name:`, error?.name);
+  console.error(`${label} status:`, error?.status);
+  console.error(`${label} statusCode:`, error?.statusCode);
+  console.error(`${label} stack:`, error?.stack);
+}
+
 async function handleUploadInit(req, res) {
-  const { filename, userId } = req.body ?? {};
+  const { filename, userId, mimeType } = req.body ?? {};
   const trimmedName = (filename || "").trim();
   const lower = trimmedName.toLowerCase();
   const extension = lower.includes(".") ? lower.slice(lower.lastIndexOf(".")) : "(none)";
@@ -208,7 +221,10 @@ async function handleUploadInit(req, res) {
   console.log("[custom-templates:upload-init] request:", {
     filename: trimmedName || "(empty)",
     extension,
+    mimeType: mimeType || "(not sent by client)",
     userId: userId || "(missing)",
+    usingServiceRole: SUPABASE_KEY_SOURCE === "SUPABASE_SERVICE_ROLE_KEY",
+    keySource: SUPABASE_KEY_SOURCE,
   });
 
   if (!userId) {
@@ -221,25 +237,48 @@ async function handleUploadInit(req, res) {
 
   const safeName = trimmedName.replace(/[^a-zA-Z0-9._-]/g, "_");
   const path = `${userId}/${Date.now()}-${randomUUID()}-${safeName}`;
-  console.log("[custom-templates:upload-init] validation passed, storage path:", path);
+  console.log("[custom-templates:upload-init] validation passed:", { bucket: BUCKET, path });
+
+  // Confirm the bucket itself is reachable with the key this function is
+  // actually using before attempting the signed URL — if this fails, the
+  // problem is bucket-existence/permissions, not createSignedUploadUrl.
+  const { data: bucketInfo, error: bucketError } = await supabase.storage.getBucket(BUCKET);
+  if (bucketError) {
+    logFullError("[custom-templates:upload-init] getBucket error —", bucketError);
+    return res.status(500).json({
+      error: "Could not prepare upload.",
+      ...(IS_DEV ? { details: `Bucket check failed: ${bucketError.message}` } : {}),
+    });
+  }
+  console.log("[custom-templates:upload-init] bucket confirmed:", {
+    id: bucketInfo?.id,
+    public: bucketInfo?.public,
+    allowed_mime_types: bucketInfo?.allowed_mime_types,
+  });
 
   try {
+    console.log("[custom-templates:upload-init] calling createSignedUploadUrl with:", {
+      bucket: BUCKET,
+      path,
+    });
     const { data, error } = await supabase.storage
       .from(BUCKET)
       .createSignedUploadUrl(path);
 
     if (error) {
-      console.error("[custom-templates:upload-init] createSignedUploadUrl error:", error);
+      logFullError("[custom-templates:upload-init] createSignedUploadUrl error —", error);
       return res.status(500).json({
         error: "Could not prepare upload.",
-        ...(IS_DEV ? { details: error.message } : {}),
+        ...(IS_DEV
+          ? { details: `${error.name || "Error"} (status ${error.status ?? "?"}/${error.statusCode ?? "?"}): ${error.message}` }
+          : {}),
       });
     }
 
     console.log("[custom-templates:upload-init] signed URL created:", data.path);
     return res.status(200).json({ path: data.path, token: data.token });
   } catch (err) {
-    console.error("[custom-templates:upload-init] unexpected error:", err);
+    logFullError("[custom-templates:upload-init] unexpected exception —", err);
     return res.status(500).json({
       error: "Could not prepare upload.",
       ...(IS_DEV ? { details: err?.message || String(err) } : {}),

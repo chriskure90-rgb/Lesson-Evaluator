@@ -10,6 +10,18 @@ const key =
   process.env.SUPABASE_ANON_KEY         ??
   process.env.VITE_SUPABASE_ANON_KEY;
 
+// Which env var the key above actually came from — lets callers (and logs)
+// tell whether privileged storage/DB operations are running with the
+// service-role key or have silently fallen back to an anon key that may not
+// have the RLS permissions those operations need.
+export const SUPABASE_KEY_SOURCE = process.env.SUPABASE_SERVICE_ROLE_KEY
+  ? "SUPABASE_SERVICE_ROLE_KEY"
+  : process.env.SUPABASE_ANON_KEY
+  ? "SUPABASE_ANON_KEY"
+  : process.env.VITE_SUPABASE_ANON_KEY
+  ? "VITE_SUPABASE_ANON_KEY"
+  : "none";
+
 // Log which env vars resolved at cold-start so Vercel function logs show the
 // initialization state without exposing key values.
 console.log("[supabase:init] SUPABASE_URL present:", !!process.env.SUPABASE_URL);

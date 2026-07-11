@@ -58,7 +58,7 @@ export async function uploadCustomTemplateFile(file: File, userId: string): Prom
   const initRes = await fetch("/api/custom-templates", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "upload-init", filename: file.name, userId }),
+    body: JSON.stringify({ action: "upload-init", filename: file.name, mimeType: file.type, userId }),
   });
   const initData = await parseCustomTemplatesResponse<{ path: string; token: string }>(
     initRes,
