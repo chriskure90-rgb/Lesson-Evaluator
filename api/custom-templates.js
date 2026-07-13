@@ -323,7 +323,7 @@ export const DEFAULT_DETECTED_SECTIONS = {
 // access (a recurring friction point). Bump the string whenever the
 // section-detection logic changes; remove entirely once the row-level
 // extraction fix is confirmed live and working.
-const SECTION_DETECTION_ENGINE_VERSION = "17ce442-row-level-v1";
+const SECTION_DETECTION_ENGINE_VERSION = "cell-units-v2";
 
 // ── Dictionaries ─────────────────────────────────────────────────────────────
 // normalizedKey -> label variants recognized as an exact/near-exact match.
@@ -644,14 +644,44 @@ function classifyDocxBlockSignal(text, innerHtml, boldSignal) {
 // not a full HTML parser, so it assumes mammoth's typical flat output
 // (headings/paragraphs/tables not nested inside one another at the top
 // level) — an unusually complex DOCX structure could confuse it.
+// A single <td>/<th> can contain multiple stacked labels, each its own
+// <p> — e.g. <td><p><strong>Teacher:</strong></p><p><strong>Grade:</strong></p></td>
+// is TWO candidates, not one flattened string. Splits on <p> first (the
+// common case for mammoth's output); if a cell has no <p> wrapping at all,
+// falls back to splitting on standalone <strong> runs (requirement 4);
+// falls back to the whole cell as a single unit only if neither applies.
+function extractCellUnits(innerHtml) {
+  const units = [];
+  const paraRegex = /<p[^>]*>([\s\S]*?)<\/p>/g;
+  let m;
+  while ((m = paraRegex.exec(innerHtml)) !== null) units.push(m[1]);
+
+  if (units.length === 0) {
+    const strongMatches = innerHtml.match(/<strong>[\s\S]*?<\/strong>/g);
+    if (strongMatches && strongMatches.length > 0) units.push(...strongMatches);
+    else units.push(innerHtml);
+  }
+
+  return units
+    .map((unitHtml) => ({ text: stripHtmlTags(unitHtml), html: unitHtml }))
+    .filter((u) => u.text);
+}
+
 // `extractionTrace`, when given an object with a `rows` array, gets one
-// entry pushed per table row (tableIndex/rowIndex + every cell's
-// index/text/signal/isValueLike/retained) — purely additive observability
-// for verifying the row-level label/value logic against a real document's
-// actual HTML structure; doesn't change what candidates are produced.
+// entry per table row: tableIndex/rowIndex/cellCount/rowHasAnyValue, and
+// per cell, every candidate unit's index/text/signal/isValueLike/retained
+// — purely additive observability for verifying extraction against a real
+// document's actual HTML structure; doesn't change what candidates are
+// produced.
 function extractDocxSectionCandidates(html, extractionTrace = null) {
   const candidates = [];
-  const blockRegex = /<h([1-6])>([\s\S]*?)<\/h\1>|<p>([\s\S]*?)<\/p>|<table>([\s\S]*?)<\/table>/g;
+  // [^>]* after each tag name tolerates attributes (colspan="2", style=...,
+  // etc.) — the previous bare <t[dh]>/<table>/<tr>/<p>/<h1-6> forms only
+  // matched a tag with NO attributes at all, silently failing to match (and
+  // therefore silently dropping) any cell/table/row/paragraph/heading that
+  // had one. Confirmed directly: a <td colspan="2"> containing "Assessments"
+  // was invisible to the old regex for exactly this reason.
+  const blockRegex = /<h([1-6])[^>]*>([\s\S]*?)<\/h\1>|<p[^>]*>([\s\S]*?)<\/p>|<table[^>]*>([\s\S]*?)<\/table>/g;
   let match;
   let tableIndex = -1;
   while ((match = blockRegex.exec(html)) !== null) {
@@ -663,51 +693,62 @@ function extractDocxSectionCandidates(html, extractionTrace = null) {
       if (text) candidates.push({ text, signal: classifyDocxBlockSignal(text, match[3], "bold-text") });
     } else if (match[4] !== undefined) {
       tableIndex++;
-      const rowRegex = /<tr>([\s\S]*?)<\/tr>/g;
+      const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
       let rowMatch;
       let rowIndex = -1;
       while ((rowMatch = rowRegex.exec(match[4])) !== null) {
         rowIndex++;
-        const cellRegex = /<t[dh]>([\s\S]*?)<\/t[dh]>/g;
+        const cellRegex = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/g;
         let cellMatch;
         let cellIndex = -1;
-        // Every non-empty cell in the row is collected first (position
-        // never excludes a cell on its own — see requirement 2) so the row
-        // can be judged as a whole before deciding what to keep.
-        const rowCells = [];
-        const traceCells = extractionTrace ? [] : null;
+        // Every candidate unit from every cell in the row is collected
+        // into one flat list first (position never excludes anything on
+        // its own — requirement 2) so the row can be judged as a whole
+        // before deciding what to keep.
+        const rowRecords = [];
+        const cellNotes = [];
         while ((cellMatch = cellRegex.exec(rowMatch[1])) !== null) {
           cellIndex++;
-          const text = stripHtmlTags(cellMatch[1]);
-          if (!text) {
-            if (traceCells) traceCells.push({ index: cellIndex, text: "", signal: null, isValueLike: false, retained: false, note: "empty cell — skipped" });
+          const cellUnits = extractCellUnits(cellMatch[1]);
+          if (cellUnits.length === 0) {
+            cellNotes.push({ index: cellIndex, note: "empty cell — skipped" });
             continue;
           }
-          rowCells.push({
-            index: cellIndex,
-            text,
-            signal: classifyDocxBlockSignal(text, cellMatch[1], "bold-table-cell"),
-            isValue: isValueLikeText(text),
+          cellUnits.forEach((u, unitIndex) => {
+            rowRecords.push({
+              cellIndex,
+              unitIndex,
+              text: u.text,
+              signal: classifyDocxBlockSignal(u.text, u.html, "bold-table-cell"),
+              isValueLike: isValueLikeText(u.text),
+            });
           });
         }
-        // Row-level context, not cell position: only exclude a cell when
-        // something ELSE in the same row is a confirmed value — that's the
-        // signal this is a label/value row at all. A row where nothing
-        // looks like a value (e.g. "Teacher | Grade | School | Date", all
-        // plain short words with no name/date/grade pattern among them) is
-        // a label-only row, so every cell in it is kept.
-        const rowHasAnyValue = rowCells.some((c) => c.isValue);
-        for (const c of rowCells) {
-          const retained = !(rowHasAnyValue && c.isValue); // skip only the confirmed-value cells; ambiguous/label cells in the same row are still kept
-          if (retained) candidates.push({ text: c.text, signal: c.signal });
-          if (traceCells) traceCells.push({ index: c.index, text: c.text, signal: c.signal, isValueLike: c.isValue, retained });
+        // Row-level context, not cell position or one-unit-per-cell: only
+        // exclude a unit when something ELSE in the same row is a
+        // confirmed value. A row where nothing looks like a value (e.g.
+        // three stacked labels in one cell, or "Teacher | Grade | School |
+        // Date" across separate cells) keeps every unit.
+        const rowHasAnyValue = rowRecords.some((r) => r.isValueLike);
+        for (const r of rowRecords) {
+          r.retained = !(rowHasAnyValue && r.isValueLike);
+          if (r.retained) candidates.push({ text: r.text, signal: r.signal });
         }
         if (extractionTrace) {
-          // Empty-cell entries were pushed during the scan; non-empty ones
-          // after (once rowHasAnyValue was known) — re-sort by index so the
-          // trace reflects true document cell order either way.
-          traceCells.sort((a, b) => a.index - b.index);
-          extractionTrace.rows.push({ tableIndex, rowIndex, rowHasAnyValue, cells: traceCells });
+          const cellMap = new Map();
+          for (const note of cellNotes) cellMap.set(note.index, { index: note.index, units: [], note: note.note });
+          for (const r of rowRecords) {
+            if (!cellMap.has(r.cellIndex)) cellMap.set(r.cellIndex, { index: r.cellIndex, units: [] });
+            cellMap.get(r.cellIndex).units.push({
+              unitIndex: r.unitIndex,
+              text: r.text,
+              signal: r.signal,
+              isValueLike: r.isValueLike,
+              retained: r.retained,
+            });
+          }
+          const cells = Array.from(cellMap.values()).sort((a, b) => a.index - b.index);
+          extractionTrace.rows.push({ tableIndex, rowIndex, cellCount: cellIndex + 1, rowHasAnyValue, cells });
         }
       }
     }
@@ -840,12 +881,14 @@ async function detectTemplateSections({ isPdf, buffer, pdfText, debug = false })
       console.log("[custom-templates:register] EXTRACTION DEBUG — full HTML (may be truncated):", extractionDebug.html);
       console.log(`[custom-templates:register] EXTRACTION DEBUG — ${extractionTrace.rows.length} table rows detected:`);
       for (const row of extractionTrace.rows) {
-        console.log(`[custom-templates:register] EXTRACTION DEBUG table=${row.tableIndex} row=${row.rowIndex} rowHasAnyValue=${row.rowHasAnyValue}`);
+        console.log(`[custom-templates:register] EXTRACTION DEBUG table=${row.tableIndex} row=${row.rowIndex} cellCount=${row.cellCount} rowHasAnyValue=${row.rowHasAnyValue}`);
         for (const cell of row.cells) {
-          console.log(
-            `[custom-templates:register] EXTRACTION DEBUG   cell[${cell.index}] "${cell.text}" signal=${cell.signal} isValueLike=${cell.isValueLike} retained=${cell.retained}` +
-            (cell.note ? ` (${cell.note})` : "")
-          );
+          console.log(`[custom-templates:register] EXTRACTION DEBUG   cell[${cell.index}] — ${cell.units.length} candidate unit(s)${cell.note ? ` (${cell.note})` : ""}`);
+          for (const unit of cell.units) {
+            console.log(
+              `[custom-templates:register] EXTRACTION DEBUG     unit[${unit.unitIndex}] "${unit.text}" signal=${unit.signal} isValueLike=${unit.isValueLike} retained=${unit.retained}`
+            );
+          }
         }
       }
       console.log("[custom-templates:register] EXTRACTION DEBUG — final raw candidate list:", candidates);

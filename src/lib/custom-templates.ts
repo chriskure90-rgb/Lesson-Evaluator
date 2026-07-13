@@ -148,12 +148,17 @@ function logSectionDetectionDebug(
     const rows = (extraction.tableRows as Record<string, unknown>[] | undefined) ?? [];
     console.log(`${rows.length} table rows detected:`);
     for (const row of rows) {
-      console.group(`table=${row.tableIndex} row=${row.rowIndex} rowHasAnyValue=${row.rowHasAnyValue}`);
+      console.group(`table=${row.tableIndex} row=${row.rowIndex} cellCount=${row.cellCount} rowHasAnyValue=${row.rowHasAnyValue}`);
       for (const cell of (row.cells as Record<string, unknown>[] | undefined) ?? []) {
-        console.log(
-          `%ccell[${cell.index}] "${cell.text}" signal=${cell.signal} isValueLike=${cell.isValueLike} retained=${cell.retained}${cell.note ? ` (${cell.note})` : ""}`,
-          cell.retained ? "color:#2a7" : "color:#b33"
-        );
+        const units = (cell.units as Record<string, unknown>[] | undefined) ?? [];
+        console.group(`cell[${cell.index}] — ${units.length} candidate unit(s)${cell.note ? ` (${cell.note})` : ""}`);
+        for (const unit of units) {
+          console.log(
+            `%cunit[${unit.unitIndex}] "${unit.text}" signal=${unit.signal} isValueLike=${unit.isValueLike} retained=${unit.retained}`,
+            unit.retained ? "color:#2a7" : "color:#b33"
+          );
+        }
+        console.groupEnd();
       }
       console.groupEnd();
     }
