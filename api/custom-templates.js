@@ -324,22 +324,26 @@ export const DEFAULT_DETECTED_SECTIONS = {
 // this phase doesn't map onto the fixed Template1Lesson schema at all, it's
 // a superset vocabulary describing what's actually IN the document.
 const CONTENT_SECTION_DICTIONARY = {
-  objectives:            ["learning target", "lesson objective", "learning objective", "objectives", "learning objectives"],
+  objectives:            ["learning target", "lesson objective", "learning objective", "objectives", "learning objectives", "essential learning target", "essential learning targets"],
   standards:             ["standards", "standards addressed", "standard"],
   materials:             ["materials needed", "materials", "items needed"],
   warmup:                ["warm-up", "warm up", "bell ringer", "hook"],
   teacherActivities:     ["teacher activities", "teacher actions"],
   studentActivities:     ["student activities", "student actions"],
   guidedPractice:        ["guided practice"],
-  assessmentForLearning: ["assessment for learning", "assessment", "evaluation"],
+  assessmentForLearning: ["assessment for learning", "assessment", "evaluation", "assessments"],
   differentiation:       ["differentiation", "student support"],
   technologyIntegration: ["technology integration", "technology"],
   closure:               ["closure", "conclusion", "wrap-up", "wrap up", "summary"],
   reflection:            ["reflection", "highlights"],
+  essentialQuestions:    ["essential question", "essential questions"],
+  lessonProcedures:      ["lesson procedures", "lesson procedure", "procedures"],
 };
 
 const METADATA_FIELD_DICTIONARY = {
+  teacher:      ["teacher"],
   teacherName:  ["teacher name", "tc name"],
+  school:       ["school"],
   date:         ["date"],
   gradeLevel:   ["grade level", "grade"],
   subject:      ["subject"],
@@ -359,7 +363,9 @@ const CONTENT_SECTION_PATTERNS = [
   ["teacherActivities",     /\bteacher\s*activit(y|ies)\b|\bteacher\s*action/i],
   ["studentActivities",     /\bstudent\s*activit(y|ies)\b|\bstudent\s*action/i],
   ["guidedPractice",        /\bguided\s*practice\b/i],
-  ["assessmentForLearning", /\bassessment\b|\bevaluation\b|\bexit\s*ticket\b/i],
+  ["essentialQuestions",    /\bessential\s*questions?\b/i],
+  ["lessonProcedures",      /\blesson\s*procedures?\b|\bprocedures?\b/i],
+  ["assessmentForLearning", /\bassessments?\b|\bevaluations?\b|\bexit\s*ticket\b/i],
   ["differentiation",       /\bdifferentiation\b|\bstudent\s*support\b/i],
   ["technologyIntegration", /\btechnology\b/i],
   ["closure",               /\bclosure\b|\bconclusion\b|\bwrap[\s-]?up\b|\bsummary\b/i],
@@ -367,7 +373,13 @@ const CONTENT_SECTION_PATTERNS = [
 ];
 
 const METADATA_FIELD_PATTERNS = [
+  // Negative lookahead keeps this from stealing "Teacher Activities/Actions"
+  // (a content_section, matched by its own exact dictionary entry above —
+  // this fuzzy pattern only matters for wording that dictionary doesn't
+  // catch, so the guard is what keeps the two from colliding there too).
+  ["teacher",     /\bteacher\b(?!\s*(activit|action))/i],
   ["teacherName", /\bteacher\s*name\b|\btc\s*name\b/i],
+  ["school",      /\bschool\b/i],
   ["date",        /\bdate\b/i],
   ["gradeLevel",  /\bgrade(\s*level)?\b/i],
   ["subject",     /\bsubject\b/i],
@@ -530,6 +542,27 @@ function isAllCapsLine(text) {
   return letters.length >= 2 && letters === letters.toUpperCase();
 }
 
+// Recognizes text that's clearly a filled-in VALUE (a name, a date, a grade
+// level) rather than a label — used to tell a label apart from a value by
+// what the cell's own text actually looks like, instead of guessing from
+// its position in the row (see extractDocxSectionCandidates: a table row's
+// cells are only excluded here if row-level context says the row has a mix
+// of labels and values; a row that's entirely labels, e.g. "Teacher |
+// Grade | School | Date", keeps every cell regardless of these patterns).
+const VALUE_LIKE_PATTERNS = [
+  /^(mr|mrs|ms|dr|miss|prof)\.?\s+\S+/i,                                                  // "Mr. Lee", "Ms. Smith"
+  /^\d{1,2}(st|nd|rd|th)\b(\s*grade)?$/i,                                                 // "5th", "5th Grade"
+  /^grade\s*\d{1,2}$/i,                                                                   // "Grade 5"
+  /^\d{4}-\d{1,2}-\d{1,2}$/,                                                              // "2026-07-13"
+  /^\d{1,2}\/\d{1,2}\/\d{2,4}$/,                                                          // "7/13/2026"
+  /^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}$/i, // "July 13, 2026"
+];
+
+function isValueLikeText(text) {
+  const t = text.trim();
+  return VALUE_LIKE_PATTERNS.some((pattern) => pattern.test(t));
+}
+
 // ── PDF candidates ────────────────────────────────────────────────────────────
 // Reuses the same flat text every other PDF detector in this file reads —
 // per the "this phase will not detect PDF coordinates or visual layout"
@@ -621,23 +654,29 @@ function extractDocxSectionCandidates(html) {
       while ((rowMatch = rowRegex.exec(match[4])) !== null) {
         const cellRegex = /<t[dh]>([\s\S]*?)<\/t[dh]>/g;
         let cellMatch;
-        let cellIndex = 0;
+        // Every non-empty cell in the row is collected first (position
+        // never excludes a cell on its own — see requirement 2) so the row
+        // can be judged as a whole before deciding what to keep.
+        const rowCells = [];
         while ((cellMatch = cellRegex.exec(rowMatch[1])) !== null) {
           const text = stripHtmlTags(cellMatch[1]);
-          const isFirstCell = cellIndex === 0;
-          cellIndex++;
           if (!text) continue;
-          const signal = classifyDocxBlockSignal(text, cellMatch[1], "bold-table-cell");
-          // A label/value table row's label is conventionally the first
-          // cell — a later cell (e.g. the value next to "Teacher Name:")
-          // is only treated as its own candidate if it carries a strong
-          // signal of its own (bold/colon/caps); otherwise it's most likely
-          // plain data, not a section label, and would just add noise as a
-          // spurious "unknown heading" (verified directly: without this,
-          // a value like "Ms. Smith" next to "Teacher Name:" was
-          // misclassified as its own custom_section).
-          if (!isFirstCell && signal === "table-cell") continue;
-          candidates.push({ text, signal });
+          rowCells.push({
+            text,
+            signal: classifyDocxBlockSignal(text, cellMatch[1], "bold-table-cell"),
+            isValue: isValueLikeText(text),
+          });
+        }
+        // Row-level context, not cell position: only exclude a cell when
+        // something ELSE in the same row is a confirmed value — that's the
+        // signal this is a label/value row at all. A row where nothing
+        // looks like a value (e.g. "Teacher | Grade | School | Date", all
+        // plain short words with no name/date/grade pattern among them) is
+        // a label-only row, so every cell in it is kept.
+        const rowHasAnyValue = rowCells.some((c) => c.isValue);
+        for (const c of rowCells) {
+          if (rowHasAnyValue && c.isValue) continue; // skip only the confirmed-value cells; ambiguous/label cells in the same row are still kept
+          candidates.push({ text: c.text, signal: c.signal });
         }
       }
     }
