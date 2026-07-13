@@ -122,6 +122,38 @@ export async function uploadCustomTemplateFile(file: File, userId: string): Prom
   return { path: initData.path };
 }
 
+// ── TEMPORARY DEBUGGING — remove after LessonPlanTemplate2.docx is diagnosed ──
+// Turns on the server's section-detection debug mode (see handleRegister in
+// api/custom-templates.js) for every registration and dumps the resulting
+// sectionDetectionDebug array to the console. To remove: delete this block
+// and the two marked lines below it in registerCustomTemplate.
+const TEMP_DEBUG_SECTIONS = true;
+
+function logSectionDetectionDebug(entries: unknown[] | undefined | null) {
+  if (!TEMP_DEBUG_SECTIONS) return;
+  if (!Array.isArray(entries)) {
+    console.warn("[TEMP_DEBUG_SECTIONS] no sectionDetectionDebug in the response (debugSections may not have reached the server).");
+    return;
+  }
+  console.group(`%c[TEMP_DEBUG_SECTIONS] sectionDetectionDebug — ${entries.length} raw candidates`, "font-weight:bold");
+  console.log("Full array (expand to inspect every candidate):", entries);
+  for (const entry of entries as Record<string, unknown>[]) {
+    const tag = `#${entry.index} "${entry.text}" (signal=${entry.signal})`;
+    if (entry.outcome === "discarded" || entry.outcome === "duplicate") {
+      console.log(`%c${tag} -> ${entry.outcome}`, "color:#b33", "—", entry.discardReason);
+    } else {
+      console.log(
+        `%c${tag} -> ${entry.outcome}`,
+        "color:#2a7",
+        `— normalizedKey=${entry.normalizedKey}, confidence=${entry.confidence}, reason="${entry.detectionReason}"`
+      );
+    }
+    console.log("  trace:", entry.trace);
+  }
+  console.groupEnd();
+}
+// ── END TEMPORARY DEBUGGING ───────────────────────────────────────────────────
+
 export async function registerCustomTemplate(params: {
   path: string;
   filename: string;
@@ -131,15 +163,17 @@ export async function registerCustomTemplate(params: {
   const res = await fetch("/api/custom-templates", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "register", ...params }),
+    body: JSON.stringify({ action: "register", ...params, debugSections: TEMP_DEBUG_SECTIONS }), // TEMP DEBUG — remove debugSections when done
   });
   const isPdf = params.filename.toLowerCase().endsWith(".pdf");
-  return parseCustomTemplatesResponse<CustomTemplate>(
+  const result = await parseCustomTemplatesResponse<CustomTemplate & { sectionDetectionDebug?: unknown[] }>(
     res,
     isPdf
       ? "PDF processing failed. Please try another PDF or upload a DOCX file."
       : "Could not register this template. Please try again."
   );
+  logSectionDetectionDebug(result.sectionDetectionDebug); // TEMP DEBUG — remove when done
+  return result;
 }
 
 // structured_fields and detected_sections/section_detection_status/
