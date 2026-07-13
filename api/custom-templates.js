@@ -295,6 +295,393 @@ function analyzeTemplateText(text) {
   return { sections, structuredFields: fields };
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   Section recognition (Phase 1) — ADDITIVE ONLY.
+
+   This is a second, independent pass over the same uploaded file, storing
+   its own result in detected_sections/section_detection_status/
+   section_detection_error. It never touches placeholders/
+   recognized_placeholders/unrecognized_placeholders/structured_fields, the
+   DOCX synthesis pipeline, export, or api/generate.js — those all keep
+   working exactly as before, reading from their own existing fields. This
+   pass's only job is to detect and classify the sections a teacher's
+   uploaded document actually contains, preserve their original labels and
+   order, and let the teacher review/edit that list — nothing here feeds
+   into generation or export yet.
+═══════════════════════════════════════════════════════════════════════════ */
+
+export const DEFAULT_DETECTED_SECTIONS = {
+  contentSections: [],
+  metadataFields: [],
+  instructionTexts: [],
+  confirmed: false,
+  version: 1,
+};
+
+// ── Dictionaries ─────────────────────────────────────────────────────────────
+// normalizedKey -> label variants recognized as an exact/near-exact match.
+// Separate from PLACEHOLDER_CATALOG/KNOWN_PLACEHOLDER_TOKENS on purpose —
+// this phase doesn't map onto the fixed Template1Lesson schema at all, it's
+// a superset vocabulary describing what's actually IN the document.
+const CONTENT_SECTION_DICTIONARY = {
+  objectives:            ["learning target", "lesson objective", "learning objective", "objectives", "learning objectives"],
+  standards:             ["standards", "standards addressed", "standard"],
+  materials:             ["materials needed", "materials", "items needed"],
+  warmup:                ["warm-up", "warm up", "bell ringer", "hook"],
+  teacherActivities:     ["teacher activities", "teacher actions"],
+  studentActivities:     ["student activities", "student actions"],
+  guidedPractice:        ["guided practice"],
+  assessmentForLearning: ["assessment for learning", "assessment", "evaluation"],
+  differentiation:       ["differentiation", "student support"],
+  technologyIntegration: ["technology integration", "technology"],
+  closure:               ["closure", "conclusion", "wrap-up", "wrap up", "summary"],
+  reflection:            ["reflection", "highlights"],
+};
+
+const METADATA_FIELD_DICTIONARY = {
+  teacherName:  ["teacher name", "tc name"],
+  date:         ["date"],
+  gradeLevel:   ["grade level", "grade"],
+  subject:      ["subject"],
+  topic:        ["topic", "lesson topic"],
+  duration:     ["duration", "time duration", "lesson duration"],
+  classPeriod:  ["class period", "period"],
+};
+
+// Broader fuzzy patterns for the same normalizedKeys, checked only after an
+// exact/normalized dictionary match fails — this is what lets e.g. "Teacher
+// Actions During Lesson" still resolve to teacherActivities.
+const CONTENT_SECTION_PATTERNS = [
+  ["objectives",            /\bobjectives?\b|\blearning\s*(goals?|targets?)\b/i],
+  ["standards",             /\bstandards?\b/i],
+  ["materials",             /\bmaterials?\b|\bresources?\b|\bitems?\s*needed\b/i],
+  ["warmup",                /\bwarm[\s-]?up\b|\bbell\s*ringer\b|\bhook\b/i],
+  ["teacherActivities",     /\bteacher\s*activit(y|ies)\b|\bteacher\s*action/i],
+  ["studentActivities",     /\bstudent\s*activit(y|ies)\b|\bstudent\s*action/i],
+  ["guidedPractice",        /\bguided\s*practice\b/i],
+  ["assessmentForLearning", /\bassessment\b|\bevaluation\b|\bexit\s*ticket\b/i],
+  ["differentiation",       /\bdifferentiation\b|\bstudent\s*support\b/i],
+  ["technologyIntegration", /\btechnology\b/i],
+  ["closure",               /\bclosure\b|\bconclusion\b|\bwrap[\s-]?up\b|\bsummary\b/i],
+  ["reflection",            /\breflection\b|\bhighlights?\b/i],
+];
+
+const METADATA_FIELD_PATTERNS = [
+  ["teacherName", /\bteacher\s*name\b|\btc\s*name\b/i],
+  ["date",        /\bdate\b/i],
+  ["gradeLevel",  /\bgrade(\s*level)?\b/i],
+  ["subject",     /\bsubject\b/i],
+  ["topic",       /\btopic\b/i],
+  ["duration",    /\bduration\b/i],
+  ["classPeriod", /\bclass\s*period\b|\bperiod\b/i],
+];
+
+const INSTRUCTION_VERB_PATTERN = /^(describe|explain|list|identify|provide|write|state|summarize|include|indicate|discuss)\b/i;
+
+function normalizeForMatch(text) {
+  return (text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function lookupDictionary(dictionary, normalized) {
+  for (const [key, variants] of Object.entries(dictionary)) {
+    if (variants.includes(normalized)) return key;
+  }
+  return null;
+}
+
+function lookupPatterns(patterns, text) {
+  for (const [key, pattern] of patterns) {
+    if (pattern.test(text)) return key;
+  }
+  return null;
+}
+
+// Signals a candidate can carry, in descending strength — determines both
+// which structural-signal tier applies (0.75 vs 0.60) and the human-readable
+// detectionReason. "colon"/"all-caps" are computed from the text itself;
+// the rest come from where the candidate was extracted from (DOCX heading/
+// bold-table-cell/bold-text, or a plain table cell / short line).
+const STRONG_SIGNALS = new Set(["heading", "bold-table-cell", "bold-text", "all-caps", "colon"]);
+const SIGNAL_LABELS = {
+  heading:          "heading element",
+  "bold-table-cell": "bold standalone table cell",
+  "bold-text":       "bold standalone text",
+  "table-cell":      "table cell",
+  "all-caps":        "ALL-CAPS short line",
+  colon:             "colon-terminated label",
+  "short-line":      "short standalone line",
+};
+
+// Classifies one extracted candidate. Returns null for anything that isn't
+// a plausible section candidate at all (too long, mid-sentence, empty).
+// Confidence is a transparent heuristic (see the tiers in the SQL migration
+// comment / this session's design discussion), not a model-derived
+// probability: exact dictionary match (0.98) > normalized match (0.90) >
+// fuzzy pattern match backed by a strong structural signal (0.75) > fuzzy
+// pattern match with only a weak signal (0.60) > no match at all, preserved
+// as custom_section (0.50) — matches every unrecognized heading is kept,
+// never silently dropped.
+function classifySectionCandidate(rawLabel, signal) {
+  const trimmed = (rawLabel || "").trim();
+  if (!trimmed) return null;
+
+  // Instruction text: an imperative sentence, not a label — checked first
+  // since it's the one candidate type that's expected to end in a period
+  // (every other branch below rejects sentence-ending text as too long/
+  // too sentence-like to be a section label).
+  if (/[.?!]$/.test(trimmed) && trimmed.length <= 200 && INSTRUCTION_VERB_PATTERN.test(trimmed)) {
+    return {
+      type: "instruction_text",
+      normalizedKey: "instruction",
+      confidence: 0.75,
+      detectionReason: `instructional sentence (${SIGNAL_LABELS[signal] || "text"})`,
+    };
+  }
+
+  const endsInColon = /:\s*$/.test(trimmed);
+  const core = trimmed.replace(/:\s*$/, "").trim();
+  if (!core) return null;
+  // Section labels are short and don't end mid-sentence — a colon at the
+  // end is the one exception (e.g. "Materials Needed:" is still a label).
+  if (!endsInColon && (core.length > 70 || /[.?!]$/.test(core))) return null;
+
+  const normalized = normalizeForMatch(core);
+  const isExactText = (variants) => variants.includes(core.toLowerCase());
+
+  const metaExact = lookupDictionary(METADATA_FIELD_DICTIONARY, normalized);
+  if (metaExact) {
+    const exact = isExactText(METADATA_FIELD_DICTIONARY[metaExact]);
+    return {
+      type: "metadata_field",
+      normalizedKey: metaExact,
+      confidence: exact ? 0.98 : 0.90,
+      detectionReason: exact ? "exact dictionary match" : "normalized exact match",
+    };
+  }
+
+  const contentExact = lookupDictionary(CONTENT_SECTION_DICTIONARY, normalized);
+  if (contentExact) {
+    const exact = isExactText(CONTENT_SECTION_DICTIONARY[contentExact]);
+    return {
+      type: "content_section",
+      normalizedKey: contentExact,
+      confidence: exact ? 0.98 : 0.90,
+      detectionReason: exact ? "exact dictionary match" : "normalized exact match",
+    };
+  }
+
+  // No exact/normalized dictionary hit — try fuzzy patterns. A match here
+  // is a real (if uncertain) concept identification, tiered by how strong
+  // the structural signal that surfaced it was.
+  const metaFuzzy = lookupPatterns(METADATA_FIELD_PATTERNS, core);
+  const contentFuzzy = !metaFuzzy ? lookupPatterns(CONTENT_SECTION_PATTERNS, core) : null;
+  const fuzzyKey = metaFuzzy || contentFuzzy;
+  if (fuzzyKey) {
+    const strong = STRONG_SIGNALS.has(signal) || endsInColon;
+    return {
+      type: metaFuzzy ? "metadata_field" : "content_section",
+      normalizedKey: fuzzyKey,
+      confidence: strong ? 0.75 : 0.60,
+      detectionReason: strong ? SIGNAL_LABELS[endsInColon ? "colon" : signal] : "weak heading candidate (text length and placement)",
+    };
+  }
+
+  // Nothing recognized it at all — preserve it rather than drop it.
+  return {
+    type: "content_section",
+    normalizedKey: "custom_section",
+    confidence: 0.5,
+    detectionReason: "unknown heading candidate",
+  };
+}
+
+function isAllCapsLine(text) {
+  const letters = text.replace(/[^a-zA-Z]/g, "");
+  return letters.length >= 2 && letters === letters.toUpperCase();
+}
+
+// ── PDF candidates ────────────────────────────────────────────────────────────
+// Reuses the same flat text every other PDF detector in this file reads —
+// per the "this phase will not detect PDF coordinates or visual layout"
+// scope, no new PDF extraction is added. Every line is a candidate; the
+// classifier above is what actually filters out body-text noise.
+// pdf-parse's getText() appends its own "-- N of M --" page marker by
+// default (confirmed directly against the live parser — not document
+// content) — filtered here rather than in extractPdfText/detectPdfSections,
+// since this is specifically about candidate noise for section detection,
+// not a change to what those existing functions return.
+const PDF_PAGE_MARKER = /^--\s*\d+\s*of\s*\d+\s*--$/i;
+
+function extractPdfSectionCandidates(text) {
+  return splitTextLines(text)
+    .filter((line) => !PDF_PAGE_MARKER.test(line))
+    .map((line) => {
+      let signal;
+      if (/:\s*$/.test(line)) signal = "colon";
+      else if (isAllCapsLine(line)) signal = "all-caps";
+      else signal = "short-line";
+      return { text: line, signal };
+    });
+}
+
+// ── DOCX candidates ───────────────────────────────────────────────────────────
+// Uses mammoth.convertToHtml() specifically (NOT extractRawText, which the
+// existing tag-free-DOCX fallback still uses and keeps using) because only
+// convertToHtml preserves heading styles, bold runs, and table structure —
+// extractRawText flattens all of that into plain text. Lazy-imported for the
+// same reason pdf-parse/docx are lazy elsewhere in this file.
+async function extractDocxHtml(buffer) {
+  const { default: mammoth } = await import("mammoth");
+  const result = await mammoth.convertToHtml({ buffer });
+  return result.value;
+}
+
+function stripHtmlTags(html) {
+  return html
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// True when the ENTIRE cell/paragraph content is one bold run (not just
+// bold text somewhere inside a longer sentence) — that distinction is what
+// separates a "bold standalone" heading-like label from ordinary emphasis.
+function isEntirelyBold(innerHtml) {
+  // Table cell contents come wrapped in their own <p>...</p> (e.g.
+  // "<p><strong>Teacher Name:</strong></p>"), unlike a bold top-level
+  // paragraph's inner content (just "<strong>...</strong>") — strip one
+  // optional wrapping <p> before checking so both cases match the same way.
+  const trimmed = innerHtml.trim().replace(/^<p>([\s\S]*)<\/p>$/, "$1").trim();
+  return /^<strong>[\s\S]*<\/strong>$/.test(trimmed) || /^<b>[\s\S]*<\/b>$/.test(trimmed);
+}
+
+function classifyDocxBlockSignal(text, innerHtml, boldSignal) {
+  if (isEntirelyBold(innerHtml)) return boldSignal;
+  if (/:\s*$/.test(text)) return "colon";
+  if (isAllCapsLine(text)) return "all-caps";
+  return boldSignal === "bold-table-cell" ? "table-cell" : "short-line";
+}
+
+// Single sequential scan over mammoth's HTML output (headings, paragraphs,
+// tables as one alternation regex) so candidates come out in original
+// document order — a table's cells are extracted together at the position
+// the table itself occupies. Known limitation: this is a regex-based walk,
+// not a full HTML parser, so it assumes mammoth's typical flat output
+// (headings/paragraphs/tables not nested inside one another at the top
+// level) — an unusually complex DOCX structure could confuse it.
+function extractDocxSectionCandidates(html) {
+  const candidates = [];
+  const blockRegex = /<h([1-6])>([\s\S]*?)<\/h\1>|<p>([\s\S]*?)<\/p>|<table>([\s\S]*?)<\/table>/g;
+  let match;
+  while ((match = blockRegex.exec(html)) !== null) {
+    if (match[1] !== undefined) {
+      const text = stripHtmlTags(match[2]);
+      if (text) candidates.push({ text, signal: "heading" });
+    } else if (match[3] !== undefined) {
+      const text = stripHtmlTags(match[3]);
+      if (text) candidates.push({ text, signal: classifyDocxBlockSignal(text, match[3], "bold-text") });
+    } else if (match[4] !== undefined) {
+      const rowRegex = /<tr>([\s\S]*?)<\/tr>/g;
+      let rowMatch;
+      while ((rowMatch = rowRegex.exec(match[4])) !== null) {
+        const cellRegex = /<t[dh]>([\s\S]*?)<\/t[dh]>/g;
+        let cellMatch;
+        let cellIndex = 0;
+        while ((cellMatch = cellRegex.exec(rowMatch[1])) !== null) {
+          const text = stripHtmlTags(cellMatch[1]);
+          const isFirstCell = cellIndex === 0;
+          cellIndex++;
+          if (!text) continue;
+          const signal = classifyDocxBlockSignal(text, cellMatch[1], "bold-table-cell");
+          // A label/value table row's label is conventionally the first
+          // cell — a later cell (e.g. the value next to "Teacher Name:")
+          // is only treated as its own candidate if it carries a strong
+          // signal of its own (bold/colon/caps); otherwise it's most likely
+          // plain data, not a section label, and would just add noise as a
+          // spurious "unknown heading" (verified directly: without this,
+          // a value like "Ms. Smith" next to "Teacher Name:" was
+          // misclassified as its own custom_section).
+          if (!isFirstCell && signal === "table-cell") continue;
+          candidates.push({ text, signal });
+        }
+      }
+    }
+  }
+  return candidates;
+}
+
+// Orchestrator: classifies every candidate, buckets it into the right array,
+// dedupes exact repeats (same type + same lowercased label), and assigns
+// stable ids/order. Never throws on a per-candidate basis — a candidate that
+// doesn't classify to anything is just skipped (classifySectionCandidate
+// returning null), not an error.
+function buildDetectedSections(candidates) {
+  const contentSections = [];
+  const metadataFields = [];
+  const instructionTexts = [];
+  const seen = new Set();
+
+  for (const candidate of candidates) {
+    const result = classifySectionCandidate(candidate.text, candidate.signal);
+    if (!result) continue;
+
+    const cleanLabel = result.type === "instruction_text"
+      ? candidate.text.trim()
+      : candidate.text.replace(/:\s*$/, "").trim();
+    const dedupeKey = `${result.type}:${cleanLabel.toLowerCase()}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    const target = result.type === "metadata_field" ? metadataFields
+      : result.type === "instruction_text" ? instructionTexts
+      : contentSections;
+    const idPrefix = result.type === "metadata_field" ? "metadata"
+      : result.type === "instruction_text" ? "instruction"
+      : "section";
+
+    target.push({
+      id: `${idPrefix}_${target.length + 1}`,
+      originalLabel: cleanLabel,
+      normalizedKey: result.normalizedKey,
+      type: result.type,
+      order: target.length + 1,
+      confidence: result.confidence,
+      detectionReason: result.detectionReason,
+    });
+  }
+
+  return { contentSections, metadataFields, instructionTexts, confirmed: false, version: 1 };
+}
+
+// Top-level entry point called from handleRegister. isPdf selects which
+// candidate extractor runs; both converge on the same classifier/orchestrator.
+async function detectTemplateSections({ isPdf, buffer, pdfText }) {
+  const candidates = isPdf
+    ? extractPdfSectionCandidates(pdfText)
+    : extractDocxSectionCandidates(await extractDocxHtml(buffer));
+
+  const detected = buildDetectedSections(candidates);
+
+  console.log("[custom-templates:register] section detection —", {
+    candidateCount: candidates.length,
+    contentSectionCount: detected.contentSections.length,
+    metadataFieldCount: detected.metadataFields.length,
+    instructionTextCount: detected.instructionTexts.length,
+    unknownSectionCount: detected.contentSections.filter((s) => s.normalizedKey === "custom_section").length,
+  });
+
+  return detected;
+}
+
 // Builds a new .docx (via the `docx` library) reproducing the detected
 // sections in their original order: each as a bold heading (the PDF's own
 // wording) followed by one {{TOKEN}} placeholder paragraph per mapped
@@ -544,6 +931,11 @@ async function handleRegister(req, res) {
   }
 
   let buffer = Buffer.from(await fileData.arrayBuffer());
+  // Kept aside for section detection below, which always re-reads the
+  // ORIGINAL uploaded file — for a PDF, `buffer` gets reassigned to the
+  // synthesized docx further down, but section recognition should reflect
+  // exactly what the teacher uploaded, not the converted intermediate.
+  const originalBuffer = buffer;
   let storagePath = path;
   let detected = { all: [], recognized: [], unrecognized: [] };
   let structuredFields = [];
@@ -677,40 +1069,70 @@ async function handleRegister(req, res) {
 
   console.log("[custom-templates:register] detected structured fields:", structuredFields);
 
+  // Section recognition (Phase 1) — runs independently of everything above.
+  // A failure here never affects template registration itself: status/
+  // errorMessage (the existing pipeline's own outcome) are untouched; only
+  // section_detection_status/section_detection_error record this pass's
+  // own result. Always re-reads from originalBuffer (the file as uploaded),
+  // not the synthesized docx a PDF gets converted into above.
+  let detectedSections = DEFAULT_DETECTED_SECTIONS;
+  let sectionDetectionStatus = "ready";
+  let sectionDetectionError = null;
+  try {
+    let pdfText = null;
+    if (isPdf) pdfText = await extractPdfText(originalBuffer);
+    detectedSections = await detectTemplateSections({ isPdf, buffer: originalBuffer, pdfText });
+  } catch (err) {
+    console.error("[custom-templates:register] section detection failed — name:", err?.name);
+    console.error("[custom-templates:register] section detection failed — message:", err?.message);
+    console.error("[custom-templates:register] section detection failed — stack:", err?.stack);
+    sectionDetectionStatus = "error";
+    sectionDetectionError = err?.message || String(err);
+  }
+
   const insertPayload = {
-    user_id:                   userId,
-    name:                      templateName,
-    original_filename:         filename || path,
-    storage_path:              storagePath,
-    placeholders:              detected.all,
-    recognized_placeholders:   detected.recognized,
-    unrecognized_placeholders: detected.unrecognized,
-    structured_fields:         structuredFields,
+    user_id:                    userId,
+    name:                       templateName,
+    original_filename:          filename || path,
+    storage_path:               storagePath,
+    placeholders:               detected.all,
+    recognized_placeholders:    detected.recognized,
+    unrecognized_placeholders:  detected.unrecognized,
+    structured_fields:          structuredFields,
+    detected_sections:          detectedSections,
+    section_detection_status:   sectionDetectionStatus,
+    section_detection_error:    sectionDetectionError,
     status,
-    error_message:             errorMessage,
+    error_message:              errorMessage,
   };
 
-  let { data: saved, error: insertError } = await supabase
-    .from("custom_templates")
-    .insert([insertPayload])
-    .select("*")
-    .single();
-
-  // structured_fields is a new column (see scripts/sql/add-structured-
-  // fields-column.sql) — every registration, not just checklist-detected
-  // ones, includes it in the insert now, so until that migration is run
-  // every template upload would otherwise start failing. Retry once without
-  // it rather than hard-failing registration for an unrelated deploy-vs-
-  // migration ordering issue; structured fields are simply dropped for this
-  // one request until the column exists.
-  if (insertError && /structured_fields/i.test(insertError.message || "")) {
-    console.warn("[custom-templates:register] structured_fields column missing — retrying insert without it. Run scripts/sql/add-structured-fields-column.sql to enable structured-field detection.");
-    const { structured_fields, ...payloadWithoutStructuredFields } = insertPayload;
+  // structured_fields and the three detected_sections/section_detection_*
+  // columns are all recent additions (see scripts/sql/add-structured-
+  // fields-column.sql and add-detected-sections-columns.sql) — every
+  // registration includes them in the insert now, so until those
+  // migrations are run every template upload would otherwise start
+  // failing. Retry, dropping one offending column at a time, rather than
+  // hard-failing registration for an unrelated deploy-vs-migration
+  // ordering issue — those fields are simply absent from the saved row
+  // until their column exists.
+  const OPTIONAL_INSERT_COLUMNS = ["structured_fields", "detected_sections", "section_detection_status", "section_detection_error"];
+  let payload = insertPayload;
+  let saved, insertError;
+  for (let attempt = 0; attempt <= OPTIONAL_INSERT_COLUMNS.length; attempt++) {
     ({ data: saved, error: insertError } = await supabase
       .from("custom_templates")
-      .insert([payloadWithoutStructuredFields])
+      .insert([payload])
       .select("*")
       .single());
+
+    if (!insertError) break;
+    const missingCol = OPTIONAL_INSERT_COLUMNS.find(
+      (col) => col in payload && new RegExp(col, "i").test(insertError.message || "")
+    );
+    if (!missingCol) break;
+    console.warn(`[custom-templates:register] ${missingCol} column missing — retrying insert without it. Run the matching migration in scripts/sql/.`);
+    const { [missingCol]: _omit, ...rest } = payload;
+    payload = rest;
   }
 
   if (insertError) {

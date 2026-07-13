@@ -15,6 +15,39 @@ export type CustomTemplateStructuredField = {
   options: string[];
 };
 
+// Phase 1 section recognition (see detectTemplateSections in
+// api/custom-templates.js) — a second, independent classification of the
+// document's actual sections, separate from placeholders/
+// recognized_placeholders/structured_fields (which the existing generation/
+// export pipeline reads from and which this phase never touches).
+export type DetectedSectionType = "content_section" | "metadata_field" | "instruction_text";
+
+export type DetectedSectionItem = {
+  id: string;
+  originalLabel: string;
+  normalizedKey: string;
+  type: DetectedSectionType;
+  order: number;
+  confidence: number;
+  detectionReason?: string;
+};
+
+export type DetectedSections = {
+  contentSections: DetectedSectionItem[];
+  metadataFields: DetectedSectionItem[];
+  instructionTexts: DetectedSectionItem[];
+  confirmed: boolean;
+  version: number;
+};
+
+export const DEFAULT_DETECTED_SECTIONS: DetectedSections = {
+  contentSections: [],
+  metadataFields: [],
+  instructionTexts: [],
+  confirmed: false,
+  version: 1,
+};
+
 export type CustomTemplate = {
   id: string;
   user_id: string;
@@ -25,6 +58,9 @@ export type CustomTemplate = {
   recognized_placeholders: string[];
   unrecognized_placeholders: string[];
   structured_fields: CustomTemplateStructuredField[];
+  detected_sections: DetectedSections;
+  section_detection_status: string | null;
+  section_detection_error: string | null;
   status: CustomTemplateStatus;
   error_message: string | null;
   created_at: string;
@@ -106,50 +142,80 @@ export async function registerCustomTemplate(params: {
   );
 }
 
-// structured_fields (scripts/sql/add-structured-fields-column.sql) is a
-// recent column — a database that hasn't had the migration applied yet
-// returns a hard 400 ("column ... does not exist", PostgREST code 42703)
-// for ANY select that names it, which would otherwise break every custom-
-// template fetch (not just ones that care about structured fields) the
-// moment this client code deploys ahead of the migration. Try the full
-// select first; on that specific error, retry with the previous column set
-// so the rest of the app keeps working, and normalize the result so callers
-// can still always trust structured_fields is an array (defaults to []).
-const FULL_SELECT_COLUMNS =
-  "id, user_id, name, original_filename, storage_path, placeholders, recognized_placeholders, unrecognized_placeholders, structured_fields, status, error_message, created_at";
-const FALLBACK_SELECT_COLUMNS =
+// structured_fields and detected_sections/section_detection_status/
+// section_detection_error (scripts/sql/add-structured-fields-column.sql,
+// add-detected-sections-columns.sql) are all recent columns — a database
+// that hasn't had a migration applied yet returns a hard 400 ("column ...
+// does not exist", PostgREST code 42703) for ANY select naming it, which
+// would otherwise break every custom-template fetch (not just the parts
+// that care about the new column) the moment this client code deploys
+// ahead of the migration. BASE_COLUMNS is always safe to select; each
+// select tries every OPTIONAL_COLUMN first and drops whichever one the
+// error names, one at a time, until it succeeds — handles any subset of
+// the migrations having been run, not just all-or-nothing.
+const BASE_COLUMNS =
   "id, user_id, name, original_filename, storage_path, placeholders, recognized_placeholders, unrecognized_placeholders, status, error_message, created_at";
+const OPTIONAL_COLUMNS = ["structured_fields", "detected_sections", "section_detection_status", "section_detection_error"] as const;
 
-function isMissingStructuredFieldsColumn(error: { code?: string; message?: string } | null): boolean {
+function isMissingColumnError(error: { code?: string; message?: string } | null, column: string): boolean {
   if (!error) return false;
-  return error.code === "42703" || /structured_fields/i.test(error.message || "");
+  return error.code === "42703" && new RegExp(column, "i").test(error.message || "");
+}
+
+function buildSelectColumns(excluded: ReadonlySet<string>): string {
+  const optional = OPTIONAL_COLUMNS.filter((c) => !excluded.has(c));
+  return [BASE_COLUMNS, ...optional].join(", ");
+}
+
+function normalizeDetectedSections(raw: unknown): DetectedSections {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return DEFAULT_DETECTED_SECTIONS;
+  const r = raw as Record<string, unknown>;
+  return {
+    contentSections: Array.isArray(r.contentSections) ? (r.contentSections as DetectedSectionItem[]) : [],
+    metadataFields: Array.isArray(r.metadataFields) ? (r.metadataFields as DetectedSectionItem[]) : [],
+    instructionTexts: Array.isArray(r.instructionTexts) ? (r.instructionTexts as DetectedSectionItem[]) : [],
+    confirmed: !!r.confirmed,
+    version: typeof r.version === "number" ? r.version : 1,
+  };
 }
 
 function normalizeCustomTemplateRow(row: Record<string, unknown>): CustomTemplate {
   return {
-    ...(row as Omit<CustomTemplate, "structured_fields">),
+    ...(row as Omit<CustomTemplate, "structured_fields" | "detected_sections" | "section_detection_status" | "section_detection_error">),
     structured_fields: Array.isArray(row.structured_fields)
       ? (row.structured_fields as CustomTemplateStructuredField[])
       : [],
+    detected_sections: normalizeDetectedSections(row.detected_sections),
+    section_detection_status: typeof row.section_detection_status === "string" ? row.section_detection_status : null,
+    section_detection_error: typeof row.section_detection_error === "string" ? row.section_detection_error : null,
   };
 }
 
 export async function fetchCustomTemplates(userId: string): Promise<CustomTemplate[]> {
-  let data: Record<string, unknown>[] | null;
-  let error: { code?: string; message?: string } | null;
-  ({ data, error } = await supabase
-    .from("custom_templates")
-    .select(FULL_SELECT_COLUMNS)
-    .eq("user_id", userId)
-    .order("created_at", { ascending: false }));
+  const excluded = new Set<string>();
+  let data: Record<string, unknown>[] | null = null;
+  let error: { code?: string; message?: string } | null = null;
 
-  if (error && isMissingStructuredFieldsColumn(error)) {
-    console.warn("[custom-templates] structured_fields column not available yet — retrying without it. Run scripts/sql/add-structured-fields-column.sql.");
-    ({ data, error } = await supabase
+  for (let attempt = 0; attempt <= OPTIONAL_COLUMNS.length; attempt++) {
+    // The select column list is built at runtime (not a string literal), so
+    // supabase-js can't infer a row type from it — cast to the shape we
+    // handle manually via normalizeCustomTemplateRow below regardless.
+    const result = (await supabase
       .from("custom_templates")
-      .select(FALLBACK_SELECT_COLUMNS)
+      .select(buildSelectColumns(excluded))
       .eq("user_id", userId)
-      .order("created_at", { ascending: false }));
+      .order("created_at", { ascending: false })) as unknown as {
+      data: Record<string, unknown>[] | null;
+      error: { code?: string; message?: string } | null;
+    };
+    data = result.data;
+    error = result.error;
+
+    if (!error) break;
+    const missingCol = OPTIONAL_COLUMNS.find((c) => !excluded.has(c) && isMissingColumnError(error, c));
+    if (!missingCol) break;
+    console.warn(`[custom-templates] ${missingCol} column not available yet — retrying without it. Run the matching migration in scripts/sql/.`);
+    excluded.add(missingCol);
   }
 
   if (error) throw error;
@@ -161,21 +227,27 @@ export async function fetchCustomTemplates(userId: string): Promise<CustomTempla
 // flows only have the id (from lesson_generation.custom_template_id), not
 // the full list uploaded-templates state that GeneratorPage already holds.
 export async function fetchCustomTemplateById(id: string): Promise<CustomTemplate | null> {
-  let data: Record<string, unknown> | null;
-  let error: { code?: string; message?: string } | null;
-  ({ data, error } = await supabase
-    .from("custom_templates")
-    .select(FULL_SELECT_COLUMNS)
-    .eq("id", id)
-    .maybeSingle());
+  const excluded = new Set<string>();
+  let data: Record<string, unknown> | null = null;
+  let error: { code?: string; message?: string } | null = null;
 
-  if (error && isMissingStructuredFieldsColumn(error)) {
-    console.warn("[custom-templates] structured_fields column not available yet — retrying without it. Run scripts/sql/add-structured-fields-column.sql.");
-    ({ data, error } = await supabase
+  for (let attempt = 0; attempt <= OPTIONAL_COLUMNS.length; attempt++) {
+    const result = (await supabase
       .from("custom_templates")
-      .select(FALLBACK_SELECT_COLUMNS)
+      .select(buildSelectColumns(excluded))
       .eq("id", id)
-      .maybeSingle());
+      .maybeSingle()) as unknown as {
+      data: Record<string, unknown> | null;
+      error: { code?: string; message?: string } | null;
+    };
+    data = result.data;
+    error = result.error;
+
+    if (!error) break;
+    const missingCol = OPTIONAL_COLUMNS.find((c) => !excluded.has(c) && isMissingColumnError(error, c));
+    if (!missingCol) break;
+    console.warn(`[custom-templates] ${missingCol} column not available yet — retrying without it. Run the matching migration in scripts/sql/.`);
+    excluded.add(missingCol);
   }
 
   if (error) throw error;
@@ -192,6 +264,66 @@ export async function renameCustomTemplate(id: string, name: string, userId: str
     .eq("id", id)
     .eq("user_id", userId);
   if (error) throw error;
+}
+
+const DETECTED_SECTION_TYPES: DetectedSectionType[] = ["content_section", "metadata_field", "instruction_text"];
+
+// Recalculates order (1-based, per array) and guarantees every item has a
+// non-empty label, a valid type, and a unique id — applied to whatever the
+// teacher's edits (rename/remove/add) produced before it's saved, so a bad
+// edit (emptied label, duplicated id from a copy/paste bug, etc.) can't
+// corrupt the stored record.
+function sanitizeDetectedSectionList(items: DetectedSectionItem[], idPrefix: string): DetectedSectionItem[] {
+  const seenIds = new Set<string>();
+  const out: DetectedSectionItem[] = [];
+  for (const item of items) {
+    const originalLabel = (item?.originalLabel ?? "").trim();
+    if (!originalLabel) continue; // originalLabel must be a non-empty trimmed string
+    const type = DETECTED_SECTION_TYPES.includes(item?.type) ? item.type : "content_section";
+    let id = (item?.id ?? "").trim();
+    if (!id || seenIds.has(id)) id = `${idPrefix}_${crypto.randomUUID().slice(0, 8)}`;
+    seenIds.add(id);
+    out.push({
+      id,
+      originalLabel,
+      normalizedKey: (item?.normalizedKey ?? "").trim() || "custom_section",
+      type,
+      order: out.length + 1, // recalculated, not trusted from the caller
+      confidence: typeof item?.confidence === "number" ? item.confidence : 0.5,
+      ...(item?.detectionReason ? { detectionReason: item.detectionReason } : {}),
+    });
+  }
+  return out;
+}
+
+export function sanitizeDetectedSections(input: DetectedSections): DetectedSections {
+  return {
+    contentSections: sanitizeDetectedSectionList(input?.contentSections ?? [], "section"),
+    metadataFields: sanitizeDetectedSectionList(input?.metadataFields ?? [], "metadata"),
+    instructionTexts: sanitizeDetectedSectionList(input?.instructionTexts ?? [], "instruction"),
+    confirmed: !!input?.confirmed,
+    version: typeof input?.version === "number" ? input.version : 1,
+  };
+}
+
+// Rename/remove/add/confirm all funnel through here — a direct client-side
+// update to detected_sections (RLS already scopes writes to the owning
+// user_id, same as renameCustomTemplate above), no server round-trip needed
+// for this phase. Always sanitizes before saving so malformed edits never
+// reach the database.
+export async function updateDetectedSections(
+  id: string,
+  userId: string,
+  sections: DetectedSections
+): Promise<DetectedSections> {
+  const sanitized = sanitizeDetectedSections(sections);
+  const { error } = await supabase
+    .from("custom_templates")
+    .update({ detected_sections: sanitized })
+    .eq("id", id)
+    .eq("user_id", userId);
+  if (error) throw error;
+  return sanitized;
 }
 
 // Deletion removes the Storage object too, which requires the service-role

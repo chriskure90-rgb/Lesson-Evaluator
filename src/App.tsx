@@ -15,7 +15,10 @@ import {
   renameCustomTemplate,
   deleteCustomTemplate,
   exportCustomTemplateLessonDocx,
+  updateDetectedSections,
   type CustomTemplate,
+  type DetectedSections,
+  type DetectedSectionItem,
 } from "./lib/custom-templates";
 import {
   fetchTeachingStrategies,
@@ -3032,6 +3035,213 @@ function gradeDisplay(gradeLevel: string): string {
   return `Grade ${gradeLevel}`; // legacy individual grade fallback
 }
 
+/* ── Detected Sections review (Phase 1 section recognition) ───────────────────
+   Read-only display of contentSections/metadataFields/instructionTexts is
+   NOT the goal here — this is purely additive review/edit UI over
+   detected_sections (see detectTemplateSections in api/custom-templates.js).
+   Renders nothing when a template has no detected sections at all (older
+   rows registered before this feature existed, or the migration hasn't been
+   run yet — detected_sections defaults to all-empty in that case, handled
+   by normalizeDetectedSections in lib/custom-templates.ts).
+
+   Rename/remove/add/confirm all go straight through updateDetectedSections
+   (a direct client-side Supabase update, RLS-scoped to the owning user —
+   no server round-trip for this phase, per the requested scope). Renames
+   save on blur rather than per keystroke; remove/add/confirm save
+   immediately since they're discrete one-off actions.
+────────────────────────────────────────────────────────────────────────────── */
+type DetectedSectionListKey = "contentSections" | "metadataFields" | "instructionTexts";
+
+function DetectedSectionGroup({
+  label,
+  items,
+  onLabelChange,
+  onBlurSave,
+  onRemove,
+}: {
+  label: string;
+  items: DetectedSectionItem[];
+  onLabelChange: (id: string, label: string) => void;
+  onBlurSave: () => void;
+  onRemove: (id: string) => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <p style={{ fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.03em", color: "var(--muted-fg)", margin: "0 0 6px" }}>
+        {label}
+      </p>
+      {items.map((item) => (
+        <div key={item.id} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+          <input
+            className="input"
+            value={item.originalLabel}
+            onChange={(e) => onLabelChange(item.id, e.target.value)}
+            onBlur={onBlurSave}
+            style={{ flex: 1, fontSize: 13, padding: "4px 8px" }}
+          />
+          {item.normalizedKey === "custom_section" && (
+            <span className="lib-badge badge-needs" style={{ fontSize: 10.5 }}>custom</span>
+          )}
+          <button
+            type="button"
+            className="btn-outline-sm"
+            style={{ padding: "2px 8px" }}
+            onClick={() => onRemove(item.id)}
+            aria-label={`Remove ${item.originalLabel}`}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DetectedSectionsPanel({
+  template,
+  userId,
+  onTemplateUpdated,
+}: {
+  template: CustomTemplate;
+  userId: string;
+  onTemplateUpdated: (updated: CustomTemplate) => void;
+}) {
+  // detected_sections is guaranteed a well-formed object by
+  // normalizeCustomTemplateRow (lib/custom-templates.ts) by the time it
+  // reaches any component — but defensively re-checking here costs nothing
+  // and matches the Array.isArray guard pattern CustomTemplateLessonView
+  // needed after a real white-screen crash earlier from trusting a
+  // similar "guaranteed by the type" field.
+  const raw = template.detected_sections;
+  const sections: DetectedSections = {
+    contentSections: Array.isArray(raw?.contentSections) ? raw.contentSections : [],
+    metadataFields: Array.isArray(raw?.metadataFields) ? raw.metadataFields : [],
+    instructionTexts: Array.isArray(raw?.instructionTexts) ? raw.instructionTexts : [],
+    confirmed: !!raw?.confirmed,
+    version: typeof raw?.version === "number" ? raw.version : 1,
+  };
+  const hasAny =
+    sections.contentSections.length > 0 || sections.metadataFields.length > 0 || sections.instructionTexts.length > 0;
+
+  const [draft, setDraft] = useState<DetectedSections>(sections);
+  const [newSectionLabel, setNewSectionLabel] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Keep the local draft in sync if a different template's data flows in
+  // (e.g. after this same panel saves and the parent re-renders with fresh data).
+  useEffect(() => { setDraft(sections); }, [template.id, sections]);
+
+  if (!hasAny) return null;
+
+  async function persist(next: DetectedSections) {
+    setSaving(true);
+    setError(null);
+    try {
+      const saved = await updateDetectedSections(template.id, userId, next);
+      setDraft(saved);
+      onTemplateUpdated({ ...template, detected_sections: saved });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save detected sections.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function updateLabel(listKey: DetectedSectionListKey, id: string, label: string) {
+    setDraft((prev) => ({
+      ...prev,
+      [listKey]: prev[listKey].map((item) => (item.id === id ? { ...item, originalLabel: label } : item)),
+    }));
+  }
+
+  function removeItem(listKey: DetectedSectionListKey, id: string) {
+    const next = { ...draft, [listKey]: draft[listKey].filter((item) => item.id !== id) };
+    setDraft(next);
+    void persist(next);
+  }
+
+  function addSection() {
+    const label = newSectionLabel.trim();
+    if (!label) return;
+    const next: DetectedSections = {
+      ...draft,
+      contentSections: [
+        ...draft.contentSections,
+        {
+          id: `section_new_${Date.now()}`,
+          originalLabel: label,
+          normalizedKey: "custom_section",
+          type: "content_section",
+          order: draft.contentSections.length + 1,
+          confidence: 0.5,
+          detectionReason: "manually added",
+        },
+      ],
+    };
+    setDraft(next);
+    setNewSectionLabel("");
+    void persist(next);
+  }
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <p style={{ fontWeight: 700, fontSize: 13, margin: 0 }}>Detected Sections</p>
+        {draft.confirmed && <span className="lib-badge badge-ready">Confirmed</span>}
+      </div>
+
+      {error && <p style={{ fontSize: 12.5, color: "var(--destructive)", marginBottom: 8 }}>{error}</p>}
+
+      <DetectedSectionGroup
+        label="Content Sections"
+        items={draft.contentSections}
+        onLabelChange={(id, label) => updateLabel("contentSections", id, label)}
+        onBlurSave={() => void persist(draft)}
+        onRemove={(id) => removeItem("contentSections", id)}
+      />
+      <DetectedSectionGroup
+        label="Metadata Fields"
+        items={draft.metadataFields}
+        onLabelChange={(id, label) => updateLabel("metadataFields", id, label)}
+        onBlurSave={() => void persist(draft)}
+        onRemove={(id) => removeItem("metadataFields", id)}
+      />
+      <DetectedSectionGroup
+        label="Instruction Text"
+        items={draft.instructionTexts}
+        onLabelChange={(id, label) => updateLabel("instructionTexts", id, label)}
+        onBlurSave={() => void persist(draft)}
+        onRemove={(id) => removeItem("instructionTexts", id)}
+      />
+
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <input
+          className="input"
+          placeholder="Add a missing section…"
+          value={newSectionLabel}
+          onChange={(e) => setNewSectionLabel(e.target.value)}
+          style={{ flex: 1, fontSize: 13 }}
+        />
+        <button type="button" className="btn-outline-sm" disabled={saving || !newSectionLabel.trim()} onClick={addSection}>
+          Add
+        </button>
+      </div>
+
+      <button
+        type="button"
+        className="btn-outline-sm"
+        style={{ marginTop: 8 }}
+        disabled={saving}
+        onClick={() => void persist({ ...draft, confirmed: true })}
+      >
+        {saving ? "Saving…" : draft.confirmed ? "Re-confirm Sections" : "Confirm Sections"}
+      </button>
+    </div>
+  );
+}
+
 /* ════════════════════════════════════════════════════════════
    MANAGE TEMPLATES MODAL
    Slide-over panel opened from GeneratorPage's "Manage Templates" button
@@ -3282,6 +3492,14 @@ function ManageTemplatesModal({
                     {t.status === "error" && t.error_message && (
                       <p style={{ fontSize: 12.5, color: "var(--destructive)", marginTop: 6 }}>{t.error_message}</p>
                     )}
+
+                    <DetectedSectionsPanel
+                      template={t}
+                      userId={userId}
+                      onTemplateUpdated={(updated) =>
+                        onTemplatesChange(templates.map((x) => (x.id === updated.id ? updated : x)))
+                      }
+                    />
 
                     {editingId !== t.id && (
                       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
