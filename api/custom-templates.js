@@ -425,15 +425,27 @@ const SIGNAL_LABELS = {
 // pattern match with only a weak signal (0.60) > no match at all, preserved
 // as custom_section (0.50) — matches every unrecognized heading is kept,
 // never silently dropped.
-function classifySectionCandidate(rawLabel, signal) {
+//
+// `trace`, if given an array, gets a human-readable line pushed at every
+// decision point — purely for debug mode (see handleRegister's
+// debugSections handling); it never changes what this function returns, so
+// passing it can't affect real classification behavior, only observability
+// of it.
+function classifySectionCandidate(rawLabel, signal, trace = null) {
+  const log = (msg) => { if (trace) trace.push(msg); };
+
   const trimmed = (rawLabel || "").trim();
-  if (!trimmed) return null;
+  if (!trimmed) {
+    log("discarded: empty/whitespace-only text");
+    return null;
+  }
 
   // Instruction text: an imperative sentence, not a label — checked first
   // since it's the one candidate type that's expected to end in a period
   // (every other branch below rejects sentence-ending text as too long/
   // too sentence-like to be a section label).
   if (/[.?!]$/.test(trimmed) && trimmed.length <= 200 && INSTRUCTION_VERB_PATTERN.test(trimmed)) {
+    log(`matched instruction_text: ends in sentence punctuation, <=200 chars, starts with an imperative verb (${INSTRUCTION_VERB_PATTERN})`);
     return {
       type: "instruction_text",
       normalizedKey: "instruction",
@@ -441,13 +453,21 @@ function classifySectionCandidate(rawLabel, signal) {
       detectionReason: `instructional sentence (${SIGNAL_LABELS[signal] || "text"})`,
     };
   }
+  log("not instruction_text: doesn't end in ./?/! + imperative verb, or is over 200 chars");
 
   const endsInColon = /:\s*$/.test(trimmed);
   const core = trimmed.replace(/:\s*$/, "").trim();
-  if (!core) return null;
+  if (!core) {
+    log("discarded: only a colon, no label text");
+    return null;
+  }
   // Section labels are short and don't end mid-sentence — a colon at the
   // end is the one exception (e.g. "Materials Needed:" is still a label).
-  if (!endsInColon && (core.length > 70 || /[.?!]$/.test(core))) return null;
+  if (!endsInColon && (core.length > 70 || /[.?!]$/.test(core))) {
+    log(`discarded: not colon-terminated and ${core.length > 70 ? `over 70 chars (${core.length})` : "ends in sentence punctuation"} — treated as body text, not a label`);
+    return null;
+  }
+  log(`passed heading-candidacy gate: endsInColon=${endsInColon}, length=${core.length}`);
 
   const normalized = normalizeForMatch(core);
   const isExactText = (variants) => variants.includes(core.toLowerCase());
@@ -455,6 +475,7 @@ function classifySectionCandidate(rawLabel, signal) {
   const metaExact = lookupDictionary(METADATA_FIELD_DICTIONARY, normalized);
   if (metaExact) {
     const exact = isExactText(METADATA_FIELD_DICTIONARY[metaExact]);
+    log(`matched metadata_field dictionary: normalizedKey="${metaExact}", exactText=${exact}`);
     return {
       type: "metadata_field",
       normalizedKey: metaExact,
@@ -462,10 +483,12 @@ function classifySectionCandidate(rawLabel, signal) {
       detectionReason: exact ? "exact dictionary match" : "normalized exact match",
     };
   }
+  log(`no metadata_field dictionary match for normalized text "${normalized}"`);
 
   const contentExact = lookupDictionary(CONTENT_SECTION_DICTIONARY, normalized);
   if (contentExact) {
     const exact = isExactText(CONTENT_SECTION_DICTIONARY[contentExact]);
+    log(`matched content_section dictionary: normalizedKey="${contentExact}", exactText=${exact}`);
     return {
       type: "content_section",
       normalizedKey: contentExact,
@@ -473,6 +496,7 @@ function classifySectionCandidate(rawLabel, signal) {
       detectionReason: exact ? "exact dictionary match" : "normalized exact match",
     };
   }
+  log(`no content_section dictionary match for normalized text "${normalized}"`);
 
   // No exact/normalized dictionary hit — try fuzzy patterns. A match here
   // is a real (if uncertain) concept identification, tiered by how strong
@@ -482,6 +506,7 @@ function classifySectionCandidate(rawLabel, signal) {
   const fuzzyKey = metaFuzzy || contentFuzzy;
   if (fuzzyKey) {
     const strong = STRONG_SIGNALS.has(signal) || endsInColon;
+    log(`matched fuzzy pattern: normalizedKey="${fuzzyKey}" (${metaFuzzy ? "metadata" : "content"}), signal="${signal}", strongSignal=${strong}`);
     return {
       type: metaFuzzy ? "metadata_field" : "content_section",
       normalizedKey: fuzzyKey,
@@ -489,6 +514,7 @@ function classifySectionCandidate(rawLabel, signal) {
       detectionReason: strong ? SIGNAL_LABELS[endsInColon ? "colon" : signal] : "weak heading candidate (text length and placement)",
     };
   }
+  log("no fuzzy pattern match either — falling back to unrecognized custom_section");
 
   // Nothing recognized it at all — preserve it rather than drop it.
   return {
@@ -624,21 +650,58 @@ function extractDocxSectionCandidates(html) {
 // stable ids/order. Never throws on a per-candidate basis — a candidate that
 // doesn't classify to anything is just skipped (classifySectionCandidate
 // returning null), not an error.
-function buildDetectedSections(candidates) {
+// `debug`, when true, returns a second value: one entry per RAW candidate
+// (before classification/dedup), recording exactly what happened to it —
+// its extracted text/signal, the step-by-step reasoning trace from
+// classifySectionCandidate, the final outcome (which bucket it landed in,
+// or "discarded"/"duplicate" and why), and its confidence/detectionReason
+// when classified. This is pure observability — the classification/dedup
+// logic itself is unchanged whether debug is on or off.
+function buildDetectedSections(candidates, debug = false) {
   const contentSections = [];
   const metadataFields = [];
   const instructionTexts = [];
   const seen = new Set();
+  const debugLog = debug ? [] : null;
 
-  for (const candidate of candidates) {
-    const result = classifySectionCandidate(candidate.text, candidate.signal);
-    if (!result) continue;
+  candidates.forEach((candidate, index) => {
+    const trace = debug ? [] : null;
+    const result = classifySectionCandidate(candidate.text, candidate.signal, trace);
+
+    if (!result) {
+      if (debugLog) {
+        debugLog.push({
+          index,
+          text: candidate.text,
+          signal: candidate.signal,
+          outcome: "discarded",
+          discardReason: trace[trace.length - 1] || "discarded (no reason recorded)",
+          trace,
+        });
+      }
+      return;
+    }
 
     const cleanLabel = result.type === "instruction_text"
       ? candidate.text.trim()
       : candidate.text.replace(/:\s*$/, "").trim();
     const dedupeKey = `${result.type}:${cleanLabel.toLowerCase()}`;
-    if (seen.has(dedupeKey)) continue;
+    if (seen.has(dedupeKey)) {
+      if (debugLog) {
+        debugLog.push({
+          index,
+          text: candidate.text,
+          signal: candidate.signal,
+          outcome: "duplicate",
+          discardReason: `duplicate of an earlier ${result.type} candidate with the same text ("${cleanLabel}")`,
+          normalizedKey: result.normalizedKey,
+          confidence: result.confidence,
+          detectionReason: result.detectionReason,
+          trace,
+        });
+      }
+      return;
+    }
     seen.add(dedupeKey);
 
     const target = result.type === "metadata_field" ? metadataFields
@@ -657,19 +720,45 @@ function buildDetectedSections(candidates) {
       confidence: result.confidence,
       detectionReason: result.detectionReason,
     });
-  }
 
-  return { contentSections, metadataFields, instructionTexts, confirmed: false, version: 1 };
+    if (debugLog) {
+      debugLog.push({
+        index,
+        text: candidate.text,
+        signal: candidate.signal,
+        outcome: result.type,
+        normalizedKey: result.normalizedKey,
+        confidence: result.confidence,
+        detectionReason: result.detectionReason,
+        trace,
+      });
+    }
+  });
+
+  return { detected: { contentSections, metadataFields, instructionTexts, confirmed: false, version: 1 }, debugLog };
 }
 
 // Top-level entry point called from handleRegister. isPdf selects which
 // candidate extractor runs; both converge on the same classifier/orchestrator.
-async function detectTemplateSections({ isPdf, buffer, pdfText }) {
+async function detectTemplateSections({ isPdf, buffer, pdfText, debug = false }) {
   const candidates = isPdf
     ? extractPdfSectionCandidates(pdfText)
     : extractDocxSectionCandidates(await extractDocxHtml(buffer));
 
-  const detected = buildDetectedSections(candidates);
+  const { detected, debugLog } = buildDetectedSections(candidates, debug);
+
+  if (debugLog) {
+    console.log(`[custom-templates:register] SECTION DEBUG — ${candidates.length} raw candidates:`);
+    for (const entry of debugLog) {
+      console.log(
+        `[custom-templates:register] SECTION DEBUG #${entry.index} "${entry.text}" (signal=${entry.signal}) -> ${entry.outcome}` +
+        (entry.outcome === "discarded" || entry.outcome === "duplicate"
+          ? ` — ${entry.discardReason}`
+          : ` — normalizedKey=${entry.normalizedKey}, confidence=${entry.confidence}, reason="${entry.detectionReason}"`)
+      );
+      console.log(`[custom-templates:register] SECTION DEBUG #${entry.index} trace:`, entry.trace);
+    }
+  }
 
   console.log("[custom-templates:register] section detection —", {
     candidateCount: candidates.length,
@@ -679,7 +768,7 @@ async function detectTemplateSections({ isPdf, buffer, pdfText }) {
     unknownSectionCount: detected.contentSections.filter((s) => s.normalizedKey === "custom_section").length,
   });
 
-  return detected;
+  return { detected, debugLog };
 }
 
 // Builds a new .docx (via the `docx` library) reproducing the detected
@@ -914,9 +1003,18 @@ async function handleUploadInit(req, res) {
 // is never deleted here — it's the permanent export template, not a
 // processing relay.
 async function handleRegister(req, res) {
-  const { path, filename, name, userId } = req.body ?? {};
+  const { path, filename, name, userId, debugSections } = req.body ?? {};
   if (!path)   return res.status(400).json({ error: "Missing upload path." });
   if (!userId) return res.status(400).json({ error: "Missing userId." });
+
+  // Debug mode for the section-recognition pipeline specifically (separate
+  // from IS_DEV, which gates unrelated error-detail exposure elsewhere in
+  // this file) — opt-in via the request body so it can be turned on for one
+  // specific upload without needing a non-production deploy. Logs every raw
+  // candidate, why it was discarded (if it was), and its final
+  // classification/confidence, and echoes the same trace back in the
+  // response so it's visible without needing server log access.
+  const sectionDebugEnabled = debugSections === true;
 
   const templateName = (name || filename || "Untitled Template").trim();
   const isPdf = (filename || path || "").toLowerCase().endsWith(".pdf");
@@ -1078,10 +1176,13 @@ async function handleRegister(req, res) {
   let detectedSections = DEFAULT_DETECTED_SECTIONS;
   let sectionDetectionStatus = "ready";
   let sectionDetectionError = null;
+  let sectionDebugLog = null;
   try {
     let pdfText = null;
     if (isPdf) pdfText = await extractPdfText(originalBuffer);
-    detectedSections = await detectTemplateSections({ isPdf, buffer: originalBuffer, pdfText });
+    const result = await detectTemplateSections({ isPdf, buffer: originalBuffer, pdfText, debug: sectionDebugEnabled });
+    detectedSections = result.detected;
+    sectionDebugLog = result.debugLog;
   } catch (err) {
     console.error("[custom-templates:register] section detection failed — name:", err?.name);
     console.error("[custom-templates:register] section detection failed — message:", err?.message);
@@ -1140,7 +1241,10 @@ async function handleRegister(req, res) {
     return res.status(500).json({ error: "Could not save the template." });
   }
 
-  return res.status(200).json(saved);
+  // Debug trace is never persisted (not part of insertPayload/detected_
+  // sections) — only echoed back in this one response, so it's visible
+  // without needing server log access, and only when explicitly requested.
+  return res.status(200).json(sectionDebugEnabled ? { ...saved, sectionDetectionDebug: sectionDebugLog } : saved);
 }
 
 // ── action: "delete" ───────────────────────────────────────────────────────────
