@@ -2169,6 +2169,11 @@ function GeneratorPage({
           templates={customTemplates}
           onTemplatesChange={handleCustomTemplatesChange}
           onClose={() => setShowTemplatesModal(false)}
+          onFinishTemplateSetup={(templateId) => {
+            setSelectedCustomTemplateId(templateId);
+            setLessonFormat("custom");
+            setShowTemplatesModal(false);
+          }}
         />
       )}
 
@@ -3236,10 +3241,16 @@ function DetectedSectionsPanel({
   template,
   userId,
   onTemplateUpdated,
+  onFinishSetup,
 }: {
   template: CustomTemplate;
   userId: string;
   onTemplateUpdated: (updated: CustomTemplate) => void;
+  // Called after the current edits are saved with confirmed: true — the
+  // parent (ManageTemplatesModal -> GeneratorPage) owns what "finishing
+  // setup" means beyond persistence: selecting this template and closing
+  // the modal so the teacher lands back on the Generator form.
+  onFinishSetup: () => void;
 }) {
   // detected_sections is guaranteed a well-formed object by
   // normalizeCustomTemplateRow (lib/custom-templates.ts) by the time it
@@ -3269,18 +3280,30 @@ function DetectedSectionsPanel({
 
   if (!hasAny) return null;
 
-  async function persist(next: DetectedSections) {
+  async function persist(next: DetectedSections): Promise<DetectedSections | null> {
     setSaving(true);
     setError(null);
     try {
       const saved = await updateDetectedSections(template.id, userId, next);
       setDraft(saved);
       onTemplateUpdated({ ...template, detected_sections: saved });
+      return saved;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save detected sections.");
+      return null;
     } finally {
       setSaving(false);
     }
+  }
+
+  // Saves whatever is currently in `draft` (including any edit still only
+  // committed to state, not yet blurred) with confirmed: true, then only
+  // hands off to the parent once that save has actually succeeded — a
+  // failed save leaves the modal open with the error shown instead of
+  // silently dropping the teacher back on the Generator form.
+  async function handleFinishSetup() {
+    const saved = await persist({ ...draft, confirmed: true });
+    if (saved) onFinishSetup();
   }
 
   function updateLabel(listKey: DetectedSectionListKey, id: string, label: string) {
@@ -3363,15 +3386,32 @@ function DetectedSectionsPanel({
         </button>
       </div>
 
-      <button
-        type="button"
-        className="btn-outline-sm"
-        style={{ marginTop: 8 }}
-        disabled={saving}
-        onClick={() => void persist({ ...draft, confirmed: true })}
+      {/* Sticky within this template's card as the modal's template list
+          scrolls (position: sticky is bounded by this div's own containing
+          block, i.e. the lib-card above) — stays reachable without having
+          to scroll past every detected section first. */}
+      <div
+        style={{
+          position: "sticky",
+          bottom: 0,
+          display: "flex",
+          justifyContent: "flex-end",
+          marginTop: 12,
+          paddingTop: 10,
+          background: "var(--card)",
+          borderTop: "1px solid var(--border)",
+        }}
       >
-        {saving ? "Saving…" : draft.confirmed ? "Re-confirm Sections" : "Confirm Sections"}
-      </button>
+        <button
+          type="button"
+          className="btn-primary"
+          style={{ width: "auto", padding: "0 20px", height: 38, fontSize: 13 }}
+          disabled={saving}
+          onClick={() => void handleFinishSetup()}
+        >
+          {saving ? "Saving…" : "Finish Template Setup"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -3391,11 +3431,17 @@ function ManageTemplatesModal({
   templates,
   onTemplatesChange,
   onClose,
+  onFinishTemplateSetup,
 }: {
   userId: string;
   templates: CustomTemplate[];
   onTemplatesChange: (templates: CustomTemplate[]) => void;
   onClose: () => void;
+  // "Finish Template Setup" (see DetectedSectionsPanel) hands off to the
+  // caller (GeneratorPage) once a template's sections are saved+confirmed —
+  // GeneratorPage selects that template and closes this modal itself, since
+  // it already owns selectedCustomTemplateId/lessonFormat/showTemplatesModal.
+  onFinishTemplateSetup: (templateId: string) => void;
 }) {
   const [templateName, setTemplateName] = useState("");
   const [pendingFile, setPendingFile]   = useState<File | null>(null);
@@ -3633,6 +3679,7 @@ function ManageTemplatesModal({
                       onTemplateUpdated={(updated) =>
                         onTemplatesChange(templates.map((x) => (x.id === updated.id ? updated : x)))
                       }
+                      onFinishSetup={() => onFinishTemplateSetup(t.id)}
                     />
 
                     {editingId !== t.id && (
