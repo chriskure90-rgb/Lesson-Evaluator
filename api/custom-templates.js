@@ -318,6 +318,13 @@ export const DEFAULT_DETECTED_SECTIONS = {
   version: 1,
 };
 
+// TEMPORARY — lets a caller confirm which deployed build of this file
+// actually handled a given register request, without needing Vercel log
+// access (a recurring friction point). Bump the string whenever the
+// section-detection logic changes; remove entirely once the row-level
+// extraction fix is confirmed live and working.
+const SECTION_DETECTION_ENGINE_VERSION = "17ce442-row-level-v1";
+
 // ── Dictionaries ─────────────────────────────────────────────────────────────
 // normalizedKey -> label variants recognized as an exact/near-exact match.
 // Separate from PLACEHOLDER_CATALOG/KNOWN_PLACEHOLDER_TOKENS on purpose —
@@ -637,10 +644,16 @@ function classifyDocxBlockSignal(text, innerHtml, boldSignal) {
 // not a full HTML parser, so it assumes mammoth's typical flat output
 // (headings/paragraphs/tables not nested inside one another at the top
 // level) — an unusually complex DOCX structure could confuse it.
-function extractDocxSectionCandidates(html) {
+// `extractionTrace`, when given an object with a `rows` array, gets one
+// entry pushed per table row (tableIndex/rowIndex + every cell's
+// index/text/signal/isValueLike/retained) — purely additive observability
+// for verifying the row-level label/value logic against a real document's
+// actual HTML structure; doesn't change what candidates are produced.
+function extractDocxSectionCandidates(html, extractionTrace = null) {
   const candidates = [];
   const blockRegex = /<h([1-6])>([\s\S]*?)<\/h\1>|<p>([\s\S]*?)<\/p>|<table>([\s\S]*?)<\/table>/g;
   let match;
+  let tableIndex = -1;
   while ((match = blockRegex.exec(html)) !== null) {
     if (match[1] !== undefined) {
       const text = stripHtmlTags(match[2]);
@@ -649,19 +662,29 @@ function extractDocxSectionCandidates(html) {
       const text = stripHtmlTags(match[3]);
       if (text) candidates.push({ text, signal: classifyDocxBlockSignal(text, match[3], "bold-text") });
     } else if (match[4] !== undefined) {
+      tableIndex++;
       const rowRegex = /<tr>([\s\S]*?)<\/tr>/g;
       let rowMatch;
+      let rowIndex = -1;
       while ((rowMatch = rowRegex.exec(match[4])) !== null) {
+        rowIndex++;
         const cellRegex = /<t[dh]>([\s\S]*?)<\/t[dh]>/g;
         let cellMatch;
+        let cellIndex = -1;
         // Every non-empty cell in the row is collected first (position
         // never excludes a cell on its own — see requirement 2) so the row
         // can be judged as a whole before deciding what to keep.
         const rowCells = [];
+        const traceCells = extractionTrace ? [] : null;
         while ((cellMatch = cellRegex.exec(rowMatch[1])) !== null) {
+          cellIndex++;
           const text = stripHtmlTags(cellMatch[1]);
-          if (!text) continue;
+          if (!text) {
+            if (traceCells) traceCells.push({ index: cellIndex, text: "", signal: null, isValueLike: false, retained: false, note: "empty cell — skipped" });
+            continue;
+          }
           rowCells.push({
+            index: cellIndex,
             text,
             signal: classifyDocxBlockSignal(text, cellMatch[1], "bold-table-cell"),
             isValue: isValueLikeText(text),
@@ -675,8 +698,16 @@ function extractDocxSectionCandidates(html) {
         // a label-only row, so every cell in it is kept.
         const rowHasAnyValue = rowCells.some((c) => c.isValue);
         for (const c of rowCells) {
-          if (rowHasAnyValue && c.isValue) continue; // skip only the confirmed-value cells; ambiguous/label cells in the same row are still kept
-          candidates.push({ text: c.text, signal: c.signal });
+          const retained = !(rowHasAnyValue && c.isValue); // skip only the confirmed-value cells; ambiguous/label cells in the same row are still kept
+          if (retained) candidates.push({ text: c.text, signal: c.signal });
+          if (traceCells) traceCells.push({ index: c.index, text: c.text, signal: c.signal, isValueLike: c.isValue, retained });
+        }
+        if (extractionTrace) {
+          // Empty-cell entries were pushed during the scan; non-empty ones
+          // after (once rowHasAnyValue was known) — re-sort by index so the
+          // trace reflects true document cell order either way.
+          traceCells.sort((a, b) => a.index - b.index);
+          extractionTrace.rows.push({ tableIndex, rowIndex, rowHasAnyValue, cells: traceCells });
         }
       }
     }
@@ -779,10 +810,47 @@ function buildDetectedSections(candidates, debug = false) {
 
 // Top-level entry point called from handleRegister. isPdf selects which
 // candidate extractor runs; both converge on the same classifier/orchestrator.
+// Truncation cap for the raw mammoth HTML dump in extractionDebug — this is
+// meant for eyeballing structure (are there real <table>/<tr>/<td> tags at
+// all, roughly how many), not for reproducing the whole document; capped
+// to keep the response/log size sane for a large template.
+const EXTRACTION_HTML_DEBUG_LIMIT = 20000;
+
 async function detectTemplateSections({ isPdf, buffer, pdfText, debug = false }) {
-  const candidates = isPdf
-    ? extractPdfSectionCandidates(pdfText)
-    : extractDocxSectionCandidates(await extractDocxHtml(buffer));
+  let candidates;
+  let extractionDebug = null;
+
+  if (isPdf) {
+    candidates = extractPdfSectionCandidates(pdfText);
+  } else {
+    const html = await extractDocxHtml(buffer);
+    const extractionTrace = debug ? { rows: [] } : null;
+    candidates = extractDocxSectionCandidates(html, extractionTrace);
+    if (debug) {
+      extractionDebug = {
+        engineVersion: SECTION_DETECTION_ENGINE_VERSION,
+        htmlLength: html.length,
+        html: html.length > EXTRACTION_HTML_DEBUG_LIMIT
+          ? `${html.slice(0, EXTRACTION_HTML_DEBUG_LIMIT)}\n...[truncated, full length ${html.length} chars]`
+          : html,
+        tableRows: extractionTrace.rows,
+        rawCandidates: candidates,
+      };
+      console.log(`[custom-templates:register] EXTRACTION DEBUG — engineVersion=${SECTION_DETECTION_ENGINE_VERSION}, mammoth HTML length=${html.length}`);
+      console.log("[custom-templates:register] EXTRACTION DEBUG — full HTML (may be truncated):", extractionDebug.html);
+      console.log(`[custom-templates:register] EXTRACTION DEBUG — ${extractionTrace.rows.length} table rows detected:`);
+      for (const row of extractionTrace.rows) {
+        console.log(`[custom-templates:register] EXTRACTION DEBUG table=${row.tableIndex} row=${row.rowIndex} rowHasAnyValue=${row.rowHasAnyValue}`);
+        for (const cell of row.cells) {
+          console.log(
+            `[custom-templates:register] EXTRACTION DEBUG   cell[${cell.index}] "${cell.text}" signal=${cell.signal} isValueLike=${cell.isValueLike} retained=${cell.retained}` +
+            (cell.note ? ` (${cell.note})` : "")
+          );
+        }
+      }
+      console.log("[custom-templates:register] EXTRACTION DEBUG — final raw candidate list:", candidates);
+    }
+  }
 
   const { detected, debugLog } = buildDetectedSections(candidates, debug);
 
@@ -800,6 +868,7 @@ async function detectTemplateSections({ isPdf, buffer, pdfText, debug = false })
   }
 
   console.log("[custom-templates:register] section detection —", {
+    engineVersion: SECTION_DETECTION_ENGINE_VERSION,
     candidateCount: candidates.length,
     contentSectionCount: detected.contentSections.length,
     metadataFieldCount: detected.metadataFields.length,
@@ -807,7 +876,7 @@ async function detectTemplateSections({ isPdf, buffer, pdfText, debug = false })
     unknownSectionCount: detected.contentSections.filter((s) => s.normalizedKey === "custom_section").length,
   });
 
-  return { detected, debugLog };
+  return { detected, debugLog, extractionDebug };
 }
 
 // Builds a new .docx (via the `docx` library) reproducing the detected
@@ -1216,12 +1285,14 @@ async function handleRegister(req, res) {
   let sectionDetectionStatus = "ready";
   let sectionDetectionError = null;
   let sectionDebugLog = null;
+  let sectionExtractionDebug = null;
   try {
     let pdfText = null;
     if (isPdf) pdfText = await extractPdfText(originalBuffer);
     const result = await detectTemplateSections({ isPdf, buffer: originalBuffer, pdfText, debug: sectionDebugEnabled });
     detectedSections = result.detected;
     sectionDebugLog = result.debugLog;
+    sectionExtractionDebug = result.extractionDebug;
   } catch (err) {
     console.error("[custom-templates:register] section detection failed — name:", err?.name);
     console.error("[custom-templates:register] section detection failed — message:", err?.message);
@@ -1280,10 +1351,17 @@ async function handleRegister(req, res) {
     return res.status(500).json({ error: "Could not save the template." });
   }
 
-  // Debug trace is never persisted (not part of insertPayload/detected_
-  // sections) — only echoed back in this one response, so it's visible
-  // without needing server log access, and only when explicitly requested.
-  return res.status(200).json(sectionDebugEnabled ? { ...saved, sectionDetectionDebug: sectionDebugLog } : saved);
+  // sectionDetectionEngineVersion is always included (not gated on
+  // debugSections) specifically so it's possible to tell, from the
+  // response alone, whether the deployment that handled this request
+  // actually contains the latest section-detection code — no server log
+  // access needed. The two debug payloads below stay debugSections-gated
+  // and are never persisted (not part of insertPayload/detected_sections).
+  return res.status(200).json({
+    ...saved,
+    sectionDetectionEngineVersion: SECTION_DETECTION_ENGINE_VERSION,
+    ...(sectionDebugEnabled ? { sectionDetectionDebug: sectionDebugLog, sectionExtractionDebug } : {}),
+  });
 }
 
 // ── action: "delete" ───────────────────────────────────────────────────────────

@@ -129,13 +129,45 @@ export async function uploadCustomTemplateFile(file: File, userId: string): Prom
 // and the two marked lines below it in registerCustomTemplate.
 const TEMP_DEBUG_SECTIONS = true;
 
-function logSectionDetectionDebug(entries: unknown[] | undefined | null) {
+function logSectionDetectionDebug(
+  engineVersion: string | undefined,
+  entries: unknown[] | undefined | null,
+  extraction: Record<string, unknown> | undefined | null
+) {
   if (!TEMP_DEBUG_SECTIONS) return;
+
+  console.log(
+    `%c[TEMP_DEBUG_SECTIONS] sectionDetectionEngineVersion = "${engineVersion ?? "(missing — this response came from a build without this field at all)"}"`,
+    "font-weight:bold;font-size:13px"
+  );
+
+  if (extraction) {
+    console.group("%c[TEMP_DEBUG_SECTIONS] sectionExtractionDebug (mammoth HTML + table structure)", "font-weight:bold");
+    console.log(`html length: ${extraction.htmlLength} chars (engineVersion in this payload: ${extraction.engineVersion})`);
+    console.log("full HTML (string — may be truncated, see htmlLength for the real total):", extraction.html);
+    const rows = (extraction.tableRows as Record<string, unknown>[] | undefined) ?? [];
+    console.log(`${rows.length} table rows detected:`);
+    for (const row of rows) {
+      console.group(`table=${row.tableIndex} row=${row.rowIndex} rowHasAnyValue=${row.rowHasAnyValue}`);
+      for (const cell of (row.cells as Record<string, unknown>[] | undefined) ?? []) {
+        console.log(
+          `%ccell[${cell.index}] "${cell.text}" signal=${cell.signal} isValueLike=${cell.isValueLike} retained=${cell.retained}${cell.note ? ` (${cell.note})` : ""}`,
+          cell.retained ? "color:#2a7" : "color:#b33"
+        );
+      }
+      console.groupEnd();
+    }
+    console.log("final raw candidate list (post-extraction, pre-classification):", extraction.rawCandidates);
+    console.groupEnd();
+  } else {
+    console.warn("[TEMP_DEBUG_SECTIONS] no sectionExtractionDebug in the response (debugSections may not have reached the server, or this was a PDF upload — extraction debug is DOCX-only).");
+  }
+
   if (!Array.isArray(entries)) {
     console.warn("[TEMP_DEBUG_SECTIONS] no sectionDetectionDebug in the response (debugSections may not have reached the server).");
     return;
   }
-  console.group(`%c[TEMP_DEBUG_SECTIONS] sectionDetectionDebug — ${entries.length} raw candidates`, "font-weight:bold");
+  console.group(`%c[TEMP_DEBUG_SECTIONS] sectionDetectionDebug — ${entries.length} raw candidates (post-classification)`, "font-weight:bold");
   console.log("Full array (expand to inspect every candidate):", entries);
   for (const entry of entries as Record<string, unknown>[]) {
     const tag = `#${entry.index} "${entry.text}" (signal=${entry.signal})`;
@@ -166,13 +198,20 @@ export async function registerCustomTemplate(params: {
     body: JSON.stringify({ action: "register", ...params, debugSections: TEMP_DEBUG_SECTIONS }), // TEMP DEBUG — remove debugSections when done
   });
   const isPdf = params.filename.toLowerCase().endsWith(".pdf");
-  const result = await parseCustomTemplatesResponse<CustomTemplate & { sectionDetectionDebug?: unknown[] }>(
+  const result = await parseCustomTemplatesResponse<
+    CustomTemplate & {
+      sectionDetectionEngineVersion?: string;
+      sectionDetectionDebug?: unknown[];
+      sectionExtractionDebug?: Record<string, unknown>;
+    }
+  >(
     res,
     isPdf
       ? "PDF processing failed. Please try another PDF or upload a DOCX file."
       : "Could not register this template. Please try again."
   );
-  logSectionDetectionDebug(result.sectionDetectionDebug); // TEMP DEBUG — remove when done
+  // TEMP DEBUG — remove this call when done
+  logSectionDetectionDebug(result.sectionDetectionEngineVersion, result.sectionDetectionDebug, result.sectionExtractionDebug);
   return result;
 }
 
