@@ -501,6 +501,80 @@ function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, d
   ].join("\n");
 }
 
+// Phase 2: dynamic generation for a teacher's own uploaded template, keyed by
+// its detected sections (see detectTemplateSections in api/custom-templates.js)
+// instead of the fixed Template1Lesson/Lesson schemas. contentSections is the
+// already-sorted (by .order) detected_sections.contentSections list for the
+// selected template — metadataFields and instructionTexts are never passed in
+// here, so the model is never asked to generate them. The output is a flat
+// JSON object keyed by the exact originalLabel strings (not normalizedKey),
+// so a "custom_section" heading is generated using its own title as guidance,
+// same as every other section.
+function buildDynamicLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies, contentSections }) {
+  const standardsLine =
+    Array.isArray(frameworks) && frameworks.length > 0
+      ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
+      : code || "Not specified";
+
+  const sectionLines = contentSections.map((s) => `- ${JSON.stringify(s.originalLabel)}`);
+  const outputKeyLines = contentSections
+    .map((s) => `  ${JSON.stringify(s.originalLabel)}: "string"`)
+    .join(",\n");
+
+  return [
+    "ROLE:",
+    "You are an experienced K-12 instructional designer filling in content for a teacher's own uploaded lesson plan template. The template defines its own sections (given below) instead of a standard fixed format — use exactly those sections, in exactly the order given.",
+    "",
+    "CONTEXT:",
+    "Teachers will provide key information about the class, subject area, learning standards, lesson topic, lesson goal, and duration. Use this information to create a clear, practical, standards-aligned lesson plan that can be realistically delivered in a classroom.",
+    "",
+    "INPUTS:",
+    "Teachers will provide:",
+    `- Grade level: ${grade}`,
+    `- Subject: ${subject || "Not specified"}`,
+    `- Standards framework: ${standardsLine}`,
+    `- Lesson topic: ${topic || "(not specified)"}`,
+    `- Lesson goal: ${goal || "(not specified)"}`,
+    `- Duration: ${duration} minutes`,
+    "",
+    "RELEVANT STANDARDS:",
+    standardDescription,
+    "",
+    buildTechnologyIntegrationBlock(technologyUsage, studentTechnology),
+    "",
+    buildInstructionalApproachBlock(instructionalApproach),
+    "",
+    buildTeachingStrategiesBlock(teachingStrategies),
+    "",
+    buildMarzanoStrategiesBlock(marzanoStrategies),
+    "",
+    "TEMPLATE SECTIONS:",
+    "The uploaded template contains exactly these sections, in this order. Generate appropriate content for every one of them:",
+    ...sectionLines,
+    "If a section's title does not correspond to a standard lesson-plan part (an unusual or template-specific heading), use the section title itself as your only guidance for what content belongs there.",
+    "",
+    "CONSTRAINTS:",
+    `- Combined, the sections should describe a lesson that realistically fits within ${duration} minutes.`,
+    "- Use vocabulary appropriate for the grade level.",
+    "- Keep each section concise and readable.",
+    "- All content must align with the lesson topic and lesson goal.",
+    `- All content must be appropriate for the subject area: ${subject || "general"}.`,
+    "- Ensure the lesson aligns with the provided standard when available.",
+    "- Do not invent unrelated topics.",
+    "- Generate content that is practical for teachers to use immediately.",
+    "- Return valid JSON only.",
+    "- Do not include markdown formatting.",
+    "- Do not include explanations outside the JSON.",
+    "- The JSON must have exactly one key per template section listed above, using the EXACT section title as the key, character-for-character (including punctuation, parentheses, and capitalization).",
+    "- Do not add, remove, rename, merge, or reorder keys. Do not include any other keys (e.g. Teacher, Grade, School, Date, or any metadata field) — those are filled in separately and are never part of this JSON.",
+    "",
+    "OUTPUT FORMAT:",
+    "{",
+    outputKeyLines,
+    "}",
+  ].join("\n");
+}
+
 // ── Route handler ────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
   console.log("=== STANDARDS DIAGNOSTICS ENABLED ===");
@@ -510,7 +584,15 @@ export default async function handler(req, res) {
 
     // Unrecognized/missing values fall back to "standard" so existing
     // clients (and the Standard Lesson Plan option) behave exactly as before.
-    const normalizedLessonFormat = lessonFormat === "template1" ? "template1" : "standard";
+    // "dynamic" (Phase 2) is a third, independent schema — see
+    // buildDynamicLessonPrompt — driven entirely by the selected template's
+    // detected_sections rather than either fixed schema below.
+    const normalizedLessonFormat =
+      lessonFormat === "template1" ? "template1" : lessonFormat === "dynamic" ? "dynamic" : "standard";
+
+    if (normalizedLessonFormat === "dynamic" && !customTemplateId) {
+      return res.status(400).json({ error: "Dynamic generation requires a selected custom template." });
+    }
 
     // customTemplateId/customTemplateName are still just metadata for the
     // FIXED Template1Lesson content — a custom template is a different DOCX
@@ -526,12 +608,22 @@ export default async function handler(req, res) {
     // present, to confirm the id the client sent actually resolves to a
     // real, ready template rather than a stale/deleted one.
     let customTemplateStructuredFields = [];
+    let customTemplateContentSections = [];
     if (customTemplateId) {
       console.log("[Generate] custom template selected:", { customTemplateId, customTemplateName });
       if (supabase) {
+        // Selected per-format: a Postgres "column does not exist" error fails
+        // the entire select, so the dynamic path (which only needs
+        // detected_sections) must not be coupled to structured_fields —
+        // that column has its own independent migration/rollout and dynamic
+        // generation shouldn't fail just because it hasn't been applied.
+        const selectColumns =
+          normalizedLessonFormat === "dynamic"
+            ? "id, name, status, detected_sections"
+            : "id, name, status, recognized_placeholders, structured_fields";
         const { data: templateRow, error: templateLookupError } = await supabase
           .from("custom_templates")
-          .select("id, name, status, recognized_placeholders, structured_fields")
+          .select(selectColumns)
           .eq("id", customTemplateId)
           .single();
         if (templateLookupError) {
@@ -539,8 +631,17 @@ export default async function handler(req, res) {
         } else {
           console.log("[Generate] custom template data loaded by backend:", templateRow);
           customTemplateStructuredFields = templateRow?.structured_fields || [];
+          customTemplateContentSections = Array.isArray(templateRow?.detected_sections?.contentSections)
+            ? [...templateRow.detected_sections.contentSections].sort((a, b) => a.order - b.order)
+            : [];
         }
       }
+    }
+
+    if (normalizedLessonFormat === "dynamic" && customTemplateContentSections.length === 0) {
+      return res.status(400).json({
+        error: "This template has no confirmed detected sections yet. Review and confirm its sections before generating a dynamic lesson plan.",
+      });
     }
 
     // Resolve the standards section: exact code match (priority) + pgvector
@@ -559,8 +660,11 @@ export default async function handler(req, res) {
     // Template 1 has its own prompt + output schema entirely (not the
     // Standard schema with different phrasing) — see buildTemplate1Prompt.
     const isTemplate1 = normalizedLessonFormat === "template1";
+    const isDynamic = normalizedLessonFormat === "dynamic";
     const prompt = isTemplate1
       ? buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies, structuredFields: customTemplateStructuredFields })
+      : isDynamic
+      ? buildDynamicLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies, contentSections: customTemplateContentSections })
       : buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies });
 
     console.debug("[Generate] inputs:", { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat: normalizedLessonFormat, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies });
@@ -590,6 +694,8 @@ export default async function handler(req, res) {
             closure: { teacherActions: "", studentActions: "" },
             assessment: { howObjectivesAssessed: "" },
           }
+        : isDynamic
+        ? Object.fromEntries(customTemplateContentSections.map((s) => [s.originalLabel, `${model} provider not implemented yet.`]))
         : {
             title: `${model} Provider Not Implemented Yet`,
             objectives: ["Only the Mistral provider is currently connected."],
@@ -603,6 +709,7 @@ export default async function handler(req, res) {
   } catch (error) {
     console.error("[Generate] error:", error);
     const isTemplate1 = req.body?.lessonFormat === "template1";
+    const isDynamic = req.body?.lessonFormat === "dynamic";
     return res.status(500).json(
       isTemplate1
         ? {
@@ -616,6 +723,8 @@ export default async function handler(req, res) {
             closure: { teacherActions: "", studentActions: "" },
             assessment: { howObjectivesAssessed: "" },
           }
+        : isDynamic
+        ? { error: "An error occurred during generation." }
         : {
             title: "Generation Failed",
             objectives: [],

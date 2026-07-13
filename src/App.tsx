@@ -16,9 +16,11 @@ import {
   deleteCustomTemplate,
   exportCustomTemplateLessonDocx,
   updateDetectedSections,
+  toDynamicLessonPlan,
   type CustomTemplate,
   type DetectedSections,
   type DetectedSectionItem,
+  type DynamicLessonPlan,
 } from "./lib/custom-templates";
 import {
   fetchTeachingStrategies,
@@ -351,6 +353,43 @@ async function generateTemplate1Lesson(params: {
   }
   const raw = await res.json();
   return normaliseTemplate1Lesson(raw, { subject: params.subjectLabel, gradeLabel: params.gradeLabel, duration: params.duration });
+}
+
+// Phase 2: dynamic generation for a teacher's own uploaded template, keyed by
+// its detected_sections instead of either fixed schema. The backend (see
+// buildDynamicLessonPrompt in api/generate.js) looks up the template's
+// contentSections itself from customTemplateId — this just returns the raw
+// flat JSON response; the caller reorders it into a DynamicLessonPlan via
+// toDynamicLessonPlan using the same contentSections it already has on hand.
+async function generateDynamicLessonPlan(params: {
+  grade: string;
+  subject: string;
+  frameworks: string[];
+  code: string;
+  topic: string;
+  goal: string;
+  duration: number;
+  model: string;
+  technologyUsage: TechnologyUsageLevel;
+  studentTechnology: string;
+  instructionalApproach: InstructionalApproach;
+  teachingStrategies: string[];
+  marzanoStrategies: { name: string; promptDescription: string }[];
+  customTemplateId: string;
+  customTemplateName: string;
+}): Promise<Record<string, unknown>> {
+  const requestBody = { ...params, lessonFormat: "dynamic" };
+  console.log("[generateDynamicLessonPlan] request payload:", requestBody);
+  const res = await fetch("/api/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(requestBody),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => `HTTP ${res.status}`);
+    throw new Error(msg || `Server error ${res.status}`);
+  }
+  return res.json();
 }
 
 // Result shape returned by /api/upload-standards-process.
@@ -1021,6 +1060,32 @@ function TeachingStrategiesPicker({
   );
 }
 
+// Phase 2 temporary preview: section title -> generated content, in
+// canonical detected-section order. No layout reproduction (grid/table
+// positioning matching the original template) — that's Phase 3, see
+// CustomTemplateLessonView/custom-template-layouts.ts, which this
+// deliberately does not touch or reuse.
+function DynamicLessonPreview({ plan, breadcrumb }: { plan: DynamicLessonPlan; breadcrumb: string }) {
+  return (
+    <div className="card" style={{ overflow: "hidden" }}>
+      <div className="preview-header">
+        <p className="preview-breadcrumb">{breadcrumb}</p>
+        <p style={{ marginTop: 6, fontSize: "1.05rem", fontWeight: 600 }}>Dynamic Preview (Beta)</p>
+      </div>
+      <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 18 }}>
+        {plan.sections.map((section) => (
+          <div key={section.id}>
+            <p style={{ fontWeight: 600, marginBottom: 4 }}>{section.originalLabel}</p>
+            <p style={{ whiteSpace: "pre-wrap", color: "var(--muted-fg)" }}>
+              {section.content || "(no content generated)"}
+            </p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function GeneratorPage({
   sharedLesson,
   sharedTemplate1Lesson,
@@ -1085,11 +1150,18 @@ function GeneratorPage({
   // Template1Lesson content/state — it's only a different export skin, see
   // api/custom-template-export.js — so it's disambiguated from "template1"
   // by whether a customTemplateId is also selected.
-  const [generatedFormat, setGeneratedFormat] = useState<"standard" | "template1" | "custom" | null>(
+  const [generatedFormat, setGeneratedFormat] = useState<"standard" | "template1" | "custom" | "dynamic" | null>(
     sharedTemplate1Lesson ? (sharedCustomTemplateId ? "custom" : "template1") : sharedLesson ? "standard" : null
   );
   const [template1Lesson, setTemplate1Lesson] = useState<Template1Lesson | null>(sharedTemplate1Lesson);
   const [template1Draft, setTemplate1Draft]   = useState<Template1Lesson | null>(null);
+
+  // Phase 2: dynamic generation, keyed by a template's own detected_sections
+  // rather than the fixed Template1Lesson schema — see generateDynamicLessonPlan.
+  // Tracked entirely separately from lesson/template1Lesson; selecting
+  // "dynamic" reuses selectedCustomTemplateId (below) to know which
+  // template's sections to generate for.
+  const [dynamicLessonPlan, setDynamicLessonPlan] = useState<DynamicLessonPlan | null>(null);
 
   // Teacher's own uploaded DOCX templates. Holds every status (the "Manage
   // Templates" modal needs to show processing/error ones too) — the format
@@ -1115,7 +1187,7 @@ function GeneratorPage({
     setCustomTemplates(updated);
     if (selectedCustomTemplateId && !updated.some((t) => t.id === selectedCustomTemplateId && t.status === "ready")) {
       setSelectedCustomTemplateId(null);
-      setLessonFormat((prev) => (prev === "custom" ? "standard" : prev));
+      setLessonFormat((prev) => (prev === "custom" || prev === "dynamic" ? "standard" : prev));
     }
   }
 
@@ -1294,6 +1366,10 @@ function GeneratorPage({
       setError("Please select one of your uploaded templates first.");
       return;
     }
+    if (lessonFormat === "dynamic" && !selectedCustomTemplateId) {
+      setError("Please select one of your uploaded templates first.");
+      return;
+    }
 
     setLoading(true);
     setError(null);
@@ -1305,6 +1381,31 @@ function GeneratorPage({
     const teachingStrategies = resolveTeachingStrategyNames(selectedStrategyIds);
     const marzanoStrategies = resolveMarzanoStrategies(selectedStrategyIds);
     try {
+      if (lessonFormat === "dynamic") {
+        const selectedCustomTemplate = customTemplates.find((t) => t.id === selectedCustomTemplateId) ?? null;
+        const contentSections = selectedCustomTemplate?.detected_sections?.contentSections ?? [];
+        console.log("[handleGenerate] dynamic generation for template:", {
+          selectedCustomTemplateId,
+          selectedCustomTemplateName: selectedCustomTemplate?.name ?? null,
+          contentSectionCount: contentSections.length,
+        });
+        if (!selectedCustomTemplate || contentSections.length === 0) {
+          setError("This template has no confirmed sections yet. Review and confirm its sections in Manage Templates first.");
+          return;
+        }
+        const raw = await generateDynamicLessonPlan({
+          grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
+          technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies,
+          customTemplateId: selectedCustomTemplate.id,
+          customTemplateName: selectedCustomTemplate.name,
+        });
+        const plan = toDynamicLessonPlan(raw, contentSections);
+        setDynamicLessonPlan(plan);
+        setGeneratedFormat("dynamic");
+        onLessonMetaGenerated?.({ model, grade, standards: resolvedFrameworks().join(", "), duration });
+        return;
+      }
+
       if (lessonFormat === "template1" || lessonFormat === "custom") {
         const isCustom = lessonFormat === "custom";
         const selectedCustomTemplate = isCustom
@@ -1661,6 +1762,37 @@ function GeneratorPage({
                 </>
               )}
 
+              {/* Phase 2: once the selected template's detected sections have
+                  been reviewed and confirmed (in Manage Templates), offer a
+                  choice between the existing fixed Template 1 fields and
+                  generating dynamically from those detected sections instead.
+                  Both reuse the same selectedCustomTemplateId — only
+                  lessonFormat differs. */}
+              {(lessonFormat === "custom" || lessonFormat === "dynamic") && selectedCustomTemplateId && (() => {
+                const selectedTemplate = customTemplates.find((t) => t.id === selectedCustomTemplateId);
+                if (!selectedTemplate?.detected_sections?.confirmed) return null;
+                return (
+                  <div className="fw-chip-row" style={{ marginBottom: 10 }}>
+                    <button
+                      type="button"
+                      className={`fw-chip${lessonFormat === "custom" ? " fw-chip-active" : ""}`}
+                      onClick={() => setLessonFormat("custom")}
+                      aria-pressed={lessonFormat === "custom"}
+                    >
+                      Fixed template fields
+                    </button>
+                    <button
+                      type="button"
+                      className={`fw-chip${lessonFormat === "dynamic" ? " fw-chip-active" : ""}`}
+                      onClick={() => setLessonFormat("dynamic")}
+                      aria-pressed={lessonFormat === "dynamic"}
+                    >
+                      Detected sections (Beta)
+                    </button>
+                  </div>
+                );
+              })()}
+
               <button
                 type="button"
                 className="btn-outline-sm"
@@ -2010,6 +2142,8 @@ function GeneratorPage({
               </>
             )}
           </div>
+        ) : generatedFormat === "dynamic" && dynamicLessonPlan ? (
+          <DynamicLessonPreview plan={dynamicLessonPlan} breadcrumb={breadcrumb} />
         ) : (
           <div className="empty-state">
             <div style={{ textAlign: "center", maxWidth: 280 }}>

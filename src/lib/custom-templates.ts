@@ -436,3 +436,41 @@ export async function exportCustomTemplateLessonDocx(
   }
   return res.blob();
 }
+
+/* ── Phase 2: dynamic lesson generation ───────────────────────────────────────
+   Entirely separate from Lesson/Template1Lesson — the schema itself comes
+   from a template's own detected_sections.contentSections rather than being
+   fixed. See buildDynamicLessonPrompt in api/generate.js. ──────────────────── */
+
+export type DynamicLessonSection = {
+  id: string;
+  originalLabel: string;
+  content: string;
+};
+
+export type DynamicLessonPlan = {
+  sections: DynamicLessonSection[];
+};
+
+// The model returns a flat object keyed by originalLabel (see
+// buildDynamicLessonPrompt's OUTPUT FORMAT) — its key order is not trusted.
+// Order is instead reconstructed from detected_sections.contentSections
+// itself (already sorted by .order upstream), which also guarantees every
+// confirmed section appears in the preview even if the model omitted it.
+export function toDynamicLessonPlan(
+  rawResponse: Record<string, unknown>,
+  contentSections: DetectedSectionItem[]
+): DynamicLessonPlan {
+  const sections = contentSections
+    .slice()
+    .sort((a, b) => a.order - b.order)
+    .map((section) => {
+      const value = rawResponse?.[section.originalLabel];
+      return {
+        id: section.id,
+        originalLabel: section.originalLabel,
+        content: typeof value === "string" ? value : "",
+      };
+    });
+  return { sections };
+}
