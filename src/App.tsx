@@ -1112,9 +1112,18 @@ function ReproducedTemplatePreview({
   duration: number;
   breadcrumb: string;
 }) {
+  const [editNotice, setEditNotice] = useState(false);
   const layout = template.detected_layout;
+  // Defensive: layout/detected_sections/plan are all normally well-formed by
+  // the time they reach here, but a stale/partially-migrated row (e.g. an
+  // older detected_layout whose sectionIds reference a section that's since
+  // been renamed/removed via DetectedSectionsPanel) must never crash this
+  // render — a thrown error here would take down the whole GeneratorPage,
+  // not just this preview. Every array access below goes through one of
+  // these guards rather than trusting the stored shape directly.
+  const tables = Array.isArray(layout?.tables) ? layout.tables : [];
 
-  if (!layout || layout.tables.length === 0) {
+  if (tables.length === 0) {
     return (
       <>
         <p style={{ fontSize: 12.5, color: "var(--muted-fg)", marginBottom: 8 }}>
@@ -1125,13 +1134,15 @@ function ReproducedTemplatePreview({
     );
   }
 
+  const detectedSections = template.detected_sections;
   const allSections = [
-    ...template.detected_sections.contentSections,
-    ...template.detected_sections.metadataFields,
-    ...template.detected_sections.instructionTexts,
+    ...(Array.isArray(detectedSections?.contentSections) ? detectedSections.contentSections : []),
+    ...(Array.isArray(detectedSections?.metadataFields) ? detectedSections.metadataFields : []),
+    ...(Array.isArray(detectedSections?.instructionTexts) ? detectedSections.instructionTexts : []),
   ];
   const sectionById = new Map(allSections.map((s) => [s.id, s]));
-  const generatedById = new Map(plan.sections.map((s) => [s.id, s]));
+  const generatedSections = Array.isArray(plan?.sections) ? plan.sections : [];
+  const generatedById = new Map(generatedSections.map((s) => [s.id, s]));
 
   // Only what the Generator page actually has values for today — Teacher/
   // School/Date/Class Period have no corresponding input anywhere in the
@@ -1167,65 +1178,96 @@ function ReproducedTemplatePreview({
     <div className="card" style={{ overflow: "hidden" }}>
       <div className="preview-header">
         <p className="preview-breadcrumb">{breadcrumb}</p>
-        <p style={{ marginTop: 6, fontSize: "1.05rem", fontWeight: 600 }}>Reproduced Template Preview</p>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+          <p style={{ marginTop: 6, fontSize: "1.05rem", fontWeight: 600 }}>Reproduced Template Preview</p>
+          {/* Restored for visual/placement parity with the other formats'
+              preview header (see Template1LessonView/CustomTemplateLessonView
+              and the standard-lesson preview above) — editing generated
+              dynamic content isn't wired up yet, so this just surfaces a
+              short notice rather than silently doing nothing. */}
+          <button
+            type="button"
+            className="btn-outline-sm"
+            onClick={() => setEditNotice(true)}
+            title="Editing generated content isn't available yet for this preview"
+            style={{ flexShrink: 0, marginTop: 4, display: "flex", alignItems: "center", gap: 5 }}
+          >
+            <Icon.Edit /> Edit
+          </button>
+        </div>
+        {editNotice && (
+          <p style={{ marginTop: 8, fontSize: 12, color: "var(--muted-fg)" }}>
+            Editing generated content isn't available yet for this preview.
+          </p>
+        )}
       </div>
       <div style={{ padding: "16px 20px" }}>
-        {layout.tables.map((table) => (
-          <table
-            key={table.id}
-            style={{ borderCollapse: "collapse", width: "100%", marginBottom: 14, tableLayout: "fixed" }}
-          >
-            <tbody>
-              {table.rows.map((row) => (
-                <tr key={row.id}>
-                  {row.cells.map((cell) => (
-                    <td
-                      key={cell.id}
-                      colSpan={cell.colspan}
-                      rowSpan={cell.rowspan}
-                      style={{
-                        border: "1px solid var(--border)",
-                        padding: 8,
-                        verticalAlign: "top",
-                        fontSize: 12.5,
-                        minWidth: 80,
-                        height: 36,
-                      }}
-                    >
-                      {cell.labels.length === 0 ? (
-                        <span style={{ color: "var(--muted-fg)", fontStyle: "italic" }}>(empty)</span>
-                      ) : (
-                        cell.labels.map((label, i) => {
-                          const resolved = valueForSectionId(cell.sectionIds[i]);
-                          return (
-                            <div key={i} style={{ marginBottom: i < cell.labels.length - 1 ? 8 : 0 }}>
-                              <div style={{ fontWeight: 600 }}>{label}</div>
-                              {resolved && (
-                                <div
-                                  style={{
-                                    marginTop: 2,
-                                    whiteSpace: "pre-wrap",
-                                    color: resolved.text ? "var(--foreground)" : "var(--muted-fg)",
-                                    fontStyle: resolved.text ? "normal" : "italic",
-                                  }}
-                                >
-                                  {resolved.text || resolved.placeholder}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })
-                      )}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ))}
+        {tables.map((table) => {
+          const rows = Array.isArray(table.rows) ? table.rows : [];
+          return (
+            <table
+              key={table.id}
+              style={{ borderCollapse: "collapse", width: "100%", marginBottom: 14, tableLayout: "fixed" }}
+            >
+              <tbody>
+                {rows.map((row) => {
+                  const cells = Array.isArray(row.cells) ? row.cells : [];
+                  return (
+                    <tr key={row.id}>
+                      {cells.map((cell) => {
+                        const labels = Array.isArray(cell.labels) ? cell.labels : [];
+                        const sectionIds = Array.isArray(cell.sectionIds) ? cell.sectionIds : [];
+                        return (
+                          <td
+                            key={cell.id}
+                            colSpan={cell.colspan || 1}
+                            rowSpan={cell.rowspan || 1}
+                            style={{
+                              border: "1px solid var(--border)",
+                              padding: 8,
+                              verticalAlign: "top",
+                              fontSize: 12.5,
+                              minWidth: 80,
+                              height: 36,
+                            }}
+                          >
+                            {labels.length === 0 ? (
+                              <span style={{ color: "var(--muted-fg)", fontStyle: "italic" }}>(empty)</span>
+                            ) : (
+                              labels.map((label, i) => {
+                                const resolved = valueForSectionId(sectionIds[i] ?? null);
+                                return (
+                                  <div key={i} style={{ marginBottom: i < labels.length - 1 ? 8 : 0 }}>
+                                    <div style={{ fontWeight: 600 }}>{label}</div>
+                                    {resolved && (
+                                      <div
+                                        style={{
+                                          marginTop: 2,
+                                          whiteSpace: "pre-wrap",
+                                          color: resolved.text ? "var(--foreground)" : "var(--muted-fg)",
+                                          fontStyle: resolved.text ? "normal" : "italic",
+                                        }}
+                                      >
+                                        {resolved.text || resolved.placeholder}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          );
+        })}
 
         {(() => {
-          const unmapped = plan.sections.filter((s) => !mappedContentIds.has(s.id));
+          const unmapped = generatedSections.filter((s) => !mappedContentIds.has(s.id));
           if (unmapped.length === 0) return null;
           return (
             <div style={{ marginTop: 8, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
