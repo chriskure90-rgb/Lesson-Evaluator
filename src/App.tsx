@@ -1087,7 +1087,7 @@ function DynamicLessonPreview({ plan, breadcrumb }: { plan: DynamicLessonPlan; b
     <div className="card" style={{ overflow: "hidden" }}>
       <div className="preview-header">
         <p className="preview-breadcrumb">{breadcrumb}</p>
-        <p style={{ marginTop: 6, fontSize: "1.05rem", fontWeight: 600 }}>Dynamic Preview (Beta)</p>
+        <p style={{ marginTop: 6, fontSize: "1.05rem", fontWeight: 600 }}>Lesson Plan Preview</p>
       </div>
       <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 18 }}>
         {plan.sections.map((section) => (
@@ -1376,6 +1376,14 @@ function GeneratorPage({
   // "dynamic" reuses selectedCustomTemplateId (below) to know which
   // template's sections to generate for.
   const [dynamicLessonPlan, setDynamicLessonPlan] = useState<DynamicLessonPlan | null>(null);
+  // Pinned at generation time (see handleGenerate) rather than re-derived
+  // from the live selectedCustomTemplateId at render time — if the teacher
+  // switches to a different template chip after generating (without
+  // regenerating), the already-displayed preview must keep showing the
+  // template it was actually generated against, not silently fall back to
+  // DynamicLessonPreview because the CURRENTLY selected template's layout
+  // doesn't match.
+  const [dynamicPreviewTemplate, setDynamicPreviewTemplate] = useState<CustomTemplate | null>(null);
 
   // Teacher's own uploaded DOCX templates. Holds every status (the "Manage
   // Templates" modal needs to show processing/error ones too) — the format
@@ -1615,6 +1623,7 @@ function GeneratorPage({
         });
         const plan = toDynamicLessonPlan(raw, contentSections);
         setDynamicLessonPlan(plan);
+        setDynamicPreviewTemplate(selectedCustomTemplate);
         setGeneratedFormat("dynamic");
         onLessonMetaGenerated?.({ model, grade, standards: resolvedFrameworks().join(", "), duration });
         return;
@@ -1985,35 +1994,12 @@ function GeneratorPage({
                 </>
               )}
 
-              {/* Once the selected template's detected sections have been
-                  reviewed and confirmed (in Manage Templates), it always
-                  generates dynamically from those detected sections —
-                  reusing the same selectedCustomTemplateId. Teachers never
-                  see the internal pipeline name ("dynamic" vs "custom") —
-                  this single button just activates this template for
-                  generation; which pipeline runs (Standard/Template 1/
-                  Dynamic) is chosen internally. Replaces the old "Fixed
-                  template fields" / "Detected sections (Beta)" toggle. The
-                  preview shown after generating is unchanged
-                  (ReproducedTemplatePreview for DOCX templates, the
-                  DOCX-only limitation message + flat fallback for PDF —
-                  see the generatedFormat === "dynamic" render branch below). */}
-              {selectedCustomTemplateId && (() => {
-                const selectedTemplate = customTemplates.find((t) => t.id === selectedCustomTemplateId);
-                if (!selectedTemplate?.detected_sections?.confirmed) return null;
-                return (
-                  <div className="fw-chip-row" style={{ marginBottom: 10 }}>
-                    <button
-                      type="button"
-                      className={`fw-chip${lessonFormat === "dynamic" ? " fw-chip-active" : ""}`}
-                      onClick={() => setLessonFormat("dynamic")}
-                      aria-pressed={lessonFormat === "dynamic"}
-                    >
-                      Use This Template
-                    </button>
-                  </div>
-                );
-              })()}
+              {/* The template chip above is the ONLY selection control —
+                  its onClick already selects the template, sets
+                  selectedCustomTemplateId, and picks the internal pipeline
+                  (dynamic once its detected sections are confirmed, custom/
+                  Template 1 fields otherwise) — no separate "Use This
+                  Template" button, and no exposed pipeline-name toggle. */}
 
               <button
                 type="button"
@@ -2366,22 +2352,29 @@ function GeneratorPage({
           </div>
         ) : generatedFormat === "dynamic" && dynamicLessonPlan ? (
           <>
-            {(() => {
-              const selectedTemplateForPreview = customTemplates.find((t) => t.id === selectedCustomTemplateId);
-              return selectedTemplateForPreview ? (
-                <ReproducedTemplatePreview
-                  template={selectedTemplateForPreview}
-                  plan={dynamicLessonPlan}
-                  gradeBandLabel={gradeBandLabel}
-                  subject={subject}
-                  topic={topic}
-                  duration={duration}
-                  breadcrumb={breadcrumb}
-                />
-              ) : (
-                <DynamicLessonPreview plan={dynamicLessonPlan} breadcrumb={breadcrumb} />
-              );
-            })()}
+            {/* dynamicPreviewTemplate is pinned at generation time (see
+                handleGenerate) — using it here, not a live re-lookup of
+                selectedCustomTemplateId, so switching to a different
+                template chip after generating (without regenerating) can't
+                make an already-displayed preview fall back incorrectly.
+                ReproducedTemplatePreview is always the primary result when
+                that template's detected_layout has real tables; it falls
+                back to DynamicLessonPreview only internally (no usable
+                layout — e.g. a PDF template) or here when the pinned
+                template itself is somehow unavailable. */}
+            {dynamicPreviewTemplate ? (
+              <ReproducedTemplatePreview
+                template={dynamicPreviewTemplate}
+                plan={dynamicLessonPlan}
+                gradeBandLabel={gradeBandLabel}
+                subject={subject}
+                topic={topic}
+                duration={duration}
+                breadcrumb={breadcrumb}
+              />
+            ) : (
+              <DynamicLessonPreview plan={dynamicLessonPlan} breadcrumb={breadcrumb} />
+            )}
             {/* Same preview-evaluate-strip used by Standard/Template1/custom
                 (Export left, Edit + Evaluate right) — reused as-is, not a
                 custom-template-only layout. Editing generated dynamic
