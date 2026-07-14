@@ -1985,32 +1985,31 @@ function GeneratorPage({
                 </>
               )}
 
-              {/* Phase 2: once the selected template's detected sections have
-                  been reviewed and confirmed (in Manage Templates), offer a
-                  choice between the existing fixed Template 1 fields and
-                  generating dynamically from those detected sections instead.
-                  Both reuse the same selectedCustomTemplateId — only
-                  lessonFormat differs. */}
-              {(lessonFormat === "custom" || lessonFormat === "dynamic") && selectedCustomTemplateId && (() => {
+              {/* Once the selected template's detected sections have been
+                  reviewed and confirmed (in Manage Templates), it always
+                  generates dynamically from those detected sections —
+                  reusing the same selectedCustomTemplateId. Teachers never
+                  see the internal pipeline name ("dynamic" vs "custom") —
+                  this single button just activates this template for
+                  generation; which pipeline runs (Standard/Template 1/
+                  Dynamic) is chosen internally. Replaces the old "Fixed
+                  template fields" / "Detected sections (Beta)" toggle. The
+                  preview shown after generating is unchanged
+                  (ReproducedTemplatePreview for DOCX templates, the
+                  DOCX-only limitation message + flat fallback for PDF —
+                  see the generatedFormat === "dynamic" render branch below). */}
+              {selectedCustomTemplateId && (() => {
                 const selectedTemplate = customTemplates.find((t) => t.id === selectedCustomTemplateId);
                 if (!selectedTemplate?.detected_sections?.confirmed) return null;
                 return (
                   <div className="fw-chip-row" style={{ marginBottom: 10 }}>
                     <button
                       type="button"
-                      className={`fw-chip${lessonFormat === "custom" ? " fw-chip-active" : ""}`}
-                      onClick={() => setLessonFormat("custom")}
-                      aria-pressed={lessonFormat === "custom"}
-                    >
-                      Fixed template fields
-                    </button>
-                    <button
-                      type="button"
                       className={`fw-chip${lessonFormat === "dynamic" ? " fw-chip-active" : ""}`}
                       onClick={() => setLessonFormat("dynamic")}
                       aria-pressed={lessonFormat === "dynamic"}
                     >
-                      Detected sections (Beta)
+                      Use This Template
                     </button>
                   </div>
                 );
