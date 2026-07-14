@@ -48,6 +48,50 @@ export const DEFAULT_DETECTED_SECTIONS: DetectedSections = {
   version: 1,
 };
 
+// Phase 3 layout recognition/preview (see detectTemplateLayout in
+// api/custom-templates.js) — a third, independent structural pass over the
+// same uploaded file, separate from detected_sections. sectionIds is
+// parallel to labels (same index/length): the exact DetectedSectionItem.id
+// each label matched, or null if unmatched. Deliberately NOT normalizedKey —
+// normalizedKey can be shared by multiple items, so it can't identify which
+// specific item a cell corresponds to the way id can; normalizedKey stays
+// inside DetectedSectionItem only.
+export type LayoutCell = {
+  id: string;
+  order: number;
+  colspan: number;
+  rowspan: number;
+  labels: string[];
+  sectionIds: (string | null)[];
+};
+
+export type LayoutRow = {
+  id: string;
+  order: number;
+  cells: LayoutCell[];
+};
+
+export type LayoutTable = {
+  id: string;
+  order: number;
+  rows: LayoutRow[];
+};
+
+export type DetectedLayout = {
+  version: number;
+  sourceType: "docx" | "pdf";
+  tables: LayoutTable[];
+  // detected_sections item ids matched to no cell anywhere in `tables`.
+  unmatchedSectionIds: string[];
+};
+
+export const DEFAULT_DETECTED_LAYOUT: DetectedLayout = {
+  version: 1,
+  sourceType: "docx",
+  tables: [],
+  unmatchedSectionIds: [],
+};
+
 export type CustomTemplate = {
   id: string;
   user_id: string;
@@ -61,6 +105,9 @@ export type CustomTemplate = {
   detected_sections: DetectedSections;
   section_detection_status: string | null;
   section_detection_error: string | null;
+  detected_layout: DetectedLayout;
+  layout_detection_status: string | null;
+  layout_detection_error: string | null;
   status: CustomTemplateStatus;
   error_message: string | null;
   created_at: string;
@@ -191,6 +238,38 @@ function logSectionDetectionDebug(
 }
 // ── END TEMPORARY DEBUGGING ───────────────────────────────────────────────────
 
+// ── TEMPORARY DEBUGGING — layout recognition (Phase 3) ────────────────────────
+// Same idea as TEMP_DEBUG_SECTIONS above, for the layout-detection pass (see
+// buildLayoutDebugInfo in api/custom-templates.js). To remove: delete this
+// block and the two marked lines below it in registerCustomTemplate.
+const TEMP_DEBUG_LAYOUT = true;
+
+function logLayoutDetectionDebug(
+  engineVersion: string | undefined,
+  debugInfo: Record<string, unknown> | undefined | null
+) {
+  if (!TEMP_DEBUG_LAYOUT) return;
+
+  console.log(
+    `%c[TEMP_DEBUG_LAYOUT] layoutDetectionEngineVersion = "${engineVersion ?? "(missing)"}"`,
+    "font-weight:bold;font-size:13px"
+  );
+
+  if (!debugInfo) {
+    console.warn("[TEMP_DEBUG_LAYOUT] no layoutDetectionDebug in the response (debugLayout may not have reached the server).");
+    return;
+  }
+
+  console.group("%c[TEMP_DEBUG_LAYOUT] layoutDetectionDebug", "font-weight:bold");
+  console.log(`htmlLength=${debugInfo.htmlLength} tableCount=${debugInfo.tableCount} rowCount=${debugInfo.rowCount} cellCount=${debugInfo.cellCount}`);
+  console.log("cells:", debugInfo.cells);
+  console.log("matches (label -> sectionId):", debugInfo.matches);
+  console.log("unmatchedLabels:", debugInfo.unmatchedLabels);
+  console.log("unmatchedSectionIds:", debugInfo.unmatchedSectionIds);
+  console.groupEnd();
+}
+// ── END TEMPORARY DEBUGGING ───────────────────────────────────────────────────
+
 export async function registerCustomTemplate(params: {
   path: string;
   filename: string;
@@ -200,7 +279,8 @@ export async function registerCustomTemplate(params: {
   const res = await fetch("/api/custom-templates", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "register", ...params, debugSections: TEMP_DEBUG_SECTIONS }), // TEMP DEBUG — remove debugSections when done
+    // TEMP DEBUG — remove debugSections/debugLayout when done
+    body: JSON.stringify({ action: "register", ...params, debugSections: TEMP_DEBUG_SECTIONS, debugLayout: TEMP_DEBUG_LAYOUT }),
   });
   const isPdf = params.filename.toLowerCase().endsWith(".pdf");
   const result = await parseCustomTemplatesResponse<
@@ -208,6 +288,8 @@ export async function registerCustomTemplate(params: {
       sectionDetectionEngineVersion?: string;
       sectionDetectionDebug?: unknown[];
       sectionExtractionDebug?: Record<string, unknown>;
+      layoutDetectionEngineVersion?: string;
+      layoutDetectionDebug?: Record<string, unknown>;
     }
   >(
     res,
@@ -215,8 +297,9 @@ export async function registerCustomTemplate(params: {
       ? "PDF processing failed. Please try another PDF or upload a DOCX file."
       : "Could not register this template. Please try again."
   );
-  // TEMP DEBUG — remove this call when done
+  // TEMP DEBUG — remove these two calls when done
   logSectionDetectionDebug(result.sectionDetectionEngineVersion, result.sectionDetectionDebug, result.sectionExtractionDebug);
+  logLayoutDetectionDebug(result.layoutDetectionEngineVersion, result.layoutDetectionDebug);
   return result;
 }
 
@@ -233,7 +316,10 @@ export async function registerCustomTemplate(params: {
 // the migrations having been run, not just all-or-nothing.
 const BASE_COLUMNS =
   "id, user_id, name, original_filename, storage_path, placeholders, recognized_placeholders, unrecognized_placeholders, status, error_message, created_at";
-const OPTIONAL_COLUMNS = ["structured_fields", "detected_sections", "section_detection_status", "section_detection_error"] as const;
+const OPTIONAL_COLUMNS = [
+  "structured_fields", "detected_sections", "section_detection_status", "section_detection_error",
+  "detected_layout", "layout_detection_status", "layout_detection_error",
+] as const;
 
 function isMissingColumnError(error: { code?: string; message?: string } | null, column: string): boolean {
   if (!error) return false;
@@ -257,15 +343,33 @@ function normalizeDetectedSections(raw: unknown): DetectedSections {
   };
 }
 
+function normalizeDetectedLayout(raw: unknown): DetectedLayout {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return DEFAULT_DETECTED_LAYOUT;
+  const r = raw as Record<string, unknown>;
+  return {
+    version: typeof r.version === "number" ? r.version : 1,
+    sourceType: r.sourceType === "pdf" ? "pdf" : "docx",
+    tables: Array.isArray(r.tables) ? (r.tables as LayoutTable[]) : [],
+    unmatchedSectionIds: Array.isArray(r.unmatchedSectionIds) ? (r.unmatchedSectionIds as string[]) : [],
+  };
+}
+
 function normalizeCustomTemplateRow(row: Record<string, unknown>): CustomTemplate {
   return {
-    ...(row as Omit<CustomTemplate, "structured_fields" | "detected_sections" | "section_detection_status" | "section_detection_error">),
+    ...(row as Omit<
+      CustomTemplate,
+      "structured_fields" | "detected_sections" | "section_detection_status" | "section_detection_error"
+      | "detected_layout" | "layout_detection_status" | "layout_detection_error"
+    >),
     structured_fields: Array.isArray(row.structured_fields)
       ? (row.structured_fields as CustomTemplateStructuredField[])
       : [],
     detected_sections: normalizeDetectedSections(row.detected_sections),
     section_detection_status: typeof row.section_detection_status === "string" ? row.section_detection_status : null,
     section_detection_error: typeof row.section_detection_error === "string" ? row.section_detection_error : null,
+    detected_layout: normalizeDetectedLayout(row.detected_layout),
+    layout_detection_status: typeof row.layout_detection_status === "string" ? row.layout_detection_status : null,
+    layout_detection_error: typeof row.layout_detection_error === "string" ? row.layout_detection_error : null,
   };
 }
 

@@ -318,6 +318,23 @@ export const DEFAULT_DETECTED_SECTIONS = {
   version: 1,
 };
 
+// Phase 3: layout recognition/preview — a THIRD, independent pass over the
+// same uploaded file, storing its own result in detected_layout/
+// layout_detection_status/layout_detection_error. Never touches
+// placeholders/structured_fields/detected_sections or their columns, and
+// nothing here feeds into generation, export, or DOCX synthesis — see
+// detectTemplateLayout below.
+export const DEFAULT_DETECTED_LAYOUT = {
+  version: 1,
+  sourceType: "docx",
+  tables: [],
+  unmatchedSectionIds: [],
+};
+
+// Same purpose as SECTION_DETECTION_ENGINE_VERSION above — lets a caller
+// confirm which deployed build handled a given register request.
+const LAYOUT_DETECTION_ENGINE_VERSION = "layout-v1";
+
 // TEMPORARY — lets a caller confirm which deployed build of this file
 // actually handled a given register request, without needing Vercel log
 // access (a recurring friction point). Bump the string whenever the
@@ -849,6 +866,176 @@ function buildDetectedSections(candidates, debug = false) {
   return { detected: { contentSections, metadataFields, instructionTexts, confirmed: false, version: 1 }, debugLog };
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   PHASE 3 — TEMPLATE LAYOUT RECOGNITION (preview only)
+
+   A separate walk of the same mammoth HTML used by extractDocxSectionCandidates
+   above, but building a nested table/row/cell TREE instead of a flat
+   candidate list. Deliberately not a reuse of that function or its output:
+   section detection only ever needed a flat, order-preserved list of
+   candidate labels, so it discards which table/row/cell/colspan/rowspan each
+   one came from, and it skips empty cells outright (they classify to
+   nothing). Layout needs exactly the things that function throws away —
+   cell IDENTITY, span geometry, and empty cells (which still occupy a
+   column position and affect visual alignment even with no text in them).
+
+   Storage: detected_layout/layout_detection_status/layout_detection_error —
+   its own columns, never touching detected_sections or its columns. Nothing
+   here is read by generation, export, or DOCX synthesis in this phase.
+═══════════════════════════════════════════════════════════════════════════ */
+
+// Walks <table>/<tr>/<td> the same attribute-tolerant way as
+// extractDocxSectionCandidates, but captures the cell's own opening-tag
+// attributes (for colspan/rowspan) and keeps every cell — including empty
+// ones — rather than flattening/filtering into a candidate list.
+function extractDocxLayout(html) {
+  const tables = [];
+  const tableRegex = /<table[^>]*>([\s\S]*?)<\/table>/g;
+  let tableMatch;
+  let tableOrder = 0;
+  while ((tableMatch = tableRegex.exec(html)) !== null) {
+    tableOrder++;
+    const rows = [];
+    const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+    let rowMatch;
+    let rowOrder = 0;
+    while ((rowMatch = rowRegex.exec(tableMatch[1])) !== null) {
+      rowOrder++;
+      const cells = [];
+      const cellRegex = /<t[dh]([^>]*)>([\s\S]*?)<\/t[dh]>/g;
+      let cellMatch;
+      let cellOrder = 0;
+      while ((cellMatch = cellRegex.exec(rowMatch[1])) !== null) {
+        cellOrder++;
+        const attrs = cellMatch[1] || "";
+        const colspanMatch = /colspan\s*=\s*"?(\d+)"?/i.exec(attrs);
+        const rowspanMatch = /rowspan\s*=\s*"?(\d+)"?/i.exec(attrs);
+        const colspan = colspanMatch ? parseInt(colspanMatch[1], 10) || 1 : 1;
+        const rowspan = rowspanMatch ? parseInt(rowspanMatch[1], 10) || 1 : 1;
+        // Kept even when empty (labels: []) — an empty cell still occupies
+        // a column and affects the grid's alignment.
+        const labels = extractCellUnits(cellMatch[2]).map((u) => u.text);
+        cells.push({
+          id: `table_${tableOrder}_row_${rowOrder}_cell_${cellOrder}`,
+          order: cellOrder,
+          colspan,
+          rowspan,
+          labels,
+          sectionIds: [], // filled in by mapSectionsToLayout below
+        });
+      }
+      rows.push({ id: `table_${tableOrder}_row_${rowOrder}`, order: rowOrder, cells });
+    }
+    tables.push({ id: `table_${tableOrder}`, order: tableOrder, rows });
+  }
+  return { version: 1, sourceType: "docx", tables, unmatchedSectionIds: [] };
+}
+
+// Connects each cell label to the detected_sections item it came from, by
+// id (never normalizedKey — normalizedKey can be shared across multiple
+// items, e.g. two custom_section headings, so it can't uniquely identify
+// which specific item a cell corresponds to the way id can).
+// Matching order: exact originalLabel first, then a normalized
+// (punctuation/case-insensitive) fallback — reusing normalizeForMatch
+// verbatim rather than a second normalizer. Never forces a match: a label
+// with no corresponding detected section keeps its text with a null
+// sectionIds entry at the same index; a detected section matched to no
+// cell anywhere is surfaced in the returned unmatchedSectionIds list.
+function mapSectionsToLayout(layout, detectedSections) {
+  const allSections = [
+    ...(detectedSections?.contentSections || []),
+    ...(detectedSections?.metadataFields || []),
+    ...(detectedSections?.instructionTexts || []),
+  ];
+  const byExactLabel = new Map(allSections.map((s) => [s.originalLabel, s.id]));
+  const byNormalizedLabel = new Map(allSections.map((s) => [normalizeForMatch(s.originalLabel), s.id]));
+  const matchedIds = new Set();
+
+  for (const table of layout.tables) {
+    for (const row of table.rows) {
+      for (const cell of row.cells) {
+        cell.sectionIds = cell.labels.map((label) => {
+          const id = byExactLabel.get(label) ?? byNormalizedLabel.get(normalizeForMatch(label)) ?? null;
+          if (id) matchedIds.add(id);
+          return id;
+        });
+      }
+    }
+  }
+
+  const unmatchedSectionIds = allSections.filter((s) => !matchedIds.has(s.id)).map((s) => s.id);
+  return { ...layout, unmatchedSectionIds };
+}
+
+// Diagnostics only (see handleRegister's debugLayout gating) — walks the
+// already-built/mapped layout to report exactly what requirement 7 asks
+// for: table/row/cell counts, every cell's span + labels, which labels
+// matched which section id, and which labels/sections didn't match.
+function buildLayoutDebugInfo(html, layout) {
+  const cells = [];
+  const matches = [];
+  const unmatchedLabels = [];
+  let rowCount = 0;
+
+  for (const table of layout.tables) {
+    rowCount += table.rows.length;
+    for (const row of table.rows) {
+      for (const cell of row.cells) {
+        cells.push({
+          tableOrder: table.order,
+          rowOrder: row.order,
+          cellOrder: cell.order,
+          colspan: cell.colspan,
+          rowspan: cell.rowspan,
+          labels: cell.labels,
+        });
+        cell.labels.forEach((label, i) => {
+          const sectionId = cell.sectionIds[i];
+          const location = { tableOrder: table.order, rowOrder: row.order, cellOrder: cell.order };
+          if (sectionId) matches.push({ label, sectionId, ...location });
+          else unmatchedLabels.push({ label, ...location });
+        });
+      }
+    }
+  }
+
+  return {
+    engineVersion: LAYOUT_DETECTION_ENGINE_VERSION,
+    htmlLength: html.length,
+    tableCount: layout.tables.length,
+    rowCount,
+    cellCount: cells.length,
+    cells,
+    matches,
+    unmatchedLabels,
+    unmatchedSectionIds: layout.unmatchedSectionIds,
+  };
+}
+
+// Top-level entry point called from handleRegister, mirroring
+// detectTemplateSections's shape/error-handling pattern. PDF templates are
+// explicitly out of scope this phase — returns an empty, "unsupported"
+// layout immediately rather than attempting any PDF-specific parsing (PDF
+// section-detection itself, extractPdfSectionCandidates, is untouched).
+async function detectTemplateLayout({ isPdf, buffer, detectedSections, debug = false }) {
+  if (isPdf) {
+    return {
+      layout: { version: 1, sourceType: "pdf", tables: [], unmatchedSectionIds: [] },
+      status: "unsupported",
+      error: null,
+      debugInfo: debug
+        ? { engineVersion: LAYOUT_DETECTION_ENGINE_VERSION, sourceType: "pdf", note: "Layout recognition is currently available for DOCX templates only." }
+        : null,
+    };
+  }
+
+  const html = await extractDocxHtml(buffer);
+  const rawLayout = extractDocxLayout(html);
+  const layout = mapSectionsToLayout(rawLayout, detectedSections);
+  const debugInfo = debug ? buildLayoutDebugInfo(html, layout) : null;
+  return { layout, status: "ready", error: null, debugInfo };
+}
+
 // Top-level entry point called from handleRegister. isPdf selects which
 // candidate extractor runs; both converge on the same classifier/orchestrator.
 // Truncation cap for the raw mammoth HTML dump in extractionDebug — this is
@@ -1154,7 +1341,7 @@ async function handleUploadInit(req, res) {
 // is never deleted here — it's the permanent export template, not a
 // processing relay.
 async function handleRegister(req, res) {
-  const { path, filename, name, userId, debugSections } = req.body ?? {};
+  const { path, filename, name, userId, debugSections, debugLayout } = req.body ?? {};
   if (!path)   return res.status(400).json({ error: "Missing upload path." });
   if (!userId) return res.status(400).json({ error: "Missing userId." });
 
@@ -1166,6 +1353,8 @@ async function handleRegister(req, res) {
   // classification/confidence, and echoes the same trace back in the
   // response so it's visible without needing server log access.
   const sectionDebugEnabled = debugSections === true;
+  // Same idea, for layout recognition (Phase 3) — see buildLayoutDebugInfo.
+  const layoutDebugEnabled = debugLayout === true;
 
   const templateName = (name || filename || "Untitled Template").trim();
   const isPdf = (filename || path || "").toLowerCase().endsWith(".pdf");
@@ -1344,6 +1533,29 @@ async function handleRegister(req, res) {
     sectionDetectionError = err?.message || String(err);
   }
 
+  // Layout recognition (Phase 3) — a third, independent pass, same isolation
+  // guarantee as section detection above: a failure here never affects
+  // template registration's own status/errorMessage, or detected_sections/
+  // section_detection_status. Runs after section detection so it can map
+  // cell labels to the just-computed detectedSections. Always re-reads from
+  // originalBuffer for the same reason section detection does.
+  let detectedLayout = DEFAULT_DETECTED_LAYOUT;
+  let layoutDetectionStatus = "ready";
+  let layoutDetectionError = null;
+  let layoutDetectionDebug = null;
+  try {
+    const result = await detectTemplateLayout({ isPdf, buffer: originalBuffer, detectedSections, debug: layoutDebugEnabled });
+    detectedLayout = result.layout;
+    layoutDetectionStatus = result.status;
+    layoutDetectionDebug = result.debugInfo;
+  } catch (err) {
+    console.error("[custom-templates:register] layout detection failed — name:", err?.name);
+    console.error("[custom-templates:register] layout detection failed — message:", err?.message);
+    console.error("[custom-templates:register] layout detection failed — stack:", err?.stack);
+    layoutDetectionStatus = "error";
+    layoutDetectionError = err?.message || String(err);
+  }
+
   const insertPayload = {
     user_id:                    userId,
     name:                       templateName,
@@ -1356,20 +1568,26 @@ async function handleRegister(req, res) {
     detected_sections:          detectedSections,
     section_detection_status:   sectionDetectionStatus,
     section_detection_error:    sectionDetectionError,
+    detected_layout:            detectedLayout,
+    layout_detection_status:    layoutDetectionStatus,
+    layout_detection_error:     layoutDetectionError,
     status,
     error_message:              errorMessage,
   };
 
-  // structured_fields and the three detected_sections/section_detection_*
-  // columns are all recent additions (see scripts/sql/add-structured-
-  // fields-column.sql and add-detected-sections-columns.sql) — every
-  // registration includes them in the insert now, so until those
-  // migrations are run every template upload would otherwise start
-  // failing. Retry, dropping one offending column at a time, rather than
-  // hard-failing registration for an unrelated deploy-vs-migration
-  // ordering issue — those fields are simply absent from the saved row
-  // until their column exists.
-  const OPTIONAL_INSERT_COLUMNS = ["structured_fields", "detected_sections", "section_detection_status", "section_detection_error"];
+  // structured_fields/detected_sections/section_detection_*/detected_layout/
+  // layout_detection_* are all recent additions (see scripts/sql/
+  // add-structured-fields-column.sql, add-detected-sections-columns.sql,
+  // add-detected-layout-columns.sql) — every registration includes them in
+  // the insert now, so until those migrations are run every template upload
+  // would otherwise start failing. Retry, dropping one offending column at
+  // a time, rather than hard-failing registration for an unrelated
+  // deploy-vs-migration ordering issue — those fields are simply absent
+  // from the saved row until their column exists.
+  const OPTIONAL_INSERT_COLUMNS = [
+    "structured_fields", "detected_sections", "section_detection_status", "section_detection_error",
+    "detected_layout", "layout_detection_status", "layout_detection_error",
+  ];
   let payload = insertPayload;
   let saved, insertError;
   for (let attempt = 0; attempt <= OPTIONAL_INSERT_COLUMNS.length; attempt++) {
@@ -1404,6 +1622,8 @@ async function handleRegister(req, res) {
     ...saved,
     sectionDetectionEngineVersion: SECTION_DETECTION_ENGINE_VERSION,
     ...(sectionDebugEnabled ? { sectionDetectionDebug: sectionDebugLog, sectionExtractionDebug } : {}),
+    layoutDetectionEngineVersion: LAYOUT_DETECTION_ENGINE_VERSION,
+    ...(layoutDebugEnabled ? { layoutDetectionDebug } : {}),
   });
 }
 

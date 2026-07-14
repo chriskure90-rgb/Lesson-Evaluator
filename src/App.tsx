@@ -3429,6 +3429,106 @@ function DetectedSectionsPanel({
   );
 }
 
+/* ── Phase 3: Layout Preview (wireframe only) ─────────────────────────────────
+   Renders template.detected_layout as-is — no fetching, no editing, purely a
+   read-only view of what the server already computed during registration
+   (see detectTemplateLayout in api/custom-templates.js). Deliberately a real
+   HTML <table> with colSpan/rowSpan so merged cells render correctly for
+   free, styled as a neutral wireframe (borders only, no fonts/colors/margins
+   from the original document) — this previews STRUCTURE, not the final
+   formatted document (that's Phase 4/"final layout reproduction", out of
+   scope here). Empty cells are rendered too (an explicit "(empty)" cell),
+   since they still occupy a column position and affect alignment even with
+   no text in them.
+──────────────────────────────────────────────────────────────────────────── */
+function LayoutPreviewPanel({ template }: { template: CustomTemplate }) {
+  const isPdf = template.original_filename.toLowerCase().endsWith(".pdf");
+  const layout = template.detected_layout;
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+      <p style={{ fontWeight: 700, fontSize: 13, margin: "0 0 8px" }}>Layout Preview</p>
+
+      {template.status === "processing" ? (
+        <p style={{ fontSize: 12.5, color: "var(--muted-fg)" }}>Detecting layout…</p>
+      ) : isPdf || layout.sourceType === "pdf" ? (
+        <p style={{ fontSize: 12.5, color: "var(--muted-fg)" }}>
+          Layout recognition is currently available for DOCX templates only.
+        </p>
+      ) : template.layout_detection_status === "error" ? (
+        <p style={{ fontSize: 12.5, color: "var(--destructive)" }}>
+          Layout detection failed{template.layout_detection_error ? `: ${template.layout_detection_error}` : "."}
+        </p>
+      ) : layout.tables.length === 0 ? (
+        <p style={{ fontSize: 12.5, color: "var(--muted-fg)" }}>No table layout detected.</p>
+      ) : (
+        <>
+          {layout.tables.map((table) => (
+            <table
+              key={table.id}
+              style={{ borderCollapse: "collapse", width: "100%", marginBottom: 14, tableLayout: "fixed" }}
+            >
+              <tbody>
+                {table.rows.map((row) => (
+                  <tr key={row.id}>
+                    {row.cells.map((cell) => (
+                      <td
+                        key={cell.id}
+                        colSpan={cell.colspan}
+                        rowSpan={cell.rowspan}
+                        style={{
+                          border: "1px solid var(--border)",
+                          padding: 6,
+                          verticalAlign: "top",
+                          fontSize: 12,
+                          minWidth: 60,
+                          height: 32,
+                        }}
+                      >
+                        {cell.labels.length === 0 ? (
+                          <span style={{ color: "var(--muted-fg)", fontStyle: "italic" }}>(empty)</span>
+                        ) : (
+                          cell.labels.map((label, i) => (
+                            <div key={i} style={{ marginBottom: i < cell.labels.length - 1 ? 4 : 0, display: "flex", alignItems: "center", gap: 6 }}>
+                              <span>{label}</span>
+                              <span
+                                className={`lib-badge ${cell.sectionIds[i] ? "badge-ready" : "badge-needs"}`}
+                                style={{ fontSize: 9.5, padding: "1px 6px" }}
+                              >
+                                {cell.sectionIds[i] ? "linked" : "unmatched"}
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ))}
+
+          {layout.unmatchedSectionIds.length > 0 && (() => {
+            const allSections = [
+              ...template.detected_sections.contentSections,
+              ...template.detected_sections.metadataFields,
+              ...template.detected_sections.instructionTexts,
+            ];
+            const unmatchedLabels = layout.unmatchedSectionIds
+              .map((id) => allSections.find((s) => s.id === id)?.originalLabel)
+              .filter((label): label is string => !!label);
+            return (
+              <p style={{ fontSize: 12, color: "var(--muted-fg)" }}>
+                Unmatched detected sections (no matching cell found): {unmatchedLabels.join(", ")}
+              </p>
+            );
+          })()}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ════════════════════════════════════════════════════════════
    MANAGE TEMPLATES MODAL
    Slide-over panel opened from GeneratorPage's "Manage Templates" button
@@ -3694,6 +3794,7 @@ function ManageTemplatesModal({
                       }
                       onFinishSetup={() => onFinishTemplateSetup(t.id)}
                     />
+                    <LayoutPreviewPanel template={t} />
 
                     {editingId !== t.id && (
                       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
