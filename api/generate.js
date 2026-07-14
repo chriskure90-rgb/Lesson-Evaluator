@@ -503,29 +503,83 @@ function buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, d
   ].join("\n");
 }
 
-// Phase 2: dynamic generation for a teacher's own uploaded template, keyed by
-// its detected sections (see detectTemplateSections in api/custom-templates.js)
-// instead of the fixed Template1Lesson/Lesson schemas. contentSections is the
-// already-sorted (by .order) detected_sections.contentSections list for the
-// selected template — metadataFields and instructionTexts are never passed in
-// here, so the model is never asked to generate them. The output is a flat
-// JSON object keyed by the exact originalLabel strings (not normalizedKey),
-// so a "custom_section" heading is generated using its own title as guidance,
-// same as every other section.
-function buildDynamicLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies, contentSections }) {
+// Phase 5: canonical target -> human-readable label, mirroring
+// CANONICAL_FIELD_TARGET_LABELS in src/lib/custom-templates.ts. Duplicated
+// rather than shared — api/ has no TypeScript build step and can't import
+// from src/, same reason PLACEHOLDER_CATALOG is hand-mirrored in
+// api/custom-templates.js instead of imported.
+const CANONICAL_FIELD_TARGET_LABELS = {
+  lesson_title: "Lesson Title",
+  date: "Date",
+  grade_level: "Grade Level",
+  subject: "Subject",
+  learning_objectives: "Learning Objectives",
+  standards: "Standards",
+  learner_background: "Learner Background / Knowledge of Students",
+  materials: "Materials",
+  introduction: "Introduction",
+  instruction: "Instruction",
+  student_activities: "Student Activities",
+  assessment: "Assessment",
+  accommodations: "Accommodations",
+  culturally_responsive_education: "Culturally Responsive Education",
+  closure: "Closure",
+  reflection: "Reflection",
+};
+
+// These 4 canonical targets are metadata the Generator page already
+// collects as its own inputs (grade/subject) or that no input exists for
+// yet (date/lesson_title) — mirrors the original Phase 2 rule ("Metadata
+// fields such as Teacher, Grade, Subject, Topic, and Date should use the
+// existing Generator inputs where available"). Either way, the AI is never
+// asked to generate them; ReproducedTemplatePreview fills grade_level/
+// subject from Generator state directly and shows "no value yet" for the
+// rest (see the matching METADATA_SOURCED_TARGETS list in App.tsx).
+const METADATA_SOURCED_TARGETS = new Set(["lesson_title", "date", "grade_level", "subject"]);
+
+// Phase 5: dynamic generation keyed by the teacher's CONFIRMED field
+// mapping (see buildFieldMap in api/custom-templates.js), not raw detected
+// labels — the whole point of field mapping is that content only ever
+// targets the region the teacher actually mapped, never a heading or
+// instruction. Output is keyed by REGION ID (not by target/label text),
+// since duplicate canonical targets are explicitly allowed (requirement:
+// "duplicate canonical targets are allowed, but should display a warning")
+// and label text alone couldn't disambiguate two regions mapped to the
+// same target. Checkbox-group regions are excluded from this text-
+// generation prompt entirely — they display selected options, not
+// AI-generated prose (not yet wired to an actual selection mechanism this
+// phase; they render as unselected in the preview, a known limitation).
+// manual_entry/leave_blank/fixed_original_text mappings are also excluded —
+// nothing should be generated for them at all.
+function buildDynamicLessonPromptFromFieldMap({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies, fieldMap }) {
   const standardsLine =
     Array.isArray(frameworks) && frameworks.length > 0
       ? `${frameworks.join(", ")}${code ? ` — ${code}` : ""}`
       : code || "Not specified";
 
-  const sectionLines = contentSections.map((s) => `- ${JSON.stringify(s.originalLabel)}`);
-  const outputKeyLines = contentSections
-    .map((s) => `  ${JSON.stringify(s.originalLabel)}: "string"`)
+  const regionById = new Map(fieldMap.regions.map((r) => [r.id, r]));
+  const generatableMappings = fieldMap.mappings.filter((m) => {
+    if (m.target === "leave_blank" || m.target === "manual_entry" || m.target === "fixed_original_text") return false;
+    if (METADATA_SOURCED_TARGETS.has(m.target)) return false;
+    const region = regionById.get(m.regionId);
+    return region && region.role === "editable_field";
+  });
+
+  const fieldLines = generatableMappings.map((m) => {
+    const region = regionById.get(m.regionId);
+    const label = m.target === "custom_section"
+      ? (m.customLabel || region?.contextLabel || "Custom section")
+      : (CANONICAL_FIELD_TARGET_LABELS[m.target] || m.target);
+    const guidance = region?.contextInstruction ? ` Guidance from the template: ${region.contextInstruction}` : "";
+    return `- key ${JSON.stringify(m.regionId)}: ${label}.${guidance}`;
+  });
+  const outputKeyLines = generatableMappings
+    .map((m) => `  ${JSON.stringify(m.regionId)}: "string"`)
     .join(",\n");
 
   return [
     "ROLE:",
-    "You are an experienced K-12 instructional designer filling in content for a teacher's own uploaded lesson plan template. The template defines its own sections (given below) instead of a standard fixed format — use exactly those sections, in exactly the order given.",
+    "You are an experienced K-12 instructional designer filling in content for a teacher's own uploaded lesson plan template. The template's fields (given below) were reviewed and confirmed by the teacher — use exactly those fields.",
     "",
     "CONTEXT:",
     "Teachers will provide key information about the class, subject area, learning standards, lesson topic, lesson goal, and duration. Use this information to create a clear, practical, standards-aligned lesson plan that can be realistically delivered in a classroom.",
@@ -550,15 +604,14 @@ function buildDynamicLessonPrompt({ grade, subject, frameworks, code, topic, goa
     "",
     buildMarzanoStrategiesBlock(marzanoStrategies),
     "",
-    "TEMPLATE SECTIONS:",
-    "The uploaded template contains exactly these sections, in this order. Generate appropriate content for every one of them:",
-    ...sectionLines,
-    "If a section's title does not correspond to a standard lesson-plan part (an unusual or template-specific heading), use the section title itself as your only guidance for what content belongs there.",
+    "TEMPLATE FIELDS:",
+    "The uploaded template defines exactly these fields. Generate appropriate content for every one of them, using its exact key (an opaque id, not a display label) in your JSON response:",
+    ...fieldLines,
     "",
     "CONSTRAINTS:",
-    `- Combined, the sections should describe a lesson that realistically fits within ${duration} minutes.`,
+    `- Combined, the fields should describe a lesson that realistically fits within ${duration} minutes.`,
     "- Use vocabulary appropriate for the grade level.",
-    "- Keep each section concise and readable.",
+    "- Keep each field concise and readable.",
     "- All content must align with the lesson topic and lesson goal.",
     `- All content must be appropriate for the subject area: ${subject || "general"}.`,
     "- Ensure the lesson aligns with the provided standard when available.",
@@ -567,8 +620,8 @@ function buildDynamicLessonPrompt({ grade, subject, frameworks, code, topic, goa
     "- Return valid JSON only.",
     "- Do not include markdown formatting.",
     "- Do not include explanations outside the JSON.",
-    "- The JSON must have exactly one key per template section listed above, using the EXACT section title as the key, character-for-character (including punctuation, parentheses, and capitalization).",
-    "- Do not add, remove, rename, merge, or reorder keys. Do not include any other keys (e.g. Teacher, Grade, School, Date, or any metadata field) — those are filled in separately and are never part of this JSON.",
+    "- The JSON must have exactly one key per field listed above, using the EXACT key given (character-for-character).",
+    "- Do not add, remove, rename, merge, or reorder keys.",
     "",
     "OUTPUT FORMAT:",
     "{",
@@ -597,12 +650,12 @@ function dynamicStageError(stage, message, extra = {}) {
   return err;
 }
 
-// Returns the flat, section-labeled JSON object for a dynamic request, or
+// Returns the flat, region-id-keyed JSON object for a dynamic request, or
 // throws a dynamicStageError tagged "llm-call" | "json-parse" | "response-mapping".
-async function generateDynamicLessonContent(model, prompt, contentSections) {
+async function generateDynamicLessonContent(model, prompt, regionIds) {
   if (model !== "mistral" && model !== "Mistral" && model !== "gemini" && model !== "Gemini") {
     console.log("[Generate][dynamic] stage=llm-call — provider not implemented, returning placeholder:", model);
-    return Object.fromEntries(contentSections.map((s) => [s.originalLabel, `${model} provider not implemented yet.`]));
+    return Object.fromEntries(regionIds.map((id) => [id, `${model} provider not implemented yet.`]));
   }
 
   console.log("[Generate][dynamic] stage=llm-call model:", model);
@@ -658,9 +711,10 @@ export default async function handler(req, res) {
 
     // Unrecognized/missing values fall back to "standard" so existing
     // clients (and the Standard Lesson Plan option) behave exactly as before.
-    // "dynamic" (Phase 2) is a third, independent schema — see
-    // buildDynamicLessonPrompt — driven entirely by the selected template's
-    // detected_sections rather than either fixed schema below.
+    // "dynamic" is a third, independent schema — see
+    // buildDynamicLessonPromptFromFieldMap — driven entirely by the selected
+    // template's CONFIRMED field_map (Phase 5) rather than either fixed
+    // schema below, or raw detected_sections.
     const normalizedLessonFormat =
       lessonFormat === "template1" ? "template1" : lessonFormat === "dynamic" ? "dynamic" : "standard";
 
@@ -685,18 +739,18 @@ export default async function handler(req, res) {
     // present, to confirm the id the client sent actually resolves to a
     // real, ready template rather than a stale/deleted one.
     let customTemplateStructuredFields = [];
-    let customTemplateContentSections = [];
+    let customTemplateFieldMap = null;
     if (customTemplateId) {
       console.log("[Generate] custom template selected:", { customTemplateId, customTemplateName });
       if (supabase) {
         // Selected per-format: a Postgres "column does not exist" error fails
         // the entire select, so the dynamic path (which only needs
-        // detected_sections) must not be coupled to structured_fields —
-        // that column has its own independent migration/rollout and dynamic
-        // generation shouldn't fail just because it hasn't been applied.
+        // field_map) must not be coupled to structured_fields — that column
+        // has its own independent migration/rollout and dynamic generation
+        // shouldn't fail just because it hasn't been applied.
         const selectColumns =
           normalizedLessonFormat === "dynamic"
-            ? "id, name, status, detected_sections"
+            ? "id, name, status, field_map"
             : "id, name, status, recognized_placeholders, structured_fields";
         if (normalizedLessonFormat === "dynamic") {
           console.log("[Generate][dynamic] stage=template-fetch customTemplateId:", customTemplateId);
@@ -714,14 +768,12 @@ export default async function handler(req, res) {
         } else {
           console.log("[Generate] custom template data loaded by backend:", templateRow);
           customTemplateStructuredFields = templateRow?.structured_fields || [];
-          customTemplateContentSections = Array.isArray(templateRow?.detected_sections?.contentSections)
-            ? [...templateRow.detected_sections.contentSections].sort((a, b) => a.order - b.order)
-            : [];
+          customTemplateFieldMap = templateRow?.field_map || null;
           if (normalizedLessonFormat === "dynamic") {
             console.log(
-              "[Generate][dynamic] stage=template-fetch confirmed:", !!templateRow?.detected_sections?.confirmed,
-              "contentSectionCount:", customTemplateContentSections.length,
-              "labels:", customTemplateContentSections.map((s) => s.originalLabel)
+              "[Generate][dynamic] stage=template-fetch confirmed:", !!customTemplateFieldMap?.confirmed,
+              "regionCount:", customTemplateFieldMap?.regions?.length ?? 0,
+              "mappingCount:", customTemplateFieldMap?.mappings?.length ?? 0
             );
           }
         }
@@ -730,12 +782,33 @@ export default async function handler(req, res) {
       }
     }
 
-    if (normalizedLessonFormat === "dynamic" && customTemplateContentSections.length === 0) {
-      console.log("[Generate][dynamic] stage=validation failed — template has no content sections");
-      throw dynamicStageError(
-        "validation",
-        "This template has no confirmed detected sections yet. Review and confirm its sections before generating a dynamic lesson plan."
-      );
+    // Generation is gated on the teacher's CONFIRMED field mapping, not raw
+    // detection — "Confirm Field Mapping" (see FieldMappingPanel) is what
+    // turns confirmed: true, and editing any mapping afterward immediately
+    // flips it back to false, so this check always reflects the mapping the
+    // teacher actually last reviewed.
+    if (normalizedLessonFormat === "dynamic") {
+      if (!customTemplateFieldMap?.confirmed) {
+        console.log("[Generate][dynamic] stage=validation failed — field mapping not confirmed");
+        throw dynamicStageError(
+          "validation",
+          "This template's field mapping hasn't been confirmed yet. Review and confirm its field mapping in Manage Templates before generating."
+        );
+      }
+      const regionById = new Map((customTemplateFieldMap.regions || []).map((r) => [r.id, r]));
+      const generatableCount = (customTemplateFieldMap.mappings || []).filter((m) => {
+        if (m.target === "leave_blank" || m.target === "manual_entry" || m.target === "fixed_original_text") return false;
+        if (METADATA_SOURCED_TARGETS.has(m.target)) return false;
+        const region = regionById.get(m.regionId);
+        return region && region.role === "editable_field";
+      }).length;
+      if (generatableCount === 0) {
+        console.log("[Generate][dynamic] stage=validation failed — no generatable fields in confirmed mapping");
+        throw dynamicStageError(
+          "validation",
+          "This template's confirmed field mapping has no fields for the AI to generate (every field is set to leave blank, manual entry, or fixed text)."
+        );
+      }
     }
 
     // Resolve the standards section: exact code match (priority) + pgvector
@@ -758,7 +831,7 @@ export default async function handler(req, res) {
     const prompt = isTemplate1
       ? buildTemplate1Prompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies, structuredFields: customTemplateStructuredFields })
       : isDynamic
-      ? buildDynamicLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies, contentSections: customTemplateContentSections })
+      ? buildDynamicLessonPromptFromFieldMap({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies, fieldMap: customTemplateFieldMap })
       : buildLessonPrompt({ grade, subject, frameworks, code, topic, goal, duration, standardDescription, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies });
 
     console.debug("[Generate] inputs:", { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat: normalizedLessonFormat, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies });
@@ -769,7 +842,16 @@ export default async function handler(req, res) {
     // stage without touching the shared Standard/Template1 provider calls
     // below.
     if (isDynamic) {
-      const content = await generateDynamicLessonContent(model, prompt, customTemplateContentSections);
+      const regionById = new Map(customTemplateFieldMap.regions.map((r) => [r.id, r]));
+      const generatableRegionIds = customTemplateFieldMap.mappings
+        .filter((m) => {
+          if (m.target === "leave_blank" || m.target === "manual_entry" || m.target === "fixed_original_text") return false;
+          if (METADATA_SOURCED_TARGETS.has(m.target)) return false;
+          const region = regionById.get(m.regionId);
+          return region && region.role === "editable_field";
+        })
+        .map((m) => m.regionId);
+      const content = await generateDynamicLessonContent(model, prompt, generatableRegionIds);
       return res.status(200).json(content);
     }
 

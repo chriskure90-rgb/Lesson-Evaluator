@@ -1358,8 +1358,10 @@ function buildFieldRegions(html) {
 // never "ready", regardless of classifier confidence — no blank/
 // placeholder was actually found in the document for them, so they're
 // inherently less certain than an explicit one.
-function buildFieldMap(html) {
-  const regions = buildFieldRegions(html);
+// Shared by both the DOCX and PDF paths — turns a flat region list into one
+// mapping per editable_field/checkbox_group region. Implicit regions always
+// start "needs_review", never "ready", regardless of classifier confidence.
+function buildMappingsForRegions(regions) {
   const mappings = [];
   for (const region of regions) {
     if (region.role !== "editable_field" && region.role !== "checkbox_group") continue;
@@ -1376,18 +1378,41 @@ function buildFieldMap(html) {
       status,
     });
   }
-  return { version: 1, regions, mappings, confirmed: false };
+  return mappings;
+}
+
+function buildFieldMap(html) {
+  const regions = buildFieldRegions(html);
+  return { version: 1, regions, mappings: buildMappingsForRegions(regions), confirmed: false };
+}
+
+// PDF first pass: text extraction here is flat lines with no real
+// geometry, so there's no reliable way to detect a genuine blank spot the
+// way a literal empty DOCX paragraph is detected — every editable field
+// below a heading with nothing more specific is necessarily an "implicit"
+// synthesis (see classifyUnitsIntoRegions), same as the pre-existing flat
+// PDF section-detection behavior, just wrapped in the same region/mapping
+// model DOCX uses so the mapping UI works uniformly. The one EXPLICIT
+// signal PDFs can still offer is a visible fill-in-the-blank marker (a run
+// of underscores/dots/dashes) — treated as an empty unit, same as a blank
+// DOCX paragraph.
+const PDF_BLANK_LINE_MARKER = /^[_.\-\s]{3,}$/;
+
+function buildFieldRegionsFromPdfText(text) {
+  const lines = splitTextLines(text).filter((line) => !PDF_PAGE_MARKER.test(line));
+  const units = lines.map((line) => ({ text: PDF_BLANK_LINE_MARKER.test(line) ? "" : line }));
+  return classifyUnitsIntoRegions(units, "pdf", {});
 }
 
 // Diagnostics only (mirrors buildLayoutDebugInfo's debugLayout gating) —
 // reports region/mapping counts and every region's role/source/context so
 // this can be verified against a real document without server-log access.
-function buildFieldMapDebugInfo(html, fieldMap) {
+function buildFieldMapDebugInfo(sourceLength, fieldMap) {
   const roleCounts = {};
   for (const r of fieldMap.regions) roleCounts[r.role] = (roleCounts[r.role] || 0) + 1;
   return {
     engineVersion: FIELD_MAP_ENGINE_VERSION,
-    htmlLength: html.length,
+    sourceLength,
     regionCount: fieldMap.regions.length,
     roleCounts,
     mappingCount: fieldMap.mappings.length,
@@ -1397,22 +1422,23 @@ function buildFieldMapDebugInfo(html, fieldMap) {
 }
 
 // Top-level entry point called from handleRegister, mirroring
-// detectTemplateLayout's shape. PDF first-pass support lands in a later
-// stage of this same phase; for now PDF gets an empty, "unsupported" field
-// map, same as detectTemplateLayout's own PDF handling.
-async function detectTemplateFieldMap({ isPdf, buffer, debug = false }) {
+// detectTemplateLayout's shape. PDF gets a real (if lower-confidence) field
+// map now — every field synthesized from flat text defaults to
+// "needs_review" (implicit source) so a teacher is prompted to check each
+// one, and layout_detection_status stays "unsupported" for PDF regardless
+// (table/row/cell geometry is a separate, still-DOCX-only concern) — this
+// only affects field_map/field_map_status.
+async function detectTemplateFieldMap({ isPdf, buffer, pdfText, debug = false }) {
   if (isPdf) {
-    return {
-      fieldMap: { version: 1, regions: [], mappings: [], confirmed: false },
-      status: "unsupported",
-      error: null,
-      debugInfo: debug ? { engineVersion: FIELD_MAP_ENGINE_VERSION, sourceType: "pdf", note: "Field mapping is currently available for DOCX templates only." } : null,
-    };
+    const regions = buildFieldRegionsFromPdfText(pdfText || "");
+    const fieldMap = { version: 1, regions, mappings: buildMappingsForRegions(regions), confirmed: false };
+    const debugInfo = debug ? buildFieldMapDebugInfo((pdfText || "").length, fieldMap) : null;
+    return { fieldMap, status: "ready", error: null, debugInfo };
   }
 
   const html = await extractDocxHtml(buffer);
   const fieldMap = buildFieldMap(html);
-  const debugInfo = debug ? buildFieldMapDebugInfo(html, fieldMap) : null;
+  const debugInfo = debug ? buildFieldMapDebugInfo(html.length, fieldMap) : null;
   return { fieldMap, status: "ready", error: null, debugInfo };
 }
 
@@ -1950,7 +1976,8 @@ async function handleRegister(req, res) {
   let fieldMapError = null;
   let fieldMapDebug = null;
   try {
-    const result = await detectTemplateFieldMap({ isPdf, buffer: originalBuffer, debug: fieldMapDebugEnabled });
+    const fieldMapPdfText = isPdf ? await extractPdfText(originalBuffer) : null;
+    const result = await detectTemplateFieldMap({ isPdf, buffer: originalBuffer, pdfText: fieldMapPdfText, debug: fieldMapDebugEnabled });
     fieldMap = result.fieldMap;
     fieldMapStatus = result.status;
     fieldMapDebug = result.debugInfo;

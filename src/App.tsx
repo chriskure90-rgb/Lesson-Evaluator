@@ -16,11 +16,19 @@ import {
   deleteCustomTemplate,
   exportCustomTemplateLessonDocx,
   updateDetectedSections,
-  toDynamicLessonPlan,
+  updateFieldMap,
+  toDynamicLessonPlanFromFieldMap,
+  METADATA_SOURCED_TARGETS,
+  CANONICAL_FIELD_TARGETS,
+  CANONICAL_FIELD_TARGET_LABELS,
   type CustomTemplate,
   type DetectedSections,
   type DetectedSectionItem,
   type DynamicLessonPlan,
+  type TemplateRegion,
+  type FieldMapping,
+  type FieldMappingTarget,
+  type FieldMappingStatus,
 } from "./lib/custom-templates";
 import {
   fetchTeachingStrategies,
@@ -1103,48 +1111,35 @@ function DynamicLessonPreview({ plan, breadcrumb }: { plan: DynamicLessonPlan; b
   );
 }
 
-// ── Phase 4: Reproduced Template Preview ──────────────────────────────────────
-// Combines detected_layout (structure) + detected_sections (labels/types) +
-// DynamicLessonPlan (generated content) into one preview that mirrors the
-// uploaded template's actual table/row/cell/colspan/rowspan structure —
-// still a browser preview only, not the final DOCX (export is untouched,
-// Phase 5+ concern). Falls back to the flat DynamicLessonPreview when the
-// template has no table layout detected yet (e.g. migration not run, or a
-// template registered before Phase 3 existed).
+// ── Phase 5: Reproduced Template Preview ──────────────────────────────────────
+// Renders from field_map (regions + the teacher's CONFIRMED mappings), not
+// detected_layout/detected_sections — content is placed only into the exact
+// region the teacher mapped it to; headings/instructions render their
+// original fixed text, untouched. Still a browser preview only, not the
+// final DOCX (export is untouched). Falls back to the flat
+// DynamicLessonPreview when the template has no regions detected yet (e.g.
+// migration not run, a PDF template, or one registered before this existed).
 function ReproducedTemplatePreview({
   template,
   plan,
   gradeBandLabel,
   subject,
-  topic,
-  duration,
   breadcrumb,
 }: {
   template: CustomTemplate;
   plan: DynamicLessonPlan;
   gradeBandLabel: string;
   subject: string;
-  topic: string;
-  duration: number;
   breadcrumb: string;
 }) {
-  const layout = template.detected_layout;
-  // Defensive: layout/detected_sections/plan are all normally well-formed by
-  // the time they reach here, but a stale/partially-migrated row (e.g. an
-  // older detected_layout whose sectionIds reference a section that's since
-  // been renamed/removed via DetectedSectionsPanel) must never crash this
+  const fieldMap = template.field_map;
+  // Defensive: fieldMap/plan are normally well-formed by the time they
+  // reach here, but a stale/partially-migrated row must never crash this
   // render — a thrown error here would take down the whole GeneratorPage,
-  // not just this preview. Every array access below goes through one of
-  // these guards rather than trusting the stored shape directly.
-  const tables = Array.isArray(layout?.tables) ? layout.tables : [];
-  const isPdf = template.original_filename.toLowerCase().endsWith(".pdf") || layout?.sourceType === "pdf";
+  // not just this preview.
+  const regions = Array.isArray(fieldMap?.regions) ? fieldMap.regions : [];
+  const isPdf = template.original_filename.toLowerCase().endsWith(".pdf") || template.detected_layout?.sourceType === "pdf";
 
-  // Layout recognition/reproduction is DOCX-only by design (see
-  // detectTemplateLayout in api/custom-templates.js, which returns an empty
-  // "pdf" layout without attempting any PDF parsing) — section detection and
-  // dynamic content generation both still work for PDF templates, so the
-  // generated content itself is still shown via the flat fallback view below
-  // this message, just not reproduced as a table.
   if (isPdf) {
     return (
       <>
@@ -1156,7 +1151,7 @@ function ReproducedTemplatePreview({
     );
   }
 
-  if (tables.length === 0) {
+  if (regions.length === 0) {
     return (
       <>
         <p style={{ fontSize: 12.5, color: "var(--muted-fg)", marginBottom: 8 }}>
@@ -1167,44 +1162,90 @@ function ReproducedTemplatePreview({
     );
   }
 
-  const detectedSections = template.detected_sections;
-  const allSections = [
-    ...(Array.isArray(detectedSections?.contentSections) ? detectedSections.contentSections : []),
-    ...(Array.isArray(detectedSections?.metadataFields) ? detectedSections.metadataFields : []),
-    ...(Array.isArray(detectedSections?.instructionTexts) ? detectedSections.instructionTexts : []),
-  ];
-  const sectionById = new Map(allSections.map((s) => [s.id, s]));
+  const mappingByRegionId = new Map((fieldMap.mappings || []).map((m) => [m.regionId, m]));
   const generatedSections = Array.isArray(plan?.sections) ? plan.sections : [];
   const generatedById = new Map(generatedSections.map((s) => [s.id, s]));
-
-  // Only what the Generator page actually has values for today — Teacher/
-  // School/Date/Class Period have no corresponding input anywhere in the
-  // app, so they stay empty states rather than inventing a value.
-  const metadataValueByNormalizedKey: Record<string, string | undefined> = {
-    gradeLevel: gradeBandLabel,
+  // Only what the Generator page actually has values for today — see
+  // METADATA_SOURCED_TARGETS/buildDynamicLessonPromptFromFieldMap in
+  // api/generate.js, which never asks the AI to generate these.
+  const metadataValueByTarget: Partial<Record<FieldMappingTarget, string>> = {
+    grade_level: gradeBandLabel,
     subject,
-    topic,
-    duration: `${duration} minutes`,
   };
+  const usedRegionIds = new Set<string>();
 
-  const mappedContentIds = new Set<string>();
+  // Returns the value to render under a region's label, or null when this
+  // role never carries a value at all — headings/instructions/blanks are
+  // permanently read-only, never a mapping target, by construction.
+  function valueForRegion(region: TemplateRegion): { text: string | undefined; placeholder: string } | null {
+    if (region.role !== "editable_field" && region.role !== "checkbox_group") return null;
+    const mapping = mappingByRegionId.get(region.id);
+    if (!mapping) return null;
+    usedRegionIds.add(region.id);
 
-  // Returns the value to render under a label (or undefined when there's no
-  // defined "value slot" for this section type at all, e.g. instruction
-  // text or a label with no detected-section match).
-  function valueForSectionId(sectionId: string | null): { text: string | undefined; placeholder: string } | null {
-    if (!sectionId) return null;
-    const section = sectionById.get(sectionId);
-    if (!section) return null;
-    if (section.type === "metadata_field") {
-      return { text: metadataValueByNormalizedKey[section.normalizedKey], placeholder: "(no value yet)" };
+    if (mapping.target === "leave_blank") return { text: undefined, placeholder: "(intentionally left blank)" };
+    if (mapping.target === "manual_entry") return { text: undefined, placeholder: "(fill in manually)" };
+    if (mapping.target === "fixed_original_text") return { text: region.text || undefined, placeholder: "(original text preserved)" };
+    if (region.role === "checkbox_group") {
+      // Requirement: checkbox regions display selected options, not
+      // generated prose — AI-driven selection isn't wired up this phase.
+      const options = region.checkboxOptions?.join(", ") || "none detected";
+      return { text: undefined, placeholder: `(checkbox options: ${options} — selection not yet automated)` };
     }
-    if (section.type === "content_section") {
-      mappedContentIds.add(sectionId);
-      const generated = generatedById.get(sectionId);
-      return { text: generated?.content?.trim() || undefined, placeholder: "(no content generated)" };
+    if (METADATA_SOURCED_TARGETS.has(mapping.target)) {
+      return { text: metadataValueByTarget[mapping.target], placeholder: "(no value yet)" };
     }
-    return null; // instruction_text — nothing generated or entered for these
+    const generated = generatedById.get(region.id);
+    return { text: generated?.content?.trim() || undefined, placeholder: "(no content generated)" };
+  }
+
+  function renderRegionContent(region: TemplateRegion) {
+    if (region.role === "blank") {
+      return <span style={{ color: "var(--muted-fg)", fontStyle: "italic" }}>(empty)</span>;
+    }
+    if (region.role === "heading" || region.role === "instruction") {
+      // Original document text, verbatim — never overwritten.
+      return (
+        <div style={{ fontWeight: region.role === "heading" ? 600 : 400, fontStyle: region.role === "instruction" ? "italic" : "normal", color: region.role === "instruction" ? "var(--muted-fg)" : "inherit" }}>
+          {region.text}
+        </div>
+      );
+    }
+    const resolved = valueForRegion(region);
+    return (
+      <div>
+        <div style={{ fontWeight: 600 }}>{region.contextLabel || region.text || "(field)"}</div>
+        {resolved && (
+          <div
+            style={{
+              marginTop: 2,
+              whiteSpace: "pre-wrap",
+              color: resolved.text ? "var(--foreground)" : "var(--muted-fg)",
+              fontStyle: resolved.text ? "normal" : "italic",
+            }}
+          >
+            {resolved.text || resolved.placeholder}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const { topLevel, tables } = groupRegionsByLocation(regions);
+  // field_map cell ids use the identical scheme as detected_layout cell ids
+  // (both walk the same mammoth HTML the same way) — cross-referencing by
+  // id recovers the colspan/rowspan geometry for merged cells without
+  // duplicating that detection here. Falls back to 1/1 if detected_layout
+  // isn't available (e.g. its migration hasn't been run) or a cell id
+  // doesn't line up for some reason — a plain, unmerged cell is a safe
+  // default, never a crash.
+  const cellGeometryById = new Map<string, { colspan: number; rowspan: number }>();
+  for (const t of template.detected_layout?.tables ?? []) {
+    for (const r of t.rows ?? []) {
+      for (const c of r.cells ?? []) {
+        cellGeometryById.set(c.id, { colspan: c.colspan || 1, rowspan: c.rowspan || 1 });
+      }
+    }
   }
 
   return (
@@ -1214,72 +1255,42 @@ function ReproducedTemplatePreview({
         <p style={{ marginTop: 6, fontSize: "1.05rem", fontWeight: 600 }}>Reproduced Template Preview</p>
       </div>
       <div style={{ padding: "16px 20px" }}>
-        {tables.map((table) => {
-          const rows = Array.isArray(table.rows) ? table.rows : [];
-          return (
-            <table
-              key={table.id}
-              style={{ borderCollapse: "collapse", width: "100%", marginBottom: 14, tableLayout: "fixed" }}
-            >
-              <tbody>
-                {rows.map((row) => {
-                  const cells = Array.isArray(row.cells) ? row.cells : [];
-                  return (
-                    <tr key={row.id}>
-                      {cells.map((cell) => {
-                        const labels = Array.isArray(cell.labels) ? cell.labels : [];
-                        const sectionIds = Array.isArray(cell.sectionIds) ? cell.sectionIds : [];
-                        return (
-                          <td
-                            key={cell.id}
-                            colSpan={cell.colspan || 1}
-                            rowSpan={cell.rowspan || 1}
-                            style={{
-                              border: "1px solid var(--border)",
-                              padding: 8,
-                              verticalAlign: "top",
-                              fontSize: 12.5,
-                              minWidth: 80,
-                              height: 36,
-                            }}
-                          >
-                            {labels.length === 0 ? (
-                              <span style={{ color: "var(--muted-fg)", fontStyle: "italic" }}>(empty)</span>
-                            ) : (
-                              labels.map((label, i) => {
-                                const resolved = valueForSectionId(sectionIds[i] ?? null);
-                                return (
-                                  <div key={i} style={{ marginBottom: i < labels.length - 1 ? 8 : 0 }}>
-                                    <div style={{ fontWeight: 600 }}>{label}</div>
-                                    {resolved && (
-                                      <div
-                                        style={{
-                                          marginTop: 2,
-                                          whiteSpace: "pre-wrap",
-                                          color: resolved.text ? "var(--foreground)" : "var(--muted-fg)",
-                                          fontStyle: resolved.text ? "normal" : "italic",
-                                        }}
-                                      >
-                                        {resolved.text || resolved.placeholder}
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })
-                            )}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          );
-        })}
+        {topLevel.length > 0 && (
+          <div style={{ marginBottom: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+            {topLevel.map((region) => <div key={region.id}>{renderRegionContent(region)}</div>)}
+          </div>
+        )}
+
+        {tables.map((table) => (
+          <table key={table.tableId} style={{ borderCollapse: "collapse", width: "100%", marginBottom: 14, tableLayout: "fixed" }}>
+            <tbody>
+              {table.rows.map((row) => (
+                <tr key={row.rowId}>
+                  {row.cells.map((cell) => {
+                    const geometry = cellGeometryById.get(cell.cellId) ?? { colspan: 1, rowspan: 1 };
+                    return (
+                      <td
+                        key={cell.cellId}
+                        colSpan={geometry.colspan}
+                        rowSpan={geometry.rowspan}
+                        style={{ border: "1px solid var(--border)", padding: 8, verticalAlign: "top", fontSize: 12.5, minWidth: 80, height: 36 }}
+                      >
+                        {cell.regions.map((region, i) => (
+                          <div key={region.id} style={{ marginBottom: i < cell.regions.length - 1 ? 8 : 0 }}>
+                            {renderRegionContent(region)}
+                          </div>
+                        ))}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ))}
 
         {(() => {
-          const unmapped = generatedSections.filter((s) => !mappedContentIds.has(s.id));
+          const unmapped = generatedSections.filter((s) => !usedRegionIds.has(s.id));
           if (unmapped.length === 0) return null;
           return (
             <div style={{ marginTop: 8, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
@@ -1605,14 +1616,15 @@ function GeneratorPage({
     try {
       if (lessonFormat === "dynamic") {
         const selectedCustomTemplate = customTemplates.find((t) => t.id === selectedCustomTemplateId) ?? null;
-        const contentSections = selectedCustomTemplate?.detected_sections?.contentSections ?? [];
+        const fieldMap = selectedCustomTemplate?.field_map;
         console.log("[handleGenerate] dynamic generation for template:", {
           selectedCustomTemplateId,
           selectedCustomTemplateName: selectedCustomTemplate?.name ?? null,
-          contentSectionCount: contentSections.length,
+          confirmed: fieldMap?.confirmed ?? false,
+          regionCount: fieldMap?.regions.length ?? 0,
         });
-        if (!selectedCustomTemplate || contentSections.length === 0) {
-          setError("This template has no confirmed sections yet. Review and confirm its sections in Manage Templates first.");
+        if (!selectedCustomTemplate || !fieldMap?.confirmed) {
+          setError("This template's field mapping hasn't been confirmed yet. Review and confirm it in Manage Templates first.");
           return;
         }
         const raw = await generateDynamicLessonPlan({
@@ -1621,7 +1633,7 @@ function GeneratorPage({
           customTemplateId: selectedCustomTemplate.id,
           customTemplateName: selectedCustomTemplate.name,
         });
-        const plan = toDynamicLessonPlan(raw, contentSections);
+        const plan = toDynamicLessonPlanFromFieldMap(raw, fieldMap);
         setDynamicLessonPlan(plan);
         setDynamicPreviewTemplate(selectedCustomTemplate);
         setGeneratedFormat("dynamic");
@@ -1975,13 +1987,13 @@ function GeneratorPage({
                           type="button"
                           className={`fw-chip${active ? " fw-chip-active" : ""}`}
                           onClick={() => {
-                            // Once a template's sections are confirmed, its
-                            // detected sections ARE the schema teachers expect
-                            // to fill in — default straight to dynamic
-                            // generation instead of the old fixed Template 1
-                            // fields. The toggle below still lets them switch
-                            // back for the fixed-fields/DOCX-export path.
-                            setLessonFormat(t.detected_sections?.confirmed ? "dynamic" : "custom");
+                            // Once a template's FIELD MAPPING is confirmed
+                            // (Phase 5 — not just its detected sections),
+                            // generation can actually target the exact
+                            // regions the teacher reviewed — default
+                            // straight to dynamic generation instead of the
+                            // old fixed Template 1 fields.
+                            setLessonFormat(t.field_map?.confirmed ? "dynamic" : "custom");
                             setSelectedCustomTemplateId(t.id);
                           }}
                           aria-pressed={active}
@@ -2358,18 +2370,16 @@ function GeneratorPage({
                 template chip after generating (without regenerating) can't
                 make an already-displayed preview fall back incorrectly.
                 ReproducedTemplatePreview is always the primary result when
-                that template's detected_layout has real tables; it falls
-                back to DynamicLessonPreview only internally (no usable
-                layout — e.g. a PDF template) or here when the pinned
-                template itself is somehow unavailable. */}
+                that template's field_map has real regions; it falls back to
+                DynamicLessonPreview only internally (no usable regions —
+                e.g. a PDF template) or here when the pinned template itself
+                is somehow unavailable. */}
             {dynamicPreviewTemplate ? (
               <ReproducedTemplatePreview
                 template={dynamicPreviewTemplate}
                 plan={dynamicLessonPlan}
                 gradeBandLabel={gradeBandLabel}
                 subject={subject}
-                topic={topic}
-                duration={duration}
                 breadcrumb={breadcrumb}
               />
             ) : (
@@ -2433,12 +2443,16 @@ function GeneratorPage({
           onTemplatesChange={handleCustomTemplatesChange}
           onClose={() => setShowTemplatesModal(false)}
           onFinishTemplateSetup={(templateId) => {
-            // The whole point of finishing setup is generating from the
-            // now-confirmed detected sections — land directly in dynamic
-            // mode rather than defaulting back to the fixed Template 1
-            // fields and requiring an extra manual toggle click to reach it.
+            // Confirming detected sections here is a separate, earlier step
+            // from confirming the field mapping (Phase 5) — dynamic
+            // generation is gated on field_map.confirmed, not this. Land in
+            // dynamic mode only if the field mapping was already confirmed
+            // in an earlier visit; otherwise "custom" (same default as
+            // selecting the template chip) so Generate doesn't immediately
+            // fail on an unconfirmed mapping.
+            const template = customTemplates.find((t) => t.id === templateId);
             setSelectedCustomTemplateId(templateId);
-            setLessonFormat("dynamic");
+            setLessonFormat(template?.field_map?.confirmed ? "dynamic" : "custom");
             setShowTemplatesModal(false);
           }}
         />
@@ -3683,102 +3697,339 @@ function DetectedSectionsPanel({
   );
 }
 
-/* ── Phase 3: Layout Preview (wireframe only) ─────────────────────────────────
-   Renders template.detected_layout as-is — no fetching, no editing, purely a
-   read-only view of what the server already computed during registration
-   (see detectTemplateLayout in api/custom-templates.js). Deliberately a real
-   HTML <table> with colSpan/rowSpan so merged cells render correctly for
-   free, styled as a neutral wireframe (borders only, no fonts/colors/margins
-   from the original document) — this previews STRUCTURE, not the final
-   formatted document (that's Phase 4/"final layout reproduction", out of
-   scope here). Empty cells are rendered too (an explicit "(empty)" cell),
-   since they still occupy a column position and affect alignment even with
-   no text in them.
+/* ── Phase 5: Field Mapping Panel (supersedes the Phase 3 Layout Preview) ─────
+   Interactive review of every detected region: headings/instructions render
+   read-only (never overwritten, never a mapping target — enforced by only
+   ever rendering a mapping control for editable_field/checkbox_group roles).
+   Every editable field is selectable via a "Suggested mapping" dropdown
+   (rules-based, never "AI suggestion" wording) covering all 16 canonical
+   targets plus custom section/manual entry/leave blank/fixed original text.
+   Status badges are teacher-facing (Ready/Needs Review/Manual Entry/Leave
+   Blank) — the old "linked"/"unmatched" wording never appears here. Mapping
+   changes autosave immediately; editing any mapping after confirmation
+   immediately flips confirmed back to false. "Confirm Field Mapping"
+   validates (every custom_section has a label; duplicate canonical targets
+   warn but never block) before persisting confirmed: true.
 ──────────────────────────────────────────────────────────────────────────── */
-function LayoutPreviewPanel({ template }: { template: CustomTemplate }) {
-  const isPdf = template.original_filename.toLowerCase().endsWith(".pdf");
-  const layout = template.detected_layout;
+
+const FIELD_MAPPING_TARGET_OPTIONS: { value: FieldMappingTarget; label: string }[] = [
+  ...CANONICAL_FIELD_TARGETS.map((t) => ({ value: t as FieldMappingTarget, label: CANONICAL_FIELD_TARGET_LABELS[t] })),
+  { value: "custom_section", label: "Custom Section" },
+  { value: "manual_entry", label: "Manual Entry (teacher fills in later)" },
+  { value: "leave_blank", label: "Leave Blank" },
+  { value: "fixed_original_text", label: "Fixed Original Text (keep as-is)" },
+];
+
+const FIELD_MAPPING_STATUS_LABELS: Record<FieldMappingStatus, string> = {
+  ready: "Ready",
+  needs_review: "Needs Review",
+  manual_entry: "Manual Entry",
+  leave_blank: "Leave Blank",
+};
+
+const FIELD_MAPPING_STATUS_BADGE_CLASS: Record<FieldMappingStatus, string> = {
+  ready: "badge-ready",
+  needs_review: "badge-needs",
+  manual_entry: "badge-needs",
+  leave_blank: "badge-not",
+};
+
+// A teacher's explicit dropdown choice always wins over the suggested
+// status — picking a real canonical target (or "fixed original text") is
+// definitionally "reviewed", manual_entry/leave_blank are their own status,
+// and custom_section still needs its label before it can count as ready.
+function deriveMappingStatus(target: FieldMappingTarget, customLabel: string | undefined): FieldMappingStatus {
+  if (target === "manual_entry") return "manual_entry";
+  if (target === "leave_blank") return "leave_blank";
+  if (target === "custom_section") return customLabel && customLabel.trim() ? "ready" : "needs_review";
+  return "ready";
+}
+
+type RegionCellGroup = { cellId: string; regions: TemplateRegion[] };
+type RegionRowGroup = { rowId: string; cells: RegionCellGroup[] };
+type RegionTableGroup = { tableId: string; rows: RegionRowGroup[] };
+
+function groupRegionsByLocation(regions: TemplateRegion[]): { topLevel: TemplateRegion[]; tables: RegionTableGroup[] } {
+  const topLevel: TemplateRegion[] = [];
+  const tables: RegionTableGroup[] = [];
+  const tableIndex = new Map<string, RegionTableGroup>();
+  const rowIndex = new Map<string, RegionRowGroup>();
+  const cellIndex = new Map<string, RegionCellGroup>();
+
+  for (const region of regions) {
+    if (!region.tableId || !region.rowId || !region.cellId) {
+      topLevel.push(region);
+      continue;
+    }
+    let table = tableIndex.get(region.tableId);
+    if (!table) {
+      table = { tableId: region.tableId, rows: [] };
+      tableIndex.set(region.tableId, table);
+      tables.push(table);
+    }
+    let row = rowIndex.get(region.rowId);
+    if (!row) {
+      row = { rowId: region.rowId, cells: [] };
+      rowIndex.set(region.rowId, row);
+      table.rows.push(row);
+    }
+    let cell = cellIndex.get(region.cellId);
+    if (!cell) {
+      cell = { cellId: region.cellId, regions: [] };
+      cellIndex.set(region.cellId, cell);
+      row.cells.push(cell);
+    }
+    cell.regions.push(region);
+  }
+
+  return { topLevel, tables };
+}
+
+function FieldMappingPanel({
+  template,
+  userId,
+  onTemplateUpdated,
+}: {
+  template: CustomTemplate;
+  userId: string;
+  onTemplateUpdated: (updated: CustomTemplate) => void;
+}) {
+  const isPdf = template.original_filename.toLowerCase().endsWith(".pdf") || template.detected_layout?.sourceType === "pdf";
+  const fieldMap = template.field_map;
+
+  const [draftMappings, setDraftMappings] = useState<FieldMapping[]>(fieldMap.mappings);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+
+  useEffect(() => { setDraftMappings(fieldMap.mappings); }, [template.id, fieldMap]);
+
+  if (template.status === "processing") {
+    return (
+      <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+        <p style={{ fontWeight: 700, fontSize: 13, margin: "0 0 8px" }}>Field Mapping</p>
+        <p style={{ fontSize: 12.5, color: "var(--muted-fg)" }}>Detecting fields…</p>
+      </div>
+    );
+  }
+  if (template.field_map_status === "error") {
+    return (
+      <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+        <p style={{ fontWeight: 700, fontSize: 13, margin: "0 0 8px" }}>Field Mapping</p>
+        <p style={{ fontSize: 12.5, color: "var(--destructive)" }}>
+          Field detection failed{template.field_map_error ? `: ${template.field_map_error}` : "."}
+        </p>
+      </div>
+    );
+  }
+  if (fieldMap.regions.length === 0) {
+    return (
+      <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+        <p style={{ fontWeight: 700, fontSize: 13, margin: "0 0 8px" }}>Field Mapping</p>
+        <p style={{ fontSize: 12.5, color: "var(--muted-fg)" }}>No fields detected yet.</p>
+      </div>
+    );
+  }
+
+  const mappingByRegionId = new Map(draftMappings.map((m) => [m.regionId, m]));
+
+  async function persist(nextMappings: FieldMapping[], nextConfirmed: boolean) {
+    setSaving(true);
+    setError(null);
+    try {
+      const saved = await updateFieldMap(template.id, userId, { ...fieldMap, mappings: nextMappings, confirmed: nextConfirmed });
+      setDraftMappings(saved.mappings);
+      onTemplateUpdated({ ...template, field_map: saved });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save field mapping.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function updateMapping(regionId: string, patch: Partial<FieldMapping>) {
+    const next = draftMappings.map((m) => {
+      if (m.regionId !== regionId) return m;
+      const merged = { ...m, ...patch };
+      return { ...merged, status: deriveMappingStatus(merged.target, merged.customLabel) };
+    });
+    setDraftMappings(next);
+    setConfirmError(null);
+    // Editing any mapping after confirmation immediately un-confirms — the
+    // teacher must explicitly re-confirm before this template can be used
+    // for generation again.
+    void persist(next, fieldMap.confirmed ? false : fieldMap.confirmed);
+  }
+
+  async function handleConfirm() {
+    const missingCustomLabel = draftMappings.filter((m) => m.target === "custom_section" && !m.customLabel?.trim());
+    if (missingCustomLabel.length > 0) {
+      setConfirmError(`${missingCustomLabel.length} custom section${missingCustomLabel.length > 1 ? "s need" : " needs"} a label before confirming.`);
+      return;
+    }
+    setConfirmError(null);
+    await persist(draftMappings, true);
+  }
+
+  const canonicalTargetCounts = new Map<string, number>();
+  for (const m of draftMappings) {
+    if ((CANONICAL_FIELD_TARGETS as readonly string[]).includes(m.target)) {
+      canonicalTargetCounts.set(m.target, (canonicalTargetCounts.get(m.target) || 0) + 1);
+    }
+  }
+  const duplicateTargetLabels = [...canonicalTargetCounts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([t]) => CANONICAL_FIELD_TARGET_LABELS[t as (typeof CANONICAL_FIELD_TARGETS)[number]]);
+
+  function renderRegion(region: TemplateRegion) {
+    if (region.role === "blank") {
+      return (
+        <p key={region.id} style={{ fontSize: 11.5, color: "var(--muted-fg)", fontStyle: "italic", margin: "2px 0" }}>
+          (blank — structural spacing only)
+        </p>
+      );
+    }
+    if (region.role === "heading" || region.role === "instruction") {
+      return (
+        <p
+          key={region.id}
+          style={{
+            fontSize: region.role === "heading" ? 13 : 12,
+            fontWeight: region.role === "heading" ? 600 : 400,
+            fontStyle: region.role === "instruction" ? "italic" : "normal",
+            color: region.role === "instruction" ? "var(--muted-fg)" : "inherit",
+            margin: "2px 0",
+          }}
+        >
+          {region.text}
+        </p>
+      );
+    }
+
+    // editable_field / checkbox_group — the only roles that can ever carry
+    // a mapping (see requirement: headings/instructions never overwritten).
+    const mapping = mappingByRegionId.get(region.id);
+    if (!mapping) return null;
+    return (
+      <div key={region.id} style={{ marginTop: 6, marginBottom: 6, padding: 8, border: "1px dashed var(--border)", borderRadius: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+          <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>
+            {region.role === "checkbox_group" ? "Checkbox field" : "Editable field"}
+            {region.contextLabel ? ` — under "${region.contextLabel}"` : ""}
+            {region.source === "implicit" ? " (inferred spot, no blank line found)" : ""}
+          </span>
+          <span className={`lib-badge ${FIELD_MAPPING_STATUS_BADGE_CLASS[mapping.status]}`} style={{ fontSize: 9.5 }}>
+            {FIELD_MAPPING_STATUS_LABELS[mapping.status]}
+          </span>
+        </div>
+
+        {region.contextInstruction && (
+          <p style={{ fontSize: 11, color: "var(--muted-fg)", fontStyle: "italic", margin: "0 0 6px" }}>
+            {region.contextInstruction}
+          </p>
+        )}
+
+        {region.role === "checkbox_group" && region.checkboxOptions && (
+          <p style={{ fontSize: 11.5, margin: "0 0 6px" }}>
+            Options: {region.checkboxOptions.join(", ")}
+          </p>
+        )}
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <select
+            className="input"
+            style={{ fontSize: 12.5, padding: "4px 8px", width: "auto" }}
+            value={mapping.target}
+            disabled={saving}
+            onChange={(e) => updateMapping(region.id, { target: e.target.value as FieldMappingTarget })}
+          >
+            {FIELD_MAPPING_TARGET_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          {mapping.suggestedTarget && mapping.suggestedTarget !== mapping.target && (
+            <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>
+              Suggested mapping: {CANONICAL_FIELD_TARGET_LABELS[mapping.suggestedTarget as (typeof CANONICAL_FIELD_TARGETS)[number]] ?? mapping.suggestedTarget}
+              {" "}({Math.round(mapping.suggestedConfidence * 100)}% confidence)
+            </span>
+          )}
+        </div>
+
+        {mapping.target === "custom_section" && (
+          <input
+            className="input"
+            style={{ marginTop: 6, fontSize: 12.5 }}
+            placeholder="Label for this custom section (required)"
+            value={mapping.customLabel ?? ""}
+            disabled={saving}
+            onChange={(e) => updateMapping(region.id, { customLabel: e.target.value })}
+          />
+        )}
+      </div>
+    );
+  }
+
+  const { topLevel, tables } = groupRegionsByLocation(fieldMap.regions);
+  const mappedCount = draftMappings.length;
+  const readyCount = draftMappings.filter((m) => m.status === "ready").length;
 
   return (
     <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
-      <p style={{ fontWeight: 700, fontSize: 13, margin: "0 0 8px" }}>Layout Preview</p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <p style={{ fontWeight: 700, fontSize: 13, margin: 0 }}>Field Mapping</p>
+        <span style={{ fontSize: 11.5, color: "var(--muted-fg)" }}>
+          {readyCount} of {mappedCount} ready
+          {fieldMap.confirmed && <span className="lib-badge badge-ready" style={{ marginLeft: 8 }}>Confirmed</span>}
+        </span>
+      </div>
 
-      {template.status === "processing" ? (
-        <p style={{ fontSize: 12.5, color: "var(--muted-fg)" }}>Detecting layout…</p>
-      ) : isPdf || layout.sourceType === "pdf" ? (
-        <p style={{ fontSize: 12.5, color: "var(--muted-fg)" }}>
-          Layout preview is currently available for DOCX templates only.
+      {isPdf && (
+        <p style={{ fontSize: 12.5, color: "var(--destructive)", marginBottom: 8 }}>
+          ⚠ Field detection for PDF templates is approximate — there's no reliable way to detect real blank spots in a PDF,
+          so every field below was inferred from its label alone. Review each one carefully before confirming.
         </p>
-      ) : template.layout_detection_status === "error" ? (
-        <p style={{ fontSize: 12.5, color: "var(--destructive)" }}>
-          Layout detection failed{template.layout_detection_error ? `: ${template.layout_detection_error}` : "."}
-        </p>
-      ) : layout.tables.length === 0 ? (
-        <p style={{ fontSize: 12.5, color: "var(--muted-fg)" }}>No table layout detected.</p>
-      ) : (
-        <>
-          {layout.tables.map((table) => (
-            <table
-              key={table.id}
-              style={{ borderCollapse: "collapse", width: "100%", marginBottom: 14, tableLayout: "fixed" }}
-            >
-              <tbody>
-                {table.rows.map((row) => (
-                  <tr key={row.id}>
-                    {row.cells.map((cell) => (
-                      <td
-                        key={cell.id}
-                        colSpan={cell.colspan}
-                        rowSpan={cell.rowspan}
-                        style={{
-                          border: "1px solid var(--border)",
-                          padding: 6,
-                          verticalAlign: "top",
-                          fontSize: 12,
-                          minWidth: 60,
-                          height: 32,
-                        }}
-                      >
-                        {cell.labels.length === 0 ? (
-                          <span style={{ color: "var(--muted-fg)", fontStyle: "italic" }}>(empty)</span>
-                        ) : (
-                          cell.labels.map((label, i) => (
-                            <div key={i} style={{ marginBottom: i < cell.labels.length - 1 ? 4 : 0, display: "flex", alignItems: "center", gap: 6 }}>
-                              <span>{label}</span>
-                              <span
-                                className={`lib-badge ${cell.sectionIds[i] ? "badge-ready" : "badge-needs"}`}
-                                style={{ fontSize: 9.5, padding: "1px 6px" }}
-                              >
-                                {cell.sectionIds[i] ? "linked" : "unmatched"}
-                              </span>
-                            </div>
-                          ))
-                        )}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ))}
-
-          {layout.unmatchedSectionIds.length > 0 && (() => {
-            const allSections = [
-              ...template.detected_sections.contentSections,
-              ...template.detected_sections.metadataFields,
-              ...template.detected_sections.instructionTexts,
-            ];
-            const unmatchedLabels = layout.unmatchedSectionIds
-              .map((id) => allSections.find((s) => s.id === id)?.originalLabel)
-              .filter((label): label is string => !!label);
-            return (
-              <p style={{ fontSize: 12, color: "var(--muted-fg)" }}>
-                Unmatched detected sections (no matching cell found): {unmatchedLabels.join(", ")}
-              </p>
-            );
-          })()}
-        </>
       )}
+
+      {error && <p style={{ fontSize: 12.5, color: "var(--destructive)", marginBottom: 8 }}>{error}</p>}
+
+      {topLevel.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          {topLevel.map(renderRegion)}
+        </div>
+      )}
+
+      {tables.map((table) => (
+        <div key={table.tableId} style={{ marginBottom: 12 }}>
+          {table.rows.map((row) => (
+            <div key={row.rowId} style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+              {row.cells.map((cell) => (
+                <div key={cell.cellId} style={{ flex: "1 1 220px", minWidth: 200, border: "1px solid var(--border)", borderRadius: 6, padding: 8 }}>
+                  {cell.regions.map(renderRegion)}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      ))}
+
+      {duplicateTargetLabels.length > 0 && (
+        <p style={{ fontSize: 12, color: "var(--destructive)", marginBottom: 8 }}>
+          ⚠ More than one field is mapped to: {duplicateTargetLabels.join(", ")}. This is allowed, but double-check it's intentional.
+        </p>
+      )}
+      {confirmError && <p style={{ fontSize: 12.5, color: "var(--destructive)", marginBottom: 8 }}>{confirmError}</p>}
+
+      <div style={{ position: "sticky", bottom: 0, display: "flex", justifyContent: "flex-end", paddingTop: 10, background: "var(--card)", borderTop: "1px solid var(--border)" }}>
+        <button
+          type="button"
+          className="btn-primary"
+          style={{ width: "auto", padding: "0 20px", height: 38, fontSize: 13 }}
+          disabled={saving}
+          onClick={() => void handleConfirm()}
+        >
+          {saving ? "Saving…" : "Confirm Field Mapping"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -4048,7 +4299,13 @@ function ManageTemplatesModal({
                       }
                       onFinishSetup={() => onFinishTemplateSetup(t.id)}
                     />
-                    <LayoutPreviewPanel template={t} />
+                    <FieldMappingPanel
+                      template={t}
+                      userId={userId}
+                      onTemplateUpdated={(updated) =>
+                        onTemplatesChange(templates.map((x) => (x.id === updated.id ? updated : x)))
+                      }
+                    />
 
                     {editingId !== t.id && (
                       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>

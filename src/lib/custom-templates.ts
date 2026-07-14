@@ -722,23 +722,46 @@ export type DynamicLessonPlan = {
   sections: DynamicLessonSection[];
 };
 
-// The model returns a flat object keyed by originalLabel (see
-// buildDynamicLessonPrompt's OUTPUT FORMAT) — its key order is not trusted.
-// Order is instead reconstructed from detected_sections.contentSections
-// itself (already sorted by .order upstream), which also guarantees every
-// confirmed section appears in the preview even if the model omitted it.
-export function toDynamicLessonPlan(
+// Phase 5: the model returns a flat object keyed by REGION ID (see
+// buildDynamicLessonPromptFromFieldMap's OUTPUT FORMAT in api/generate.js),
+// not by label — duplicate canonical targets are explicitly allowed, so
+// label text alone couldn't disambiguate two regions mapped to the same
+// target the way a stable id can. Only editable_field mappings that were
+// actually eligible for generation are included (leave_blank/manual_entry/
+// fixed_original_text mappings, and checkbox_group regions, are excluded —
+// nothing was ever asked of the model for those). originalLabel here is a
+// human-readable label for display (the canonical target's label, or the
+// teacher's own customLabel for a custom section), not the region's raw
+// detected text.
+// These 4 canonical targets are metadata the Generator page already
+// collects as its own inputs (grade/subject) or that no input exists for
+// yet (date/lesson_title) — mirrors METADATA_SOURCED_TARGETS in
+// api/generate.js (duplicated there since api/ has no shared import from
+// src/). The AI is never asked to generate them; ReproducedTemplatePreview
+// fills grade_level/subject from Generator state directly instead.
+export const METADATA_SOURCED_TARGETS: ReadonlySet<FieldMappingTarget> = new Set(["lesson_title", "date", "grade_level", "subject"]);
+
+export function toDynamicLessonPlanFromFieldMap(
   rawResponse: Record<string, unknown>,
-  contentSections: DetectedSectionItem[]
+  fieldMap: TemplateFieldMap
 ): DynamicLessonPlan {
-  const sections = contentSections
-    .slice()
-    .sort((a, b) => a.order - b.order)
-    .map((section) => {
-      const value = rawResponse?.[section.originalLabel];
+  const regionById = new Map(fieldMap.regions.map((r) => [r.id, r]));
+  const sections = fieldMap.mappings
+    .filter((m) => {
+      if (m.target === "leave_blank" || m.target === "manual_entry" || m.target === "fixed_original_text") return false;
+      if (METADATA_SOURCED_TARGETS.has(m.target)) return false;
+      const region = regionById.get(m.regionId);
+      return !!region && region.role === "editable_field";
+    })
+    .map((m) => {
+      const region = regionById.get(m.regionId);
+      const label = m.target === "custom_section"
+        ? (m.customLabel || region?.contextLabel || "Custom Section")
+        : (CANONICAL_FIELD_TARGET_LABELS[m.target as CanonicalFieldTarget] ?? m.target);
+      const value = rawResponse?.[m.regionId];
       return {
-        id: section.id,
-        originalLabel: section.originalLabel,
+        id: m.regionId,
+        originalLabel: label,
         content: typeof value === "string" ? value : "",
       };
     });
