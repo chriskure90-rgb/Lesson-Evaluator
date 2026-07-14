@@ -1013,10 +1013,17 @@ function buildLayoutDebugInfo(html, layout) {
 }
 
 // Top-level entry point called from handleRegister, mirroring
-// detectTemplateSections's shape/error-handling pattern. PDF templates are
-// explicitly out of scope this phase — returns an empty, "unsupported"
-// layout immediately rather than attempting any PDF-specific parsing (PDF
-// section-detection itself, extractPdfSectionCandidates, is untouched).
+// detectTemplateSections's shape/error-handling pattern.
+//
+// KNOWN LIMITATION (current, by design — not a bug): PDF templates get an
+// empty, "unsupported" layout immediately, with no PDF-specific parsing
+// attempted at all. Section detection (extractPdfSectionCandidates) and
+// dynamic content generation both still work fully for PDF templates —
+// only the table/row/cell layout reproduction is DOCX-only. A future
+// enhancement could add real PDF layout recognition (e.g. via a PDF
+// text-position/table-extraction library) and reuse the same
+// DetectedLayout shape/mapSectionsToLayout matching logic already built
+// for DOCX; that work is deliberately deferred, not started here.
 async function detectTemplateLayout({ isPdf, buffer, detectedSections, debug = false }) {
   if (isPdf) {
     return {
@@ -1024,7 +1031,7 @@ async function detectTemplateLayout({ isPdf, buffer, detectedSections, debug = f
       status: "unsupported",
       error: null,
       debugInfo: debug
-        ? { engineVersion: LAYOUT_DETECTION_ENGINE_VERSION, sourceType: "pdf", note: "Layout recognition is currently available for DOCX templates only." }
+        ? { engineVersion: LAYOUT_DETECTION_ENGINE_VERSION, sourceType: "pdf", note: "Layout preview is currently available for DOCX templates only." }
         : null,
     };
   }

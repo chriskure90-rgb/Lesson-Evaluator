@@ -1137,6 +1137,24 @@ function ReproducedTemplatePreview({
   // not just this preview. Every array access below goes through one of
   // these guards rather than trusting the stored shape directly.
   const tables = Array.isArray(layout?.tables) ? layout.tables : [];
+  const isPdf = template.original_filename.toLowerCase().endsWith(".pdf") || layout?.sourceType === "pdf";
+
+  // Layout recognition/reproduction is DOCX-only by design (see
+  // detectTemplateLayout in api/custom-templates.js, which returns an empty
+  // "pdf" layout without attempting any PDF parsing) — section detection and
+  // dynamic content generation both still work for PDF templates, so the
+  // generated content itself is still shown via the flat fallback view below
+  // this message, just not reproduced as a table.
+  if (isPdf) {
+    return (
+      <>
+        <p style={{ fontSize: 12.5, color: "var(--muted-fg)", marginBottom: 8 }}>
+          Layout preview is currently available for DOCX templates only.
+        </p>
+        <DynamicLessonPreview plan={plan} breadcrumb={breadcrumb} />
+      </>
+    );
+  }
 
   if (tables.length === 0) {
     return (
@@ -3697,7 +3715,7 @@ function LayoutPreviewPanel({ template }: { template: CustomTemplate }) {
         <p style={{ fontSize: 12.5, color: "var(--muted-fg)" }}>Detecting layout…</p>
       ) : isPdf || layout.sourceType === "pdf" ? (
         <p style={{ fontSize: 12.5, color: "var(--muted-fg)" }}>
-          Layout recognition is currently available for DOCX templates only.
+          Layout preview is currently available for DOCX templates only.
         </p>
       ) : template.layout_detection_status === "error" ? (
         <p style={{ fontSize: 12.5, color: "var(--destructive)" }}>
