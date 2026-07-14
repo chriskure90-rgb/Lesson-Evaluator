@@ -2,6 +2,8 @@ import { generateLessonWithMistral } from "../server-lib/providers/mistral.js";
 import { generateLessonWithGemini  } from "../server-lib/providers/gemini.js";
 import { supabase }                  from "../server-lib/supabase.js";
 import { openai }                    from "../server-lib/openai.js";
+import { Mistral }                   from "@mistralai/mistralai";
+import { GoogleGenerativeAI }        from "@google/generative-ai";
 
 const EMBEDDING_MODEL       = "text-embedding-3-small";
 const VECTOR_MATCH_COUNT    = 5;
@@ -575,6 +577,78 @@ function buildDynamicLessonPrompt({ grade, subject, frameworks, code, topic, goa
   ].join("\n");
 }
 
+// ── Dynamic generation: isolated LLM call + error handling ───────────────────
+// Deliberately does NOT reuse generateLessonWithMistral/generateLessonWithGemini
+// (server-lib/providers/*.js) even though the call shape is nearly identical —
+// those are shared by Standard/Template1/evaluation, and this path needs to
+// (a) log the raw response before JSON.parse and (b) tag every failure with
+// which stage it happened in, without risking any change to the shared
+// providers' behavior. dynamicMistral/dynamicGemini are separate client
+// instances from the ones in server-lib/providers, constructed from the same
+// env vars.
+const dynamicMistral = new Mistral({ apiKey: process.env.MISTRAL_API_KEY });
+const dynamicGemini  = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+function dynamicStageError(stage, message, extra = {}) {
+  const err = new Error(message);
+  err.isDynamicStageError = true;
+  err.stage = stage;
+  Object.assign(err, extra);
+  return err;
+}
+
+// Returns the flat, section-labeled JSON object for a dynamic request, or
+// throws a dynamicStageError tagged "llm-call" | "json-parse" | "response-mapping".
+async function generateDynamicLessonContent(model, prompt, contentSections) {
+  if (model !== "mistral" && model !== "Mistral" && model !== "gemini" && model !== "Gemini") {
+    console.log("[Generate][dynamic] stage=llm-call — provider not implemented, returning placeholder:", model);
+    return Object.fromEntries(contentSections.map((s) => [s.originalLabel, `${model} provider not implemented yet.`]));
+  }
+
+  console.log("[Generate][dynamic] stage=llm-call model:", model);
+  let rawText;
+  try {
+    if (model === "mistral" || model === "Mistral") {
+      const result = await dynamicMistral.chat.complete({
+        model: "mistral-small-latest",
+        messages: [{ role: "user", content: prompt }],
+      });
+      rawText = result.choices[0].message.content.trim();
+    } else {
+      const genModel = dynamicGemini.getGenerativeModel({ model: "gemini-3.5-flash" });
+      const result = await genModel.generateContent(prompt);
+      rawText = result.response.text().trim();
+    }
+  } catch (err) {
+    console.error("[Generate][dynamic] stage=llm-call error:", err);
+    throw dynamicStageError("llm-call", err instanceof Error ? err.message : String(err));
+  }
+
+  console.log("[Generate][dynamic] stage=llm-call raw response:", rawText);
+
+  const cleaned = rawText
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (err) {
+    console.error("[Generate][dynamic] stage=json-parse error:", err);
+    throw dynamicStageError("json-parse", "The model's response was not valid JSON.", { rawResponse: cleaned });
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    console.error("[Generate][dynamic] stage=response-mapping error — parsed value is not a flat object:", parsed);
+    throw dynamicStageError("response-mapping", "The model's response was valid JSON but not a flat section-content object.", { rawResponse: cleaned });
+  }
+
+  console.log("[Generate][dynamic] stage=response-mapping success — keys:", Object.keys(parsed));
+  return parsed;
+}
+
 // ── Route handler ────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
   console.log("=== STANDARDS DIAGNOSTICS ENABLED ===");
@@ -590,8 +664,11 @@ export default async function handler(req, res) {
     const normalizedLessonFormat =
       lessonFormat === "template1" ? "template1" : lessonFormat === "dynamic" ? "dynamic" : "standard";
 
-    if (normalizedLessonFormat === "dynamic" && !customTemplateId) {
-      return res.status(400).json({ error: "Dynamic generation requires a selected custom template." });
+    if (normalizedLessonFormat === "dynamic") {
+      console.log("[Generate][dynamic] stage=validation lessonFormat:", lessonFormat, "customTemplateId:", customTemplateId || null);
+      if (!customTemplateId) {
+        throw dynamicStageError("validation", "Dynamic generation requires a selected custom template.");
+      }
     }
 
     // customTemplateId/customTemplateName are still just metadata for the
@@ -621,6 +698,9 @@ export default async function handler(req, res) {
           normalizedLessonFormat === "dynamic"
             ? "id, name, status, detected_sections"
             : "id, name, status, recognized_placeholders, structured_fields";
+        if (normalizedLessonFormat === "dynamic") {
+          console.log("[Generate][dynamic] stage=template-fetch customTemplateId:", customTemplateId);
+        }
         const { data: templateRow, error: templateLookupError } = await supabase
           .from("custom_templates")
           .select(selectColumns)
@@ -628,20 +708,34 @@ export default async function handler(req, res) {
           .single();
         if (templateLookupError) {
           console.warn("[Generate] custom template lookup failed:", templateLookupError.message);
+          if (normalizedLessonFormat === "dynamic") {
+            throw dynamicStageError("template-fetch", `Could not load the selected template: ${templateLookupError.message}`);
+          }
         } else {
           console.log("[Generate] custom template data loaded by backend:", templateRow);
           customTemplateStructuredFields = templateRow?.structured_fields || [];
           customTemplateContentSections = Array.isArray(templateRow?.detected_sections?.contentSections)
             ? [...templateRow.detected_sections.contentSections].sort((a, b) => a.order - b.order)
             : [];
+          if (normalizedLessonFormat === "dynamic") {
+            console.log(
+              "[Generate][dynamic] stage=template-fetch confirmed:", !!templateRow?.detected_sections?.confirmed,
+              "contentSectionCount:", customTemplateContentSections.length,
+              "labels:", customTemplateContentSections.map((s) => s.originalLabel)
+            );
+          }
         }
+      } else if (normalizedLessonFormat === "dynamic") {
+        throw dynamicStageError("template-fetch", "Supabase is not configured on the server.");
       }
     }
 
     if (normalizedLessonFormat === "dynamic" && customTemplateContentSections.length === 0) {
-      return res.status(400).json({
-        error: "This template has no confirmed detected sections yet. Review and confirm its sections before generating a dynamic lesson plan.",
-      });
+      console.log("[Generate][dynamic] stage=validation failed — template has no content sections");
+      throw dynamicStageError(
+        "validation",
+        "This template has no confirmed detected sections yet. Review and confirm its sections before generating a dynamic lesson plan."
+      );
     }
 
     // Resolve the standards section: exact code match (priority) + pgvector
@@ -670,6 +764,15 @@ export default async function handler(req, res) {
     console.debug("[Generate] inputs:", { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat: normalizedLessonFormat, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies });
     console.debug("[Generate] prompt:", prompt);
 
+    // Dynamic has its own isolated call/parse path (see
+    // generateDynamicLessonContent above) so its errors can be tagged by
+    // stage without touching the shared Standard/Template1 provider calls
+    // below.
+    if (isDynamic) {
+      const content = await generateDynamicLessonContent(model, prompt, customTemplateContentSections);
+      return res.status(200).json(content);
+    }
+
     if (model === "mistral" || model === "Mistral") {
       const lesson = await generateLessonWithMistral(prompt);
       return res.status(200).json(lesson);
@@ -694,8 +797,6 @@ export default async function handler(req, res) {
             closure: { teacherActions: "", studentActions: "" },
             assessment: { howObjectivesAssessed: "" },
           }
-        : isDynamic
-        ? Object.fromEntries(customTemplateContentSections.map((s) => [s.originalLabel, `${model} provider not implemented yet.`]))
         : {
             title: `${model} Provider Not Implemented Yet`,
             objectives: ["Only the Mistral provider is currently connected."],
@@ -710,6 +811,17 @@ export default async function handler(req, res) {
     console.error("[Generate] error:", error);
     const isTemplate1 = req.body?.lessonFormat === "template1";
     const isDynamic = req.body?.lessonFormat === "dynamic";
+
+    if (isDynamic) {
+      const stage = error?.stage || "llm-call";
+      console.error(`[Generate][dynamic] request failed at stage=${stage}:`, error?.message);
+      return res.status(500).json({
+        error: "Dynamic lesson generation failed",
+        details: error instanceof Error ? error.message : String(error),
+        stage,
+      });
+    }
+
     return res.status(500).json(
       isTemplate1
         ? {
@@ -723,8 +835,6 @@ export default async function handler(req, res) {
             closure: { teacherActions: "", studentActions: "" },
             assessment: { howObjectivesAssessed: "" },
           }
-        : isDynamic
-        ? { error: "An error occurred during generation." }
         : {
             title: "Generation Failed",
             objectives: [],

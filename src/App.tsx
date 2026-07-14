@@ -1745,13 +1745,22 @@ function GeneratorPage({
                   <p className="drawer-eyebrow" style={{ marginBottom: 6 }}>My Templates</p>
                   <div className="fw-chip-row" style={{ marginBottom: 10 }}>
                     {readyCustomTemplates.map((t) => {
-                      const active = lessonFormat === "custom" && selectedCustomTemplateId === t.id;
+                      const active = (lessonFormat === "custom" || lessonFormat === "dynamic") && selectedCustomTemplateId === t.id;
                       return (
                         <button
                           key={t.id}
                           type="button"
                           className={`fw-chip${active ? " fw-chip-active" : ""}`}
-                          onClick={() => { setLessonFormat("custom"); setSelectedCustomTemplateId(t.id); }}
+                          onClick={() => {
+                            // Once a template's sections are confirmed, its
+                            // detected sections ARE the schema teachers expect
+                            // to fill in — default straight to dynamic
+                            // generation instead of the old fixed Template 1
+                            // fields. The toggle below still lets them switch
+                            // back for the fixed-fields/DOCX-export path.
+                            setLessonFormat(t.detected_sections?.confirmed ? "dynamic" : "custom");
+                            setSelectedCustomTemplateId(t.id);
+                          }}
                           aria-pressed={active}
                         >
                           {t.name}
@@ -2170,8 +2179,12 @@ function GeneratorPage({
           onTemplatesChange={handleCustomTemplatesChange}
           onClose={() => setShowTemplatesModal(false)}
           onFinishTemplateSetup={(templateId) => {
+            // The whole point of finishing setup is generating from the
+            // now-confirmed detected sections — land directly in dynamic
+            // mode rather than defaulting back to the fixed Template 1
+            // fields and requiring an extra manual toggle click to reach it.
             setSelectedCustomTemplateId(templateId);
-            setLessonFormat("custom");
+            setLessonFormat("dynamic");
             setShowTemplatesModal(false);
           }}
         />
