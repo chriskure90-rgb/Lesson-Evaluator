@@ -92,6 +92,115 @@ export const DEFAULT_DETECTED_LAYOUT: DetectedLayout = {
   unmatchedSectionIds: [],
 };
 
+/* ── Phase 5: teacher-reviewable field mapping ────────────────────────────────
+   A fourth, independent pass, stored in field_map/field_map_status/
+   field_map_error — never touches detected_sections/detected_layout or their
+   columns. Root problem it solves: detected_layout only ever modeled LABELS
+   (heading/bold text), so generated content had nowhere reliable to land
+   except wherever a label happened to match — sometimes landing on the
+   heading or instructional text itself instead of the actual blank/
+   editable spot. field_map introduces REGIONS with an explicit role, so
+   mappings (and therefore generated content) can only ever target
+   editable_field/checkbox_group regions — headings and instructions are
+   permanently read-only context, never a mapping target, by construction.
+────────────────────────────────────────────────────────────────────────────── */
+
+export type RegionRole = "heading" | "instruction" | "editable_field" | "blank" | "checkbox_group";
+
+// "explicit": a genuine blank paragraph/cell or a recognized placeholder
+// (e.g. "Click or tap here to enter text.") was found in the document.
+// "implicit": no blank/placeholder existed at all (just a label, nothing
+// else) — the system synthesized a fill point after it. Implicit regions
+// are inherently less certain, so they always start at "needs_review",
+// never "ready" (see buildFieldMap).
+export type RegionSource = "explicit" | "implicit";
+
+// Only meaningful for editable_field/checkbox_group regions — "text" is a
+// normal AI-generated-prose target; single_select/multi_select are
+// checkbox groups, which display selected options rather than prose.
+export type RegionOutputMode = "text" | "single_select" | "multi_select";
+
+export type TemplateRegion = {
+  id: string;
+  order: number;
+  role: RegionRole;
+  text: string;
+  source: RegionSource;
+  outputMode?: RegionOutputMode;
+  checkboxOptions?: string[];
+  // Nearest preceding heading/instruction text at detection time — used to
+  // build the dynamic-generation prompt and to show context in the mapping
+  // UI, without needing to re-walk the document at generation time.
+  contextLabel?: string;
+  contextInstruction?: string;
+  tableId?: string;
+  rowId?: string;
+  cellId?: string;
+};
+
+export const CANONICAL_FIELD_TARGETS = [
+  "lesson_title", "date", "grade_level", "subject", "learning_objectives",
+  "standards", "learner_background", "materials", "introduction", "instruction",
+  "student_activities", "assessment", "accommodations", "culturally_responsive_education",
+  "closure", "reflection",
+] as const;
+export type CanonicalFieldTarget = (typeof CANONICAL_FIELD_TARGETS)[number];
+
+export const CANONICAL_FIELD_TARGET_LABELS: Record<CanonicalFieldTarget, string> = {
+  lesson_title: "Lesson Title",
+  date: "Date",
+  grade_level: "Grade Level",
+  subject: "Subject",
+  learning_objectives: "Learning Objectives",
+  standards: "Standards",
+  learner_background: "Learner Background / Knowledge of Students",
+  materials: "Materials",
+  introduction: "Introduction",
+  instruction: "Instruction",
+  student_activities: "Student Activities",
+  assessment: "Assessment",
+  accommodations: "Accommodations",
+  culturally_responsive_education: "Culturally Responsive Education",
+  closure: "Closure",
+  reflection: "Reflection",
+};
+
+export type FieldMappingTarget =
+  | CanonicalFieldTarget
+  | "custom_section"
+  | "manual_entry"
+  | "leave_blank"
+  | "fixed_original_text";
+
+// Teacher-facing status — deliberately not the internal role/source
+// vocabulary ("linked"/"unmatched" from the old Layout Preview never
+// appear here).
+export type FieldMappingStatus = "ready" | "needs_review" | "manual_entry" | "leave_blank";
+
+export type FieldMapping = {
+  regionId: string;
+  target: FieldMappingTarget;
+  // Required (validated at confirm time) when target === "custom_section".
+  customLabel?: string;
+  suggestedTarget: FieldMappingTarget | null;
+  suggestedConfidence: number;
+  status: FieldMappingStatus;
+};
+
+export type TemplateFieldMap = {
+  version: number;
+  regions: TemplateRegion[];
+  mappings: FieldMapping[];
+  confirmed: boolean;
+};
+
+export const DEFAULT_FIELD_MAP: TemplateFieldMap = {
+  version: 1,
+  regions: [],
+  mappings: [],
+  confirmed: false,
+};
+
 export type CustomTemplate = {
   id: string;
   user_id: string;
@@ -108,6 +217,9 @@ export type CustomTemplate = {
   detected_layout: DetectedLayout;
   layout_detection_status: string | null;
   layout_detection_error: string | null;
+  field_map: TemplateFieldMap;
+  field_map_status: string | null;
+  field_map_error: string | null;
   status: CustomTemplateStatus;
   error_message: string | null;
   created_at: string;
@@ -319,6 +431,7 @@ const BASE_COLUMNS =
 const OPTIONAL_COLUMNS = [
   "structured_fields", "detected_sections", "section_detection_status", "section_detection_error",
   "detected_layout", "layout_detection_status", "layout_detection_error",
+  "field_map", "field_map_status", "field_map_error",
 ] as const;
 
 function isMissingColumnError(error: { code?: string; message?: string } | null, column: string): boolean {
@@ -354,12 +467,24 @@ function normalizeDetectedLayout(raw: unknown): DetectedLayout {
   };
 }
 
+function normalizeFieldMap(raw: unknown): TemplateFieldMap {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return DEFAULT_FIELD_MAP;
+  const r = raw as Record<string, unknown>;
+  return {
+    version: typeof r.version === "number" ? r.version : 1,
+    regions: Array.isArray(r.regions) ? (r.regions as TemplateRegion[]) : [],
+    mappings: Array.isArray(r.mappings) ? (r.mappings as FieldMapping[]) : [],
+    confirmed: !!r.confirmed,
+  };
+}
+
 function normalizeCustomTemplateRow(row: Record<string, unknown>): CustomTemplate {
   return {
     ...(row as Omit<
       CustomTemplate,
       "structured_fields" | "detected_sections" | "section_detection_status" | "section_detection_error"
       | "detected_layout" | "layout_detection_status" | "layout_detection_error"
+      | "field_map" | "field_map_status" | "field_map_error"
     >),
     structured_fields: Array.isArray(row.structured_fields)
       ? (row.structured_fields as CustomTemplateStructuredField[])
@@ -370,6 +495,9 @@ function normalizeCustomTemplateRow(row: Record<string, unknown>): CustomTemplat
     detected_layout: normalizeDetectedLayout(row.detected_layout),
     layout_detection_status: typeof row.layout_detection_status === "string" ? row.layout_detection_status : null,
     layout_detection_error: typeof row.layout_detection_error === "string" ? row.layout_detection_error : null,
+    field_map: normalizeFieldMap(row.field_map),
+    field_map_status: typeof row.field_map_status === "string" ? row.field_map_status : null,
+    field_map_error: typeof row.field_map_error === "string" ? row.field_map_error : null,
   };
 }
 
@@ -502,6 +630,44 @@ export async function updateDetectedSections(
   const { error } = await supabase
     .from("custom_templates")
     .update({ detected_sections: sanitized })
+    .eq("id", id)
+    .eq("user_id", userId);
+  if (error) throw error;
+  return sanitized;
+}
+
+// Field mappings (Phase 5) are saved incrementally as the teacher edits
+// each one (not just at "Confirm Field Mapping" time) so progress is never
+// lost — `confirmed` itself is only ever flipped true by the explicit
+// confirm action (see ManageTemplatesModal), and flipped back to false the
+// moment any mapping changes after being confirmed (both handled by the
+// caller before invoking this). This just persists whatever it's given,
+// after dropping any mapping that doesn't point at an editable_field/
+// checkbox_group region — headings/instructions can never be mapping
+// targets, enforced here as well as by construction in the UI.
+function sanitizeFieldMap(fieldMap: TemplateFieldMap): TemplateFieldMap {
+  const regionById = new Map(fieldMap.regions.map((r) => [r.id, r]));
+  const mappings = fieldMap.mappings.filter((m) => {
+    const region = regionById.get(m.regionId);
+    return !!region && (region.role === "editable_field" || region.role === "checkbox_group");
+  });
+  return {
+    version: typeof fieldMap.version === "number" ? fieldMap.version : 1,
+    regions: fieldMap.regions,
+    mappings,
+    confirmed: !!fieldMap.confirmed,
+  };
+}
+
+export async function updateFieldMap(
+  id: string,
+  userId: string,
+  fieldMap: TemplateFieldMap
+): Promise<TemplateFieldMap> {
+  const sanitized = sanitizeFieldMap(fieldMap);
+  const { error } = await supabase
+    .from("custom_templates")
+    .update({ field_map: sanitized })
     .eq("id", id)
     .eq("user_id", userId);
   if (error) throw error;

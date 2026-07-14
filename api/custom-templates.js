@@ -331,6 +331,14 @@ export const DEFAULT_DETECTED_LAYOUT = {
   unmatchedSectionIds: [],
 };
 
+// Phase 5 — see detectTemplateFieldMap/buildFieldMap below.
+export const DEFAULT_FIELD_MAP_ROW = {
+  version: 1,
+  regions: [],
+  mappings: [],
+  confirmed: false,
+};
+
 // Same purpose as SECTION_DETECTION_ENGINE_VERSION above — lets a caller
 // confirm which deployed build handled a given register request.
 const LAYOUT_DETECTION_ENGINE_VERSION = "layout-v1";
@@ -737,7 +745,14 @@ function classifyDocxBlockSignal(text, innerHtml, boldSignal) {
 // common case for mammoth's output); if a cell has no <p> wrapping at all,
 // falls back to splitting on standalone <strong> runs (requirement 4);
 // falls back to the whole cell as a single unit only if neither applies.
-function extractCellUnits(innerHtml) {
+// Same <p>-splitting (falling back to standalone <strong> runs, then the
+// whole cell) as extractCellUnits, but keeps units that come out EMPTY
+// after stripping instead of dropping them. Section-detection/layout
+// candidates never needed those (no text, no label) — but Phase 5 field-
+// region detection does: an empty unit is exactly the signal that this
+// spot is a genuine blank paragraph or was pure Word-placeholder
+// boilerplate, i.e. an explicit editable field, not noise.
+function extractCellUnitsRaw(innerHtml) {
   const units = [];
   const paraRegex = /<p[^>]*>([\s\S]*?)<\/p>/g;
   let m;
@@ -749,12 +764,14 @@ function extractCellUnits(innerHtml) {
     else units.push(innerHtml);
   }
 
-  return units
-    .map((unitHtml) => {
-      const text = stripWordPlaceholderTail(extractLeadingBoldLabel(unitHtml) ?? stripHtmlTags(unitHtml));
-      return { text, html: unitHtml };
-    })
-    .filter((u) => u.text);
+  return units.map((unitHtml) => {
+    const text = stripWordPlaceholderTail(extractLeadingBoldLabel(unitHtml) ?? stripHtmlTags(unitHtml));
+    return { text, html: unitHtml };
+  });
+}
+
+function extractCellUnits(innerHtml) {
+  return extractCellUnitsRaw(innerHtml).filter((u) => u.text);
 }
 
 // `extractionTrace`, when given an object with a `rows` array, gets one
@@ -1116,6 +1133,289 @@ async function detectTemplateLayout({ isPdf, buffer, detectedSections, debug = f
   return { layout, status: "ready", error: null, debugInfo };
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   PHASE 5 — TEACHER-REVIEWABLE FIELD MAPPING
+
+   Root problem this solves: detected_layout/detected_sections only ever
+   modeled LABELS (heading/bold text) — generated content had nowhere
+   reliable to land except wherever a label happened to match, sometimes
+   landing on the heading or instructional text itself instead of the
+   actual blank/editable spot. This introduces REGIONS with an explicit
+   role, so a mapping (and therefore generated content) can only ever
+   target an editable_field/checkbox_group region — headings and
+   instructions are permanently read-only context, enforced structurally,
+   not by convention.
+
+   Entirely separate storage (field_map/field_map_status/field_map_error)
+   and a separate detection pass — never touches detected_sections/
+   detected_layout or their columns, and this phase does not change
+   export/DOCX synthesis in any way.
+═══════════════════════════════════════════════════════════════════════════ */
+
+const FIELD_MAP_ENGINE_VERSION = "field-map-v1";
+
+// Same gate classifySectionCandidate uses to decide "is this a label at
+// all" (colon-terminated, or short and not sentence-like), reframed as a
+// ROLE rather than a label/discard decision — a real template's OWN
+// structure is exactly headings interleaved with instructional prose, and
+// field-mapping needs to keep the latter (as read-only context), not just
+// discard it the way section detection does.
+function classifyRegionRole(text) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return "blank";
+  const endsInColon = /:\s*$/.test(trimmed);
+  const core = trimmed.replace(/:\s*$/, "").trim();
+  if (!core) return "blank";
+  if (!endsInColon && (core.length > 70 || /(\.\.\.|[.?!…])$/.test(core))) return "instruction";
+  return "heading";
+}
+
+// normalizedKey -> phrases recognized as (fuzzy-matched against) that
+// canonical target — deliberately a superset built from/aligned with
+// CONTENT_SECTION_DICTIONARY/METADATA_FIELD_DICTIONARY above where the
+// concepts overlap, extended with a few concepts (learner background,
+// culturally responsive education, lesson title) that have no equivalent
+// in the older dictionaries. Not every real-world field has a canonical
+// home here — an unmatched field defaults to "custom_section" with its own
+// label preserved, never forced into the wrong bucket.
+const CANONICAL_TARGET_DICTIONARY = {
+  lesson_title: ["lesson title", "lesson plan", "activity name", "daily lesson plan", "title"],
+  date: ["date"],
+  grade_level: ["grade", "grade level"],
+  subject: ["subject"],
+  learning_objectives: ["learning objective", "learning objectives", "objective", "objectives", "sub objective", "essential learning target", "essential learning targets", "learning target"],
+  standards: ["standards", "standard", "standards addressed", "learning standards to be addressed", "learning standard s to be addressed"],
+  learner_background: ["knowledge of students to inform teaching", "knowledge of students", "learner background", "description of students"],
+  materials: ["materials", "materials needed"],
+  introduction: ["introduction", "warm up", "warmup", "hook"],
+  instruction: ["explicit instruction", "direct instruction", "instruction", "procedure", "procedures", "lesson procedures"],
+  student_activities: ["student activities", "activity skills covered", "guided practice", "independent practice"],
+  assessment: ["assessment", "assessments", "evaluation"],
+  accommodations: ["special considerations", "accommodations", "modifications"],
+  culturally_responsive_education: ["evidence of incorporating culturally responsive education", "culturally responsive education", "culturally responsive"],
+  closure: ["closure", "conclusion", "wrap up"],
+  reflection: ["reflection", "highlights"],
+};
+
+// Rules-based only (never an LLM call) — "Suggested mapping" in the UI,
+// deliberately not "AI suggestion" wording, since this is a deterministic
+// classifier, the same mechanism detected_sections already uses for its
+// own normalizedKey, just aimed at the new canonical-target vocabulary.
+function classifyRegionTarget(region) {
+  const contextText = [region.contextLabel, region.role === "editable_field" ? null : region.text].filter(Boolean).join(" ");
+  const normalized = normalizeForMatch(contextText);
+  if (!normalized) return { target: null, confidence: 0 };
+  for (const [target, phrases] of Object.entries(CANONICAL_TARGET_DICTIONARY)) {
+    if (phrases.includes(normalized)) return { target, confidence: 0.9 };
+  }
+  for (const [target, phrases] of Object.entries(CANONICAL_TARGET_DICTIONARY)) {
+    if (phrases.some((p) => normalized.includes(p))) return { target, confidence: 0.65 };
+  }
+  return { target: null, confidence: 0 };
+}
+
+// Classifies one already-extracted (in-order) sequence of {text, html}
+// units into regions — reused for both one table cell's units AND the
+// top-level (non-table) document units, since both are just "a sequence of
+// paragraphs to walk in order" at this level. Tracks the nearest preceding
+// heading/instruction as running context for every field/checkbox it
+// finds. An implicit editable field is synthesized once per HEADING RUN —
+// everything from one heading up to (but not including) the next heading —
+// only if that run never produced a genuine blank/placeholder/checkbox
+// field of its own, flushed right at the run's boundary (the next heading,
+// or the end of the sequence). Confirmed directly against a real template:
+// several consecutive headings with no blank line between them ("Activity
+// Name:", "Date:", "Grade:", "Staff:") each need their own field — but a
+// run of several long instructional/glossary paragraphs under ONE heading
+// must consolidate into a single field, not one per paragraph.
+function classifyUnitsIntoRegions(units, idPrefix, location) {
+  const regions = [];
+  let contextLabel;
+  let contextInstruction;
+  let counter = 0;
+  let currentRunHasField = true; // nothing pending before the first heading
+
+  function pushRegion(fields) {
+    counter++;
+    regions.push({ id: `${idPrefix}_unit_${counter}`, order: counter, ...location, ...fields });
+  }
+
+  function flushImplicitIfNeeded() {
+    if (!currentRunHasField && (contextLabel || contextInstruction)) {
+      pushRegion({ role: "editable_field", text: "", source: "implicit", outputMode: "text", contextLabel, contextInstruction });
+      currentRunHasField = true;
+    }
+  }
+
+  let i = 0;
+  while (i < units.length) {
+    const unit = units[i];
+    const checkboxMatch = unit.text ? CHECKBOX_LINE.exec(unit.text) : null;
+
+    if (checkboxMatch) {
+      const options = [checkboxMatch[1].trim()];
+      let j = i + 1;
+      while (j < units.length) {
+        const next = units[j].text ? CHECKBOX_LINE.exec(units[j].text) : null;
+        if (!next) break;
+        options.push(next[1].trim());
+        j++;
+      }
+      pushRegion({
+        role: "checkbox_group", text: unit.text, source: "explicit", outputMode: "multi_select",
+        checkboxOptions: options, contextLabel, contextInstruction,
+      });
+      currentRunHasField = true;
+      i = j;
+      continue;
+    }
+
+    if (!unit.text) {
+      // A genuine blank paragraph, or one that was ONLY Word-placeholder
+      // boilerplate — an explicit editable field when something has
+      // already established what it's a field FOR, otherwise just
+      // structural filler (spacing), not a mapping target at all.
+      if (contextLabel || contextInstruction) {
+        pushRegion({ role: "editable_field", text: "", source: "explicit", outputMode: "text", contextLabel, contextInstruction });
+        currentRunHasField = true;
+      } else {
+        pushRegion({ role: "blank", text: "" });
+      }
+      i++;
+      continue;
+    }
+
+    const role = classifyRegionRole(unit.text);
+    if (role === "heading") {
+      flushImplicitIfNeeded(); // close out the PREVIOUS heading's run first
+      contextLabel = unit.text.replace(/:\s*$/, "").trim();
+      contextInstruction = undefined;
+      currentRunHasField = false;
+      pushRegion({ role: "heading", text: unit.text, source: "explicit" });
+    } else {
+      contextInstruction = contextInstruction ? `${contextInstruction} ${unit.text}` : unit.text;
+      pushRegion({ role: "instruction", text: unit.text, source: "explicit", contextLabel });
+    }
+    i++;
+  }
+  flushImplicitIfNeeded(); // the final run, if the sequence doesn't end on its own field
+
+  return regions;
+}
+
+// Walks the same mammoth HTML as extractDocxLayout, but classifying every
+// heading/paragraph/table-cell-unit into a region instead of a flat label —
+// deliberately a separate walk (not a modification of extractDocxLayout)
+// so the already-verified detected_layout pipeline (and the reproduced
+// preview built on it) can never be affected by this one changing.
+// KNOWN SIMPLIFICATION: top-level (non-table) paragraphs are collected as
+// one sequence and placed before all table regions in the returned order —
+// correct for the common case (intro text, then one main table) confirmed
+// against the real validation template, but not truly interleaved if a
+// document has meaningful content both before AND after a table.
+function buildFieldRegions(html) {
+  const topLevelUnits = [];
+  const tableRegions = [];
+  const blockRegex = /<h([1-6])[^>]*>([\s\S]*?)<\/h\1>|<p[^>]*>([\s\S]*?)<\/p>|<table[^>]*>([\s\S]*?)<\/table>/g;
+  let match;
+  let tableIndex = 0;
+  while ((match = blockRegex.exec(html)) !== null) {
+    if (match[1] !== undefined) {
+      topLevelUnits.push({ text: stripWordPlaceholderTail(stripHtmlTags(match[2])), html: match[2] });
+    } else if (match[3] !== undefined) {
+      topLevelUnits.push({ text: stripWordPlaceholderTail(extractLeadingBoldLabel(match[3]) ?? stripHtmlTags(match[3])), html: match[3] });
+    } else if (match[4] !== undefined) {
+      tableIndex++;
+      const tableId = `table_${tableIndex}`;
+      const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+      let rowMatch;
+      let rowIndex = 0;
+      while ((rowMatch = rowRegex.exec(match[4])) !== null) {
+        rowIndex++;
+        const rowId = `${tableId}_row_${rowIndex}`;
+        const cellRegex = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/g;
+        let cellMatch;
+        let cellIndex = 0;
+        while ((cellMatch = cellRegex.exec(rowMatch[1])) !== null) {
+          cellIndex++;
+          const cellId = `${rowId}_cell_${cellIndex}`;
+          const cellUnits = extractCellUnitsRaw(cellMatch[1]);
+          tableRegions.push(...classifyUnitsIntoRegions(cellUnits, cellId, { tableId, rowId, cellId }));
+        }
+      }
+    }
+  }
+
+  const topLevelRegions = classifyUnitsIntoRegions(topLevelUnits, "doc", {});
+  const regions = [...topLevelRegions, ...tableRegions];
+  regions.forEach((r, i) => { r.order = i + 1; });
+  return regions;
+}
+
+// Builds the full TemplateFieldMap (regions + a mapping per editable_field/
+// checkbox_group region, each with a rules-based suggested target/
+// confidence and status). Implicit regions always start "needs_review",
+// never "ready", regardless of classifier confidence — no blank/
+// placeholder was actually found in the document for them, so they're
+// inherently less certain than an explicit one.
+function buildFieldMap(html) {
+  const regions = buildFieldRegions(html);
+  const mappings = [];
+  for (const region of regions) {
+    if (region.role !== "editable_field" && region.role !== "checkbox_group") continue;
+    const { target, confidence } = classifyRegionTarget(region);
+    const status = region.source === "implicit"
+      ? "needs_review"
+      : (target && confidence >= 0.85 ? "ready" : "needs_review");
+    mappings.push({
+      regionId: region.id,
+      target: target || "custom_section",
+      customLabel: target ? undefined : (region.contextLabel || region.contextInstruction || region.text || undefined),
+      suggestedTarget: target,
+      suggestedConfidence: confidence,
+      status,
+    });
+  }
+  return { version: 1, regions, mappings, confirmed: false };
+}
+
+// Diagnostics only (mirrors buildLayoutDebugInfo's debugLayout gating) —
+// reports region/mapping counts and every region's role/source/context so
+// this can be verified against a real document without server-log access.
+function buildFieldMapDebugInfo(html, fieldMap) {
+  const roleCounts = {};
+  for (const r of fieldMap.regions) roleCounts[r.role] = (roleCounts[r.role] || 0) + 1;
+  return {
+    engineVersion: FIELD_MAP_ENGINE_VERSION,
+    htmlLength: html.length,
+    regionCount: fieldMap.regions.length,
+    roleCounts,
+    mappingCount: fieldMap.mappings.length,
+    regions: fieldMap.regions,
+    mappings: fieldMap.mappings,
+  };
+}
+
+// Top-level entry point called from handleRegister, mirroring
+// detectTemplateLayout's shape. PDF first-pass support lands in a later
+// stage of this same phase; for now PDF gets an empty, "unsupported" field
+// map, same as detectTemplateLayout's own PDF handling.
+async function detectTemplateFieldMap({ isPdf, buffer, debug = false }) {
+  if (isPdf) {
+    return {
+      fieldMap: { version: 1, regions: [], mappings: [], confirmed: false },
+      status: "unsupported",
+      error: null,
+      debugInfo: debug ? { engineVersion: FIELD_MAP_ENGINE_VERSION, sourceType: "pdf", note: "Field mapping is currently available for DOCX templates only." } : null,
+    };
+  }
+
+  const html = await extractDocxHtml(buffer);
+  const fieldMap = buildFieldMap(html);
+  const debugInfo = debug ? buildFieldMapDebugInfo(html, fieldMap) : null;
+  return { fieldMap, status: "ready", error: null, debugInfo };
+}
+
 // Top-level entry point called from handleRegister. isPdf selects which
 // candidate extractor runs; both converge on the same classifier/orchestrator.
 // Truncation cap for the raw mammoth HTML dump in extractionDebug — this is
@@ -1421,7 +1721,7 @@ async function handleUploadInit(req, res) {
 // is never deleted here — it's the permanent export template, not a
 // processing relay.
 async function handleRegister(req, res) {
-  const { path, filename, name, userId, debugSections, debugLayout } = req.body ?? {};
+  const { path, filename, name, userId, debugSections, debugLayout, debugFieldMap } = req.body ?? {};
   if (!path)   return res.status(400).json({ error: "Missing upload path." });
   if (!userId) return res.status(400).json({ error: "Missing userId." });
 
@@ -1435,6 +1735,9 @@ async function handleRegister(req, res) {
   const sectionDebugEnabled = debugSections === true;
   // Same idea, for layout recognition (Phase 3) — see buildLayoutDebugInfo.
   const layoutDebugEnabled = debugLayout === true;
+  // Same idea, for field-mapping region detection (Phase 5) — see
+  // buildFieldMapDebugInfo.
+  const fieldMapDebugEnabled = debugFieldMap === true;
 
   const templateName = (name || filename || "Untitled Template").trim();
   const isPdf = (filename || path || "").toLowerCase().endsWith(".pdf");
@@ -1636,6 +1939,29 @@ async function handleRegister(req, res) {
     layoutDetectionError = err?.message || String(err);
   }
 
+  // Field mapping (Phase 5) — a fourth, independent pass, same isolation
+  // guarantee as section/layout detection above. Computed fresh only here,
+  // at initial registration — an existing template's field_map is never
+  // recomputed on fetch/open; re-detection only happens by re-uploading
+  // (a new row/registration), never silently overwriting a teacher's
+  // already-reviewed mapping.
+  let fieldMap = DEFAULT_FIELD_MAP_ROW;
+  let fieldMapStatus = "ready";
+  let fieldMapError = null;
+  let fieldMapDebug = null;
+  try {
+    const result = await detectTemplateFieldMap({ isPdf, buffer: originalBuffer, debug: fieldMapDebugEnabled });
+    fieldMap = result.fieldMap;
+    fieldMapStatus = result.status;
+    fieldMapDebug = result.debugInfo;
+  } catch (err) {
+    console.error("[custom-templates:register] field map detection failed — name:", err?.name);
+    console.error("[custom-templates:register] field map detection failed — message:", err?.message);
+    console.error("[custom-templates:register] field map detection failed — stack:", err?.stack);
+    fieldMapStatus = "error";
+    fieldMapError = err?.message || String(err);
+  }
+
   const insertPayload = {
     user_id:                    userId,
     name:                       templateName,
@@ -1651,15 +1977,19 @@ async function handleRegister(req, res) {
     detected_layout:            detectedLayout,
     layout_detection_status:    layoutDetectionStatus,
     layout_detection_error:     layoutDetectionError,
+    field_map:                  fieldMap,
+    field_map_status:           fieldMapStatus,
+    field_map_error:            fieldMapError,
     status,
     error_message:              errorMessage,
   };
 
   // structured_fields/detected_sections/section_detection_*/detected_layout/
-  // layout_detection_* are all recent additions (see scripts/sql/
-  // add-structured-fields-column.sql, add-detected-sections-columns.sql,
-  // add-detected-layout-columns.sql) — every registration includes them in
-  // the insert now, so until those migrations are run every template upload
+  // layout_detection_*/field_map/field_map_* are all recent additions (see
+  // scripts/sql/add-structured-fields-column.sql,
+  // add-detected-sections-columns.sql, add-detected-layout-columns.sql,
+  // add-field-map-columns.sql) — every registration includes them in the
+  // insert now, so until those migrations are run every template upload
   // would otherwise start failing. Retry, dropping one offending column at
   // a time, rather than hard-failing registration for an unrelated
   // deploy-vs-migration ordering issue — those fields are simply absent
@@ -1667,6 +1997,7 @@ async function handleRegister(req, res) {
   const OPTIONAL_INSERT_COLUMNS = [
     "structured_fields", "detected_sections", "section_detection_status", "section_detection_error",
     "detected_layout", "layout_detection_status", "layout_detection_error",
+    "field_map", "field_map_status", "field_map_error",
   ];
   let payload = insertPayload;
   let saved, insertError;
@@ -1704,6 +2035,8 @@ async function handleRegister(req, res) {
     ...(sectionDebugEnabled ? { sectionDetectionDebug: sectionDebugLog, sectionExtractionDebug } : {}),
     layoutDetectionEngineVersion: LAYOUT_DETECTION_ENGINE_VERSION,
     ...(layoutDebugEnabled ? { layoutDetectionDebug } : {}),
+    fieldMapEngineVersion: FIELD_MAP_ENGINE_VERSION,
+    ...(fieldMapDebugEnabled ? { fieldMapDebug } : {}),
   });
 }
 
