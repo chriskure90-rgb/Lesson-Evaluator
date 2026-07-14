@@ -193,6 +193,22 @@ function buildTemplate1ExportDocument(lesson: Template1Lesson): ExportDocument {
   };
 }
 
+// Generic export for dynamic (detected-section-driven) generation — one
+// ExportSection per generated content section, same as buildLessonExportDocument/
+// buildTemplate1ExportDocument above. Deliberately does NOT attempt to
+// reproduce the uploaded template's table layout (that's final-DOCX
+// reproduction, out of scope here) — just the generated content, same
+// generic .txt/.docx/.pdf converters everything else already uses.
+function buildDynamicLessonExportDocument(plan: DynamicLessonPlan, title: string): ExportDocument {
+  return {
+    title: title || "Lesson Plan",
+    sections: plan.sections.map((section) => ({
+      heading: section.originalLabel,
+      paragraphs: [section.content || "(no content generated)"],
+    })),
+  };
+}
+
 /**
  * Coerce a raw API response into a safe Lesson.
  * Guarantees every array field is actually an array, and every string field
@@ -1112,7 +1128,6 @@ function ReproducedTemplatePreview({
   duration: number;
   breadcrumb: string;
 }) {
-  const [editNotice, setEditNotice] = useState(false);
   const layout = template.detected_layout;
   // Defensive: layout/detected_sections/plan are all normally well-formed by
   // the time they reach here, but a stale/partially-migrated row (e.g. an
@@ -1178,28 +1193,7 @@ function ReproducedTemplatePreview({
     <div className="card" style={{ overflow: "hidden" }}>
       <div className="preview-header">
         <p className="preview-breadcrumb">{breadcrumb}</p>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-          <p style={{ marginTop: 6, fontSize: "1.05rem", fontWeight: 600 }}>Reproduced Template Preview</p>
-          {/* Restored for visual/placement parity with the other formats'
-              preview header (see Template1LessonView/CustomTemplateLessonView
-              and the standard-lesson preview above) — editing generated
-              dynamic content isn't wired up yet, so this just surfaces a
-              short notice rather than silently doing nothing. */}
-          <button
-            type="button"
-            className="btn-outline-sm"
-            onClick={() => setEditNotice(true)}
-            title="Editing generated content isn't available yet for this preview"
-            style={{ flexShrink: 0, marginTop: 4, display: "flex", alignItems: "center", gap: 5 }}
-          >
-            <Icon.Edit /> Edit
-          </button>
-        </div>
-        {editNotice && (
-          <p style={{ marginTop: 8, fontSize: 12, color: "var(--muted-fg)" }}>
-            Editing generated content isn't available yet for this preview.
-          </p>
-        )}
+        <p style={{ marginTop: 6, fontSize: "1.05rem", fontWeight: 600 }}>Reproduced Template Preview</p>
       </div>
       <div style={{ padding: "16px 20px" }}>
         {tables.map((table) => {
@@ -2354,22 +2348,55 @@ function GeneratorPage({
             )}
           </div>
         ) : generatedFormat === "dynamic" && dynamicLessonPlan ? (
-          (() => {
-            const selectedTemplateForPreview = customTemplates.find((t) => t.id === selectedCustomTemplateId);
-            return selectedTemplateForPreview ? (
-              <ReproducedTemplatePreview
-                template={selectedTemplateForPreview}
-                plan={dynamicLessonPlan}
-                gradeBandLabel={gradeBandLabel}
-                subject={subject}
-                topic={topic}
-                duration={duration}
-                breadcrumb={breadcrumb}
+          <>
+            {(() => {
+              const selectedTemplateForPreview = customTemplates.find((t) => t.id === selectedCustomTemplateId);
+              return selectedTemplateForPreview ? (
+                <ReproducedTemplatePreview
+                  template={selectedTemplateForPreview}
+                  plan={dynamicLessonPlan}
+                  gradeBandLabel={gradeBandLabel}
+                  subject={subject}
+                  topic={topic}
+                  duration={duration}
+                  breadcrumb={breadcrumb}
+                />
+              ) : (
+                <DynamicLessonPreview plan={dynamicLessonPlan} breadcrumb={breadcrumb} />
+              );
+            })()}
+            {/* Same preview-evaluate-strip used by Standard/Template1/custom
+                (Export left, Edit + Evaluate right) — reused as-is, not a
+                custom-template-only layout. Editing generated dynamic
+                content isn't wired up yet, so Edit surfaces a tooltip
+                instead of doing nothing silently; Export/Evaluate reuse the
+                exact same handlers/components the other formats use. */}
+            <div className="preview-evaluate-strip">
+              <ExportDropdown
+                label="Export lesson"
+                filenameBase={slugifyFilename(topic, "lesson-plan")}
+                getDocument={() => buildDynamicLessonExportDocument(dynamicLessonPlan, topic)}
               />
-            ) : (
-              <DynamicLessonPreview plan={dynamicLessonPlan} breadcrumb={breadcrumb} />
-            );
-          })()
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <button
+                  type="button"
+                  className="btn-outline-sm"
+                  title="Editing generated content isn't available yet for this preview"
+                  style={{ display: "flex", alignItems: "center", gap: 5 }}
+                >
+                  <Icon.Edit /> Edit
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  style={{ width: "auto", padding: "0 22px", height: 38, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}
+                  onClick={() => onEvaluateLesson()}
+                >
+                  <Icon.FileCheck /> Evaluate Lesson
+                </button>
+              </div>
+            </div>
+          </>
         ) : (
           <div className="empty-state">
             <div style={{ textAlign: "center", maxWidth: 280 }}>
