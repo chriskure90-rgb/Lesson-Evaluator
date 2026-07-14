@@ -499,8 +499,13 @@ function classifySectionCandidate(rawLabel, signal, trace = null) {
   }
   // Section labels are short and don't end mid-sentence — a colon at the
   // end is the one exception (e.g. "Materials Needed:" is still a label).
-  if (!endsInColon && (core.length > 70 || /[.?!]$/.test(core))) {
-    log(`discarded: not colon-terminated and ${core.length > 70 ? `over 70 chars (${core.length})` : "ends in sentence punctuation"} — treated as body text, not a label`);
+  // An ellipsis (real "…" or three literal dots) counts as sentence-ending
+  // too — confirmed directly against a real template: a lead-in prompt
+  // fragment like "Students will be able to…" would otherwise pass this
+  // gate and become its own bogus custom_section instead of being
+  // discarded as body/prompt text.
+  if (!endsInColon && (core.length > 70 || /(\.\.\.|[.?!…])$/.test(core))) {
+    log(`discarded: not colon-terminated and ${core.length > 70 ? `over 70 chars (${core.length})` : "ends in sentence punctuation (including ellipsis)"} — treated as body text, not a label`);
     return null;
   }
   log(`passed heading-candidacy gate: endsInColon=${endsInColon}, length=${core.length}`);
@@ -635,6 +640,71 @@ function stripHtmlTags(html) {
     .trim();
 }
 
+// Word's native "Rich Text Content Control" placeholders (Insert > Controls
+// on the Developer tab) render as literal boilerplate text in mammoth's
+// output — never real label or instructional content, but a marker for the
+// actual EDITABLE region a teacher is meant to type into. Confirmed
+// directly against a real uploaded template: these frequently appear glued
+// onto the SAME paragraph as their label (e.g. "Activity Name: Click or tap
+// here to enter text.") rather than as their own paragraph. Left unstripped,
+// that turns what should be a clean colon-terminated label into a
+// sentence-like string that the heading-candidacy gate below discards
+// outright — losing the whole field, label included, not just the
+// placeholder. Stripped from the END of any candidate text (case-
+// insensitive, trailing period optional) before classification; if
+// stripping leaves nothing behind, the candidate was pure placeholder noise
+// (e.g. a standalone "Click or tap here to enter text." paragraph) and is
+// dropped entirely rather than becoming a label of its own.
+const WORD_CONTENT_CONTROL_PLACEHOLDERS = [
+  "click or tap here to enter text",
+  "click here to enter text",
+  "click or tap to enter a date",
+  "choose an item",
+  "choose a date",
+  "enter text here",
+];
+const WORD_PLACEHOLDER_TAIL_RE = new RegExp(
+  `\\s*(?:${WORD_CONTENT_CONTROL_PLACEHOLDERS.join("|")})\\.?\\s*$`,
+  "i"
+);
+function stripWordPlaceholderTail(text) {
+  return text.replace(WORD_PLACEHOLDER_TAIL_RE, "").trim();
+}
+
+// A leading bold run followed by additional PLAIN text in the same
+// paragraph/cell is a common way Word templates bold just a field's label
+// while leaving descriptive/instructional guidance in regular text right
+// after it, in the SAME paragraph — confirmed directly against a real
+// uploaded template: "<strong>Knowledge of students to inform teaching:
+// </strong>Describe what you know about students. Consider the variety of
+// learners..." is one paragraph, not two. Left unhandled, the whole thing
+// (label + long guidance) is one long candidate that the heading-candidacy
+// gate discards outright — losing the label along with the guidance text
+// it was never supposed to keep anyway. Returns just the bold run's own
+// text when a plain-text continuation follows it; returns null (leave the
+// caller's normal handling alone) when the paragraph is entirely bold
+// (isEntirelyBold's own signal-classification already covers that case) or
+// doesn't start with a bold run at all.
+function extractLeadingBoldLabel(unitHtml) {
+  const trimmed = unitHtml.trim().replace(/^<p[^>]*>([\s\S]*)<\/p>$/, "$1").trim();
+  const match = /^<(strong|b)>([\s\S]*?)<\/\1>([\s\S]*)$/.exec(trimmed);
+  if (!match) return null;
+  const rest = match[3];
+  // Only treat this as "label + plain continuation" when the very next
+  // thing after the bold run is genuine unwrapped text, not another tag —
+  // a label can legitimately continue across a hyperlink or a second bold
+  // run (e.g. "<strong>Activity/Skills Covered: (based on the </strong>
+  // <a><strong>OST Observation Instrument</strong></a><strong> and RFP)
+  // </strong>" is one label fragmented by an inline link, not label +
+  // description) — when that happens, back off and let the caller's
+  // normal whole-string handling take over rather than truncating to a
+  // partial, wrong label.
+  if (/^\s*</.test(rest)) return null;
+  const trailing = stripHtmlTags(rest);
+  if (!trailing) return null;
+  return stripHtmlTags(match[2]) || null;
+}
+
 // True when the ENTIRE cell/paragraph content is one bold run (not just
 // bold text somewhere inside a longer sentence) — that distinction is what
 // separates a "bold standalone" heading-like label from ordinary emphasis.
@@ -680,7 +750,10 @@ function extractCellUnits(innerHtml) {
   }
 
   return units
-    .map((unitHtml) => ({ text: stripHtmlTags(unitHtml), html: unitHtml }))
+    .map((unitHtml) => {
+      const text = stripWordPlaceholderTail(extractLeadingBoldLabel(unitHtml) ?? stripHtmlTags(unitHtml));
+      return { text, html: unitHtml };
+    })
     .filter((u) => u.text);
 }
 
@@ -703,10 +776,10 @@ function extractDocxSectionCandidates(html, extractionTrace = null) {
   let tableIndex = -1;
   while ((match = blockRegex.exec(html)) !== null) {
     if (match[1] !== undefined) {
-      const text = stripHtmlTags(match[2]);
+      const text = stripWordPlaceholderTail(stripHtmlTags(match[2]));
       if (text) candidates.push({ text, signal: "heading" });
     } else if (match[3] !== undefined) {
-      const text = stripHtmlTags(match[3]);
+      const text = stripWordPlaceholderTail(extractLeadingBoldLabel(match[3]) ?? stripHtmlTags(match[3]));
       if (text) candidates.push({ text, signal: classifyDocxBlockSignal(text, match[3], "bold-text") });
     } else if (match[4] !== undefined) {
       tableIndex++;
