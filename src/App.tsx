@@ -1060,11 +1060,12 @@ function TeachingStrategiesPicker({
   );
 }
 
-// Phase 2 temporary preview: section title -> generated content, in
-// canonical detected-section order. No layout reproduction (grid/table
-// positioning matching the original template) — that's Phase 3, see
-// CustomTemplateLessonView/custom-template-layouts.ts, which this
-// deliberately does not touch or reuse.
+// Phase 2 flat preview: section title -> generated content, in canonical
+// detected-section order, no layout reproduction. Superseded by
+// ReproducedTemplatePreview (Phase 4) as the primary dynamic-format preview,
+// but kept here as a debugging/fallback view — ReproducedTemplatePreview
+// falls back to this when a template has no usable detected_layout, or when
+// the selected template's data isn't available at render time.
 function DynamicLessonPreview({ plan, breadcrumb }: { plan: DynamicLessonPlan; breadcrumb: string }) {
   return (
     <div className="card" style={{ overflow: "hidden" }}>
@@ -1081,6 +1082,165 @@ function DynamicLessonPreview({ plan, breadcrumb }: { plan: DynamicLessonPlan; b
             </p>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Phase 4: Reproduced Template Preview ──────────────────────────────────────
+// Combines detected_layout (structure) + detected_sections (labels/types) +
+// DynamicLessonPlan (generated content) into one preview that mirrors the
+// uploaded template's actual table/row/cell/colspan/rowspan structure —
+// still a browser preview only, not the final DOCX (export is untouched,
+// Phase 5+ concern). Falls back to the flat DynamicLessonPreview when the
+// template has no table layout detected yet (e.g. migration not run, or a
+// template registered before Phase 3 existed).
+function ReproducedTemplatePreview({
+  template,
+  plan,
+  gradeBandLabel,
+  subject,
+  topic,
+  duration,
+  breadcrumb,
+}: {
+  template: CustomTemplate;
+  plan: DynamicLessonPlan;
+  gradeBandLabel: string;
+  subject: string;
+  topic: string;
+  duration: number;
+  breadcrumb: string;
+}) {
+  const layout = template.detected_layout;
+
+  if (!layout || layout.tables.length === 0) {
+    return (
+      <>
+        <p style={{ fontSize: 12.5, color: "var(--muted-fg)", marginBottom: 8 }}>
+          No structural layout was detected for this template yet — showing the flat list view instead.
+        </p>
+        <DynamicLessonPreview plan={plan} breadcrumb={breadcrumb} />
+      </>
+    );
+  }
+
+  const allSections = [
+    ...template.detected_sections.contentSections,
+    ...template.detected_sections.metadataFields,
+    ...template.detected_sections.instructionTexts,
+  ];
+  const sectionById = new Map(allSections.map((s) => [s.id, s]));
+  const generatedById = new Map(plan.sections.map((s) => [s.id, s]));
+
+  // Only what the Generator page actually has values for today — Teacher/
+  // School/Date/Class Period have no corresponding input anywhere in the
+  // app, so they stay empty states rather than inventing a value.
+  const metadataValueByNormalizedKey: Record<string, string | undefined> = {
+    gradeLevel: gradeBandLabel,
+    subject,
+    topic,
+    duration: `${duration} minutes`,
+  };
+
+  const mappedContentIds = new Set<string>();
+
+  // Returns the value to render under a label (or undefined when there's no
+  // defined "value slot" for this section type at all, e.g. instruction
+  // text or a label with no detected-section match).
+  function valueForSectionId(sectionId: string | null): { text: string | undefined; placeholder: string } | null {
+    if (!sectionId) return null;
+    const section = sectionById.get(sectionId);
+    if (!section) return null;
+    if (section.type === "metadata_field") {
+      return { text: metadataValueByNormalizedKey[section.normalizedKey], placeholder: "(no value yet)" };
+    }
+    if (section.type === "content_section") {
+      mappedContentIds.add(sectionId);
+      const generated = generatedById.get(sectionId);
+      return { text: generated?.content?.trim() || undefined, placeholder: "(no content generated)" };
+    }
+    return null; // instruction_text — nothing generated or entered for these
+  }
+
+  return (
+    <div className="card" style={{ overflow: "hidden" }}>
+      <div className="preview-header">
+        <p className="preview-breadcrumb">{breadcrumb}</p>
+        <p style={{ marginTop: 6, fontSize: "1.05rem", fontWeight: 600 }}>Reproduced Template Preview</p>
+      </div>
+      <div style={{ padding: "16px 20px" }}>
+        {layout.tables.map((table) => (
+          <table
+            key={table.id}
+            style={{ borderCollapse: "collapse", width: "100%", marginBottom: 14, tableLayout: "fixed" }}
+          >
+            <tbody>
+              {table.rows.map((row) => (
+                <tr key={row.id}>
+                  {row.cells.map((cell) => (
+                    <td
+                      key={cell.id}
+                      colSpan={cell.colspan}
+                      rowSpan={cell.rowspan}
+                      style={{
+                        border: "1px solid var(--border)",
+                        padding: 8,
+                        verticalAlign: "top",
+                        fontSize: 12.5,
+                        minWidth: 80,
+                        height: 36,
+                      }}
+                    >
+                      {cell.labels.length === 0 ? (
+                        <span style={{ color: "var(--muted-fg)", fontStyle: "italic" }}>(empty)</span>
+                      ) : (
+                        cell.labels.map((label, i) => {
+                          const resolved = valueForSectionId(cell.sectionIds[i]);
+                          return (
+                            <div key={i} style={{ marginBottom: i < cell.labels.length - 1 ? 8 : 0 }}>
+                              <div style={{ fontWeight: 600 }}>{label}</div>
+                              {resolved && (
+                                <div
+                                  style={{
+                                    marginTop: 2,
+                                    whiteSpace: "pre-wrap",
+                                    color: resolved.text ? "var(--foreground)" : "var(--muted-fg)",
+                                    fontStyle: resolved.text ? "normal" : "italic",
+                                  }}
+                                >
+                                  {resolved.text || resolved.placeholder}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ))}
+
+        {(() => {
+          const unmapped = plan.sections.filter((s) => !mappedContentIds.has(s.id));
+          if (unmapped.length === 0) return null;
+          return (
+            <div style={{ marginTop: 8, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+              <p style={{ fontWeight: 700, fontSize: 13, margin: "0 0 8px" }}>Unmapped Generated Sections</p>
+              {unmapped.map((s) => (
+                <div key={s.id} style={{ marginBottom: 10 }}>
+                  <div style={{ fontWeight: 600, fontSize: 12.5 }}>{s.originalLabel}</div>
+                  <div style={{ fontSize: 12.5, color: "var(--muted-fg)", whiteSpace: "pre-wrap" }}>
+                    {s.content || "(no content generated)"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
@@ -2152,7 +2312,22 @@ function GeneratorPage({
             )}
           </div>
         ) : generatedFormat === "dynamic" && dynamicLessonPlan ? (
-          <DynamicLessonPreview plan={dynamicLessonPlan} breadcrumb={breadcrumb} />
+          (() => {
+            const selectedTemplateForPreview = customTemplates.find((t) => t.id === selectedCustomTemplateId);
+            return selectedTemplateForPreview ? (
+              <ReproducedTemplatePreview
+                template={selectedTemplateForPreview}
+                plan={dynamicLessonPlan}
+                gradeBandLabel={gradeBandLabel}
+                subject={subject}
+                topic={topic}
+                duration={duration}
+                breadcrumb={breadcrumb}
+              />
+            ) : (
+              <DynamicLessonPreview plan={dynamicLessonPlan} breadcrumb={breadcrumb} />
+            );
+          })()
         ) : (
           <div className="empty-state">
             <div style={{ textAlign: "center", maxWidth: 280 }}>
