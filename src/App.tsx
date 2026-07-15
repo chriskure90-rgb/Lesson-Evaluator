@@ -1403,8 +1403,12 @@ function GeneratorPage({
   // Template 1 (PSU/GTEP-style) has its own data shape entirely — tracked
   // separately from `lesson`/`draft`. `generatedFormat` records which format
   // actually produced the currently-displayed content, independent of the
-  // live `lessonFormat` selector (so flipping the selector after generating
-  // doesn't change what's displayed until the user regenerates).
+  // live `lessonFormat` selector — flipping the selector to a *built-in*
+  // format doesn't change what's displayed until the user regenerates, but
+  // switching the active CUSTOM TEMPLATE does clear it (see
+  // selectCustomTemplate/previewOwnerTemplateId below), so the live
+  // structural preview always reflects whichever template is actually
+  // selected, not a stale result from a different one.
   //
   // "custom" (a teacher's own uploaded DOCX template) reuses this exact same
   // Template1Lesson content/state — it's only a different export skin, see
@@ -1415,6 +1419,11 @@ function GeneratorPage({
   );
   const [template1Lesson, setTemplate1Lesson] = useState<Template1Lesson | null>(sharedTemplate1Lesson);
   const [template1Draft, setTemplate1Draft]   = useState<Template1Lesson | null>(null);
+  // Which custom template (if any) the currently-displayed generatedFormat
+  // result actually belongs to — lets selectCustomTemplate clear a stale
+  // generated view on reselection without discarding it when re-selecting
+  // the same template that was just generated for.
+  const [previewOwnerTemplateId, setPreviewOwnerTemplateId] = useState<string | null>(null);
 
   // Phase 2: dynamic generation, keyed by a template's own detected_sections
   // rather than the fixed Template1Lesson schema — see generateDynamicLessonPlan.
@@ -1468,13 +1477,27 @@ function GeneratorPage({
     }
   }
 
+  // Single entry point for "make this custom template the active one" —
+  // used identically whether the template was just uploaded, just finished
+  // setup, or is being reselected from the chip row, so all three produce
+  // the exact same preview behavior. Clears a stale generatedFormat only
+  // when switching to a genuinely different template than whichever one
+  // the current generated result belongs to (previewOwnerTemplateId) — so
+  // the live structural preview (ReproducedTemplatePreview, plan={null})
+  // shows immediately for the newly active template, without discarding a
+  // still-relevant generated result when re-clicking the same template.
+  function selectCustomTemplate(t: CustomTemplate) {
+    setSelectedCustomTemplateId(t.id);
+    setLessonFormat(hasFieldMapRegions(t) ? "dynamic" : "custom");
+    if (t.id !== previewOwnerTemplateId) setGeneratedFormat(null);
+  }
+
   // A freshly uploaded template becomes the active selection right away —
   // deliberately does not close the Manage Templates modal (unlike
   // onFinishTemplateSetup below), since the teacher is expected to keep
   // reviewing sections/layout/mapping in the same modal session.
   function handleTemplateUploaded(t: CustomTemplate) {
-    setSelectedCustomTemplateId(t.id);
-    setLessonFormat(hasFieldMapRegions(t) ? "dynamic" : "custom");
+    selectCustomTemplate(t);
   }
 
   // Custom standards upload (PDF/DOCX)
@@ -1700,6 +1723,7 @@ function GeneratorPage({
         setDynamicLessonPlan(plan);
         setDynamicPreviewTemplate(selectedCustomTemplate);
         setGeneratedFormat("dynamic");
+        setPreviewOwnerTemplateId(selectedCustomTemplate.id);
         onDynamicLessonGenerated?.(plan);   // share with the Evaluator
         onCustomTemplateSelected(selectedCustomTemplate.id);
         onLessonMetaGenerated?.({ model, grade, subject, standards: resolvedFrameworks().join(", "), duration });
@@ -1767,6 +1791,7 @@ function GeneratorPage({
         });
         setTemplate1Lesson(result);
         setGeneratedFormat(isCustom ? "custom" : "template1");
+        setPreviewOwnerTemplateId(isCustom ? selectedCustomTemplate?.id ?? null : null);
         onTemplate1LessonGenerated(result);   // share with the Evaluator
         onCustomTemplateSelected(isCustom ? selectedCustomTemplateId : null);
         onLessonMetaGenerated?.({ model, grade, subject, standards: resolvedFrameworks().join(", "), duration });
@@ -2140,15 +2165,7 @@ function GeneratorPage({
                           key={t.id}
                           type="button"
                           className={`fw-chip${active ? " fw-chip-active" : ""}`}
-                          onClick={() => {
-                            // Once a template has detected field_map regions
-                            // (Phase 5), generation can actually target the
-                            // exact regions the teacher reviewed — default
-                            // straight to dynamic generation instead of the
-                            // old fixed Template 1 fields.
-                            setLessonFormat(hasFieldMapRegions(t) ? "dynamic" : "custom");
-                            setSelectedCustomTemplateId(t.id);
-                          }}
+                          onClick={() => selectCustomTemplate(t)}
                           aria-pressed={active}
                         >
                           {t.name}
@@ -2645,15 +2662,16 @@ function GeneratorPage({
           onClose={() => setShowTemplatesModal(false)}
           onTemplateUploaded={handleTemplateUploaded}
           onFinishTemplateSetup={(templateId) => {
-            // Confirming detected sections here is a separate, earlier step
-            // from field-region detection (Phase 5) — dynamic generation is
-            // gated on the template having field_map regions, not this. Land
-            // in dynamic mode whenever regions were detected; otherwise
-            // "custom" (same default as selecting the template chip) so
-            // Generate doesn't fail on a template with nothing to map into.
             const template = customTemplates.find((t) => t.id === templateId);
-            setSelectedCustomTemplateId(templateId);
-            setLessonFormat(hasFieldMapRegions(template) ? "dynamic" : "custom");
+            if (template) {
+              selectCustomTemplate(template);
+            } else {
+              // Defensive fallback if the template row isn't in local state
+              // yet for some reason — same as selectCustomTemplate's
+              // default, just without a real CustomTemplate to pass it.
+              setSelectedCustomTemplateId(templateId);
+              setLessonFormat("custom");
+            }
             setShowTemplatesModal(false);
           }}
         />
