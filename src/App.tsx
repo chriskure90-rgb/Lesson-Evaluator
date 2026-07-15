@@ -1669,17 +1669,20 @@ function GeneratorPage({
     try {
       if (lessonFormat === "dynamic") {
         const selectedCustomTemplate = customTemplates.find((t) => t.id === selectedCustomTemplateId) ?? null;
-        const fieldMap = selectedCustomTemplate?.field_map;
         console.log("[handleGenerate] dynamic generation for template:", {
           selectedCustomTemplateId,
           selectedCustomTemplateName: selectedCustomTemplate?.name ?? null,
-          confirmed: fieldMap?.confirmed ?? false,
-          regionCount: fieldMap?.regions?.length ?? 0,
+          confirmed: selectedCustomTemplate?.field_map?.confirmed ?? false,
+          regionCount: selectedCustomTemplate?.field_map?.regions?.length ?? 0,
         });
         if (!selectedCustomTemplate || !hasFieldMapRegions(selectedCustomTemplate)) {
           setError("This template has no detected fields to generate into yet.");
           return;
         }
+        // field_map is non-optional on CustomTemplate — the guard above
+        // already narrowed selectedCustomTemplate to non-null, so this is
+        // always a real TemplateFieldMap, never undefined.
+        const fieldMap = selectedCustomTemplate.field_map;
         const mappedRegionIds = fieldMap.mappings.map((m) => m.regionId);
         console.log("[custom-generation-request]", {
           customTemplateId: selectedCustomTemplateId,
