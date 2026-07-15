@@ -4099,7 +4099,6 @@ function FieldMappingPanel({
   userId: string;
   onTemplateUpdated: (updated: CustomTemplate) => void;
 }) {
-  const isPdf = template.original_filename.toLowerCase().endsWith(".pdf") || template.detected_layout?.sourceType === "pdf";
   // Defensive: template.field_map is normally normalized by the time it
   // reaches here, but never trust it directly — a template row that skipped
   // normalization (or predates this column) must never crash this panel.
@@ -4107,13 +4106,7 @@ function FieldMappingPanel({
     template.field_map && Array.isArray(template.field_map.regions) && Array.isArray(template.field_map.mappings)
       ? template.field_map
       : DEFAULT_FIELD_MAP;
-
-  const [draftMappings, setDraftMappings] = useState<FieldMapping[]>(fieldMap.mappings);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [confirmError, setConfirmError] = useState<string | null>(null);
-
-  useEffect(() => { setDraftMappings(fieldMap.mappings); }, [template.id, fieldMap]);
+  const [isReviewOpen, setIsReviewOpen] = useState(false);
 
   if (template.status === "processing") {
     return (
@@ -4142,17 +4135,92 @@ function FieldMappingPanel({
     );
   }
 
+  const mappedCount = fieldMap.mappings.length;
+  const readyCount = fieldMap.mappings.filter((m) => m.status === "ready").length;
+  const needsReviewCount = fieldMap.mappings.filter((m) => m.status === "needs_review").length;
+  const manualEntryCount = fieldMap.mappings.filter((m) => m.status === "manual_entry").length;
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <p style={{ fontWeight: 700, fontSize: 13, margin: 0 }}>Field Mapping</p>
+        {fieldMap.confirmed ? (
+          <span className="lib-badge badge-ready">Field mapping confirmed</span>
+        ) : (
+          <span style={{ fontSize: 11.5, color: "var(--muted-fg)" }}>Not yet confirmed</span>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 12, color: "var(--muted-fg)", marginBottom: 10 }}>
+        <span>{mappedCount} field{mappedCount === 1 ? "" : "s"} detected</span>
+        <span>{readyCount} ready</span>
+        <span>{needsReviewCount} needs review</span>
+        <span>{manualEntryCount} manual entry</span>
+      </div>
+      <button type="button" className="btn-outline-sm" onClick={() => setIsReviewOpen(true)}>
+        Review Field Mapping
+      </button>
+
+      {isReviewOpen && (
+        <CustomTemplateErrorBoundary>
+          <FieldMappingReviewDrawer
+            template={template}
+            userId={userId}
+            onTemplateUpdated={onTemplateUpdated}
+            onClose={() => setIsReviewOpen(false)}
+          />
+        </CustomTemplateErrorBoundary>
+      )}
+    </div>
+  );
+}
+
+// Interactive editor, mounted only while FieldMappingPanel's "Review Field
+// Mapping" button is open — a template with many detected fields no longer
+// turns the Manage Templates list into a long wall of always-expanded cards.
+// Rows are a flat, document-order list (not the topLevel/table/cell nesting
+// groupRegionsByLocation builds below — that grouping is still needed by
+// ReproducedTemplatePreview for the generated-lesson preview, just not by
+// this compact review list). Headings/instructions/blanks never appear as
+// their own rows; their text only surfaces as a mapped region's
+// contextLabel/contextInstruction when that row is expanded.
+function FieldMappingReviewDrawer({
+  template,
+  userId,
+  onTemplateUpdated,
+  onClose,
+}: {
+  template: CustomTemplate;
+  userId: string;
+  onTemplateUpdated: (updated: CustomTemplate) => void;
+  onClose: () => void;
+}) {
+  const isPdf = template.original_filename.toLowerCase().endsWith(".pdf") || template.detected_layout?.sourceType === "pdf";
+  const fieldMap: TemplateFieldMap =
+    template.field_map && Array.isArray(template.field_map.regions) && Array.isArray(template.field_map.mappings)
+      ? template.field_map
+      : DEFAULT_FIELD_MAP;
+
+  const [draftMappings, setDraftMappings] = useState<FieldMapping[]>(fieldMap.mappings);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [expandedRegionId, setExpandedRegionId] = useState<string | null>(null);
+
+  useEffect(() => { setDraftMappings(fieldMap.mappings); }, [template.id, fieldMap]);
+
   const mappingByRegionId = new Map(draftMappings.map((m) => [m.regionId, m]));
 
-  async function persist(nextMappings: FieldMapping[], nextConfirmed: boolean) {
+  async function persist(nextMappings: FieldMapping[], nextConfirmed: boolean): Promise<boolean> {
     setSaving(true);
     setError(null);
     try {
       const saved = await updateFieldMap(template.id, userId, { ...fieldMap, mappings: nextMappings, confirmed: nextConfirmed });
       setDraftMappings(saved.mappings);
       onTemplateUpdated({ ...template, field_map: saved });
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save field mapping.");
+      return false;
     } finally {
       setSaving(false);
     }
@@ -4179,7 +4247,8 @@ function FieldMappingPanel({
       return;
     }
     setConfirmError(null);
-    await persist(draftMappings, true);
+    const ok = await persist(draftMappings, true);
+    if (ok) onClose();
   }
 
   const canonicalTargetCounts = new Map<string, number>();
@@ -4188,68 +4257,43 @@ function FieldMappingPanel({
       canonicalTargetCounts.set(m.target, (canonicalTargetCounts.get(m.target) || 0) + 1);
     }
   }
-  const duplicateTargetLabels = [...canonicalTargetCounts.entries()]
-    .filter(([, count]) => count > 1)
-    .map(([t]) => CANONICAL_FIELD_TARGET_LABELS[t as (typeof CANONICAL_FIELD_TARGETS)[number]]);
+  const duplicateTargets = new Set(
+    [...canonicalTargetCounts.entries()].filter(([, count]) => count > 1).map(([t]) => t)
+  );
 
-  function renderRegion(region: TemplateRegion) {
-    if (region.role === "blank") {
-      return (
-        <p key={region.id} style={{ fontSize: 11.5, color: "var(--muted-fg)", fontStyle: "italic", margin: "2px 0" }}>
-          (blank — structural spacing only)
-        </p>
-      );
-    }
-    if (region.role === "heading" || region.role === "instruction") {
-      return (
-        <p
-          key={region.id}
-          style={{
-            fontSize: region.role === "heading" ? 13 : 12,
-            fontWeight: region.role === "heading" ? 600 : 400,
-            fontStyle: region.role === "instruction" ? "italic" : "normal",
-            color: region.role === "instruction" ? "var(--muted-fg)" : "inherit",
-            margin: "2px 0",
-          }}
-        >
-          {region.text}
-        </p>
-      );
-    }
+  const rows = fieldMap.regions.filter(
+    (r) => (r.role === "editable_field" || r.role === "checkbox_group") && mappingByRegionId.has(r.id)
+  );
 
-    // editable_field / checkbox_group — the only roles that can ever carry
-    // a mapping (see requirement: headings/instructions never overwritten).
-    const mapping = mappingByRegionId.get(region.id);
-    if (!mapping) return null;
+  function renderRow(region: TemplateRegion) {
+    const mapping = mappingByRegionId.get(region.id)!;
+    const isExpanded = expandedRegionId === region.id;
+    const isDuplicate = duplicateTargets.has(mapping.target);
+    const label = region.contextLabel || region.text || "(field)";
+
     return (
-      <div key={region.id} style={{ marginTop: 6, marginBottom: 6, padding: 8, border: "1px dashed var(--border)", borderRadius: 6 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
-          <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>
-            {region.role === "checkbox_group" ? "Checkbox field" : "Editable field"}
-            {region.contextLabel ? ` — under "${region.contextLabel}"` : ""}
-            {region.source === "implicit" ? " (inferred spot, no blank line found)" : ""}
-          </span>
-          <span className={`lib-badge ${FIELD_MAPPING_STATUS_BADGE_CLASS[mapping.status]}`} style={{ fontSize: 9.5 }}>
-            {FIELD_MAPPING_STATUS_LABELS[mapping.status]}
-          </span>
-        </div>
+      <div key={region.id} style={{ borderBottom: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0" }}>
+          <button
+            type="button"
+            onClick={() => setExpandedRegionId(isExpanded ? null : region.id)}
+            aria-expanded={isExpanded}
+            style={{
+              display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 0,
+              background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left",
+            }}
+          >
+            <span className={`accordion-chevron${isExpanded ? " open" : ""}`} style={{ flexShrink: 0 }}>
+              <Icon.Chevron />
+            </span>
+            <span style={{ fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {label}
+            </span>
+          </button>
 
-        {region.contextInstruction && (
-          <p style={{ fontSize: 11, color: "var(--muted-fg)", fontStyle: "italic", margin: "0 0 6px" }}>
-            {region.contextInstruction}
-          </p>
-        )}
-
-        {region.role === "checkbox_group" && region.checkboxOptions && (
-          <p style={{ fontSize: 11.5, margin: "0 0 6px" }}>
-            Options: {region.checkboxOptions.join(", ")}
-          </p>
-        )}
-
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <select
             className="input"
-            style={{ fontSize: 12.5, padding: "4px 8px", width: "auto" }}
+            style={{ fontSize: 12, padding: "3px 6px", width: "auto", flexShrink: 0 }}
             value={mapping.target}
             disabled={saving}
             onChange={(e) => updateMapping(region.id, { target: e.target.value as FieldMappingTarget })}
@@ -4258,90 +4302,107 @@ function FieldMappingPanel({
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
-          {mapping.suggestedTarget && mapping.suggestedTarget !== mapping.target && (
-            <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>
-              Suggested mapping: {CANONICAL_FIELD_TARGET_LABELS[mapping.suggestedTarget as (typeof CANONICAL_FIELD_TARGETS)[number]] ?? mapping.suggestedTarget}
-              {" "}({Math.round(mapping.suggestedConfidence * 100)}% confidence)
+
+          <span style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+            <span className={`lib-badge ${FIELD_MAPPING_STATUS_BADGE_CLASS[mapping.status]}`} style={{ fontSize: 9.5 }}>
+              {FIELD_MAPPING_STATUS_LABELS[mapping.status]}
             </span>
-          )}
+            {isDuplicate && (
+              <span title="More than one field is mapped to this target" style={{ fontSize: 11, color: "var(--destructive)" }}>
+                ⚠
+              </span>
+            )}
+          </span>
         </div>
 
-        {mapping.target === "custom_section" && (
-          <input
-            className="input"
-            style={{ marginTop: 6, fontSize: 12.5 }}
-            placeholder="Label for this custom section (required)"
-            value={mapping.customLabel ?? ""}
-            disabled={saving}
-            onChange={(e) => updateMapping(region.id, { customLabel: e.target.value })}
-          />
+        {isExpanded && (
+          <div style={{ padding: "0 0 12px 22px" }}>
+            {(region.contextLabel || region.contextInstruction) && (
+              <p style={{ fontSize: 11.5, color: "var(--muted-fg)", margin: "0 0 6px" }}>
+                {region.contextLabel}
+                {region.contextLabel && region.contextInstruction ? " — " : ""}
+                {region.contextInstruction}
+              </p>
+            )}
+
+            {mapping.suggestedTarget && mapping.suggestedTarget !== mapping.target && (
+              <p style={{ fontSize: 11, color: "var(--muted-fg)", margin: "0 0 6px" }}>
+                Suggested mapping: {CANONICAL_FIELD_TARGET_LABELS[mapping.suggestedTarget as (typeof CANONICAL_FIELD_TARGETS)[number]] ?? mapping.suggestedTarget}
+                {" "}({Math.round(mapping.suggestedConfidence * 100)}% confidence)
+              </p>
+            )}
+
+            {mapping.target === "custom_section" && (
+              <input
+                className="input"
+                style={{ marginBottom: 6, fontSize: 12.5 }}
+                placeholder="Label for this custom section (required)"
+                value={mapping.customLabel ?? ""}
+                disabled={saving}
+                onChange={(e) => updateMapping(region.id, { customLabel: e.target.value })}
+              />
+            )}
+
+            {(region.source === "implicit" || (region.role === "checkbox_group" && region.checkboxOptions)) && (
+              <details>
+                <summary style={{ fontSize: 11, color: "var(--muted-fg)", cursor: "pointer" }}>Detection details</summary>
+                <div style={{ fontSize: 11, color: "var(--muted-fg)", marginTop: 4 }}>
+                  {region.source === "implicit" && <p style={{ margin: "0 0 4px" }}>Inferred spot, no blank line found.</p>}
+                  {region.role === "checkbox_group" && region.checkboxOptions && (
+                    <p style={{ margin: 0 }}>Options: {region.checkboxOptions.join(", ")}</p>
+                  )}
+                </div>
+              </details>
+            )}
+          </div>
         )}
       </div>
     );
   }
 
-  const { topLevel, tables } = groupRegionsByLocation(fieldMap.regions);
-  const mappedCount = draftMappings.length;
-  const readyCount = draftMappings.filter((m) => m.status === "ready").length;
-
   return (
-    <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-        <p style={{ fontWeight: 700, fontSize: 13, margin: 0 }}>Field Mapping</p>
-        <span style={{ fontSize: 11.5, color: "var(--muted-fg)" }}>
-          {readyCount} of {mappedCount} ready
-          {fieldMap.confirmed && <span className="lib-badge badge-ready" style={{ marginLeft: 8 }}>Confirmed</span>}
-        </span>
-      </div>
-
-      {isPdf && (
-        <p style={{ fontSize: 12.5, color: "var(--destructive)", marginBottom: 8 }}>
-          ⚠ Field detection for PDF templates is approximate — there's no reliable way to detect real blank spots in a PDF,
-          so every field below was inferred from its label alone. Review each one carefully before confirming.
-        </p>
-      )}
-
-      {error && <p style={{ fontSize: 12.5, color: "var(--destructive)", marginBottom: 8 }}>{error}</p>}
-
-      {topLevel.length > 0 && (
-        <div style={{ marginBottom: 10 }}>
-          {topLevel.map(renderRegion)}
+    <>
+      <div className="drawer-backdrop" onClick={onClose} />
+      <div className="drawer-panel">
+        <div className="drawer-header">
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p className="drawer-eyebrow">Field Mapping</p>
+            <h2 className="drawer-title">{template.name}</h2>
+          </div>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="Close">
+            ✕
+          </button>
         </div>
-      )}
 
-      {tables.map((table) => (
-        <div key={table.tableId} style={{ marginBottom: 12 }}>
-          {table.rows.map((row) => (
-            <div key={row.rowId} style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
-              {row.cells.map((cell) => (
-                <div key={cell.cellId} style={{ flex: "1 1 220px", minWidth: 200, border: "1px solid var(--border)", borderRadius: 6, padding: 8 }}>
-                  {cell.regions.map(renderRegion)}
-                </div>
-              ))}
-            </div>
-          ))}
+        <div className="drawer-body">
+          {isPdf && (
+            <p style={{ fontSize: 12.5, color: "var(--destructive)", margin: "16px 0 0" }}>
+              ⚠ Field detection for PDF templates is approximate — there's no reliable way to detect real blank spots in a PDF,
+              so every field below was inferred from its label alone. Review each one carefully before confirming.
+            </p>
+          )}
+          {error && <p style={{ fontSize: 12.5, color: "var(--destructive)", margin: "16px 0 0" }}>{error}</p>}
+
+          <div style={{ marginTop: 16 }}>
+            {rows.map(renderRow)}
+          </div>
+
+          {confirmError && <p style={{ fontSize: 12.5, color: "var(--destructive)", marginTop: 12 }}>{confirmError}</p>}
         </div>
-      ))}
 
-      {duplicateTargetLabels.length > 0 && (
-        <p style={{ fontSize: 12, color: "var(--destructive)", marginBottom: 8 }}>
-          ⚠ More than one field is mapped to: {duplicateTargetLabels.join(", ")}. This is allowed, but double-check it's intentional.
-        </p>
-      )}
-      {confirmError && <p style={{ fontSize: 12.5, color: "var(--destructive)", marginBottom: 8 }}>{confirmError}</p>}
-
-      <div style={{ position: "sticky", bottom: 0, display: "flex", justifyContent: "flex-end", paddingTop: 10, background: "var(--card)", borderTop: "1px solid var(--border)" }}>
-        <button
-          type="button"
-          className="btn-primary"
-          style={{ width: "auto", padding: "0 20px", height: 38, fontSize: 13 }}
-          disabled={saving}
-          onClick={() => void handleConfirm()}
-        >
-          {saving ? "Saving…" : "Confirm Field Mapping"}
-        </button>
+        <div className="drawer-footer">
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ width: "auto", padding: "0 20px" }}
+            disabled={saving}
+            onClick={() => void handleConfirm()}
+          >
+            {saving ? "Saving…" : "Confirm Field Mapping"}
+          </button>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 

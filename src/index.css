@@ -1983,6 +1983,16 @@ details[open] .scoring-rules-trigger::before { transform: rotate(90deg); }
   flex-shrink: 0;
 }
 
+.drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+  background: var(--card);
+  flex-shrink: 0;
+}
+
 .drawer-eyebrow {
   font-size: 10.5px;
   font-weight: 600;
