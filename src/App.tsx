@@ -5,6 +5,7 @@ import { ExportDropdown } from "./components/ExportDropdown";
 import { slugifyFilename, type ExportDocument } from "./lib/export";
 import { buildTemplate1LessonDocx } from "./lib/template1-docx";
 import { TemplateRenderer } from "./components/lesson-templates/TemplateRenderer";
+import { CustomTemplateErrorBoundary } from "./components/lesson-templates/CustomTemplateErrorBoundary";
 import { TemplatePreviewModal, type BuiltInTemplateId } from "./components/lesson-templates/TemplatePreviewModal";
 import { Icon } from "./components/Icon";
 import {
@@ -12,6 +13,7 @@ import {
   fetchCustomTemplateById,
   uploadCustomTemplateFile,
   registerCustomTemplate,
+  DEFAULT_FIELD_MAP,
   renameCustomTemplate,
   deleteCustomTemplate,
   exportCustomTemplateLessonDocx,
@@ -29,6 +31,7 @@ import {
   type FieldMapping,
   type FieldMappingTarget,
   type FieldMappingStatus,
+  type TemplateFieldMap,
 } from "./lib/custom-templates";
 import {
   fetchTeachingStrategies,
@@ -1091,6 +1094,9 @@ function TeachingStrategiesPicker({
 // falls back to this when a template has no usable detected_layout, or when
 // the selected template's data isn't available at render time.
 function DynamicLessonPreview({ plan, breadcrumb }: { plan: DynamicLessonPlan; breadcrumb: string }) {
+  // Defensive: plan is normally guaranteed non-null by the caller's
+  // dynamicLessonPlan && guard, but never assume .sections is an array too.
+  const sections = Array.isArray(plan?.sections) ? plan.sections : [];
   return (
     <div className="card" style={{ overflow: "hidden" }}>
       <div className="preview-header">
@@ -1098,7 +1104,7 @@ function DynamicLessonPreview({ plan, breadcrumb }: { plan: DynamicLessonPlan; b
         <p style={{ marginTop: 6, fontSize: "1.05rem", fontWeight: 600 }}>Lesson Plan Preview</p>
       </div>
       <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 18 }}>
-        {plan.sections.map((section) => (
+        {sections.map((section) => (
           <div key={section.id}>
             <p style={{ fontWeight: 600, marginBottom: 4 }}>{section.originalLabel}</p>
             <p style={{ whiteSpace: "pre-wrap", color: "var(--muted-fg)" }}>
@@ -1621,7 +1627,7 @@ function GeneratorPage({
           selectedCustomTemplateId,
           selectedCustomTemplateName: selectedCustomTemplate?.name ?? null,
           confirmed: fieldMap?.confirmed ?? false,
-          regionCount: fieldMap?.regions.length ?? 0,
+          regionCount: fieldMap?.regions?.length ?? 0,
         });
         if (!selectedCustomTemplate || !fieldMap?.confirmed) {
           setError("This template's field mapping hasn't been confirmed yet. Review and confirm it in Manage Templates first.");
@@ -2374,17 +2380,19 @@ function GeneratorPage({
                 DynamicLessonPreview only internally (no usable regions —
                 e.g. a PDF template) or here when the pinned template itself
                 is somehow unavailable. */}
-            {dynamicPreviewTemplate ? (
-              <ReproducedTemplatePreview
-                template={dynamicPreviewTemplate}
-                plan={dynamicLessonPlan}
-                gradeBandLabel={gradeBandLabel}
-                subject={subject}
-                breadcrumb={breadcrumb}
-              />
-            ) : (
-              <DynamicLessonPreview plan={dynamicLessonPlan} breadcrumb={breadcrumb} />
-            )}
+            <CustomTemplateErrorBoundary>
+              {dynamicPreviewTemplate ? (
+                <ReproducedTemplatePreview
+                  template={dynamicPreviewTemplate}
+                  plan={dynamicLessonPlan}
+                  gradeBandLabel={gradeBandLabel}
+                  subject={subject}
+                  breadcrumb={breadcrumb}
+                />
+              ) : (
+                <DynamicLessonPreview plan={dynamicLessonPlan} breadcrumb={breadcrumb} />
+              )}
+            </CustomTemplateErrorBoundary>
             {/* Same preview-evaluate-strip used by Standard/Template1/custom
                 (Export left, Edit + Evaluate right) — reused as-is, not a
                 custom-template-only layout. Editing generated dynamic
@@ -3795,7 +3803,13 @@ function FieldMappingPanel({
   onTemplateUpdated: (updated: CustomTemplate) => void;
 }) {
   const isPdf = template.original_filename.toLowerCase().endsWith(".pdf") || template.detected_layout?.sourceType === "pdf";
-  const fieldMap = template.field_map;
+  // Defensive: template.field_map is normally normalized by the time it
+  // reaches here, but never trust it directly — a template row that skipped
+  // normalization (or predates this column) must never crash this panel.
+  const fieldMap: TemplateFieldMap =
+    template.field_map && Array.isArray(template.field_map.regions) && Array.isArray(template.field_map.mappings)
+      ? template.field_map
+      : DEFAULT_FIELD_MAP;
 
   const [draftMappings, setDraftMappings] = useState<FieldMapping[]>(fieldMap.mappings);
   const [saving, setSaving] = useState(false);
@@ -4291,21 +4305,23 @@ function ManageTemplatesModal({
                       <p style={{ fontSize: 12.5, color: "var(--destructive)", marginTop: 6 }}>{t.error_message}</p>
                     )}
 
-                    <DetectedSectionsPanel
-                      template={t}
-                      userId={userId}
-                      onTemplateUpdated={(updated) =>
-                        onTemplatesChange(templates.map((x) => (x.id === updated.id ? updated : x)))
-                      }
-                      onFinishSetup={() => onFinishTemplateSetup(t.id)}
-                    />
-                    <FieldMappingPanel
-                      template={t}
-                      userId={userId}
-                      onTemplateUpdated={(updated) =>
-                        onTemplatesChange(templates.map((x) => (x.id === updated.id ? updated : x)))
-                      }
-                    />
+                    <CustomTemplateErrorBoundary>
+                      <DetectedSectionsPanel
+                        template={t}
+                        userId={userId}
+                        onTemplateUpdated={(updated) =>
+                          onTemplatesChange(templates.map((x) => (x.id === updated.id ? updated : x)))
+                        }
+                        onFinishSetup={() => onFinishTemplateSetup(t.id)}
+                      />
+                      <FieldMappingPanel
+                        template={t}
+                        userId={userId}
+                        onTemplateUpdated={(updated) =>
+                          onTemplatesChange(templates.map((x) => (x.id === updated.id ? updated : x)))
+                        }
+                      />
+                    </CustomTemplateErrorBoundary>
 
                     {editingId !== t.id && (
                       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>

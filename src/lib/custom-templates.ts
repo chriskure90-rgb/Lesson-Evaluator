@@ -412,7 +412,11 @@ export async function registerCustomTemplate(params: {
   // TEMP DEBUG — remove these two calls when done
   logSectionDetectionDebug(result.sectionDetectionEngineVersion, result.sectionDetectionDebug, result.sectionExtractionDebug);
   logLayoutDetectionDebug(result.layoutDetectionEngineVersion, result.layoutDetectionDebug);
-  return result;
+  // The API response is the raw DB row — columns for migrations that
+  // haven't been run yet (e.g. field_map) are entirely absent, not just
+  // null. Normalize the same way fetchCustomTemplates/fetchCustomTemplateById
+  // do, so callers never see a partially-shaped CustomTemplate.
+  return normalizeCustomTemplateRow(result as unknown as Record<string, unknown>);
 }
 
 // structured_fields and detected_sections/section_detection_status/
@@ -478,7 +482,7 @@ function normalizeFieldMap(raw: unknown): TemplateFieldMap {
   };
 }
 
-function normalizeCustomTemplateRow(row: Record<string, unknown>): CustomTemplate {
+export function normalizeCustomTemplateRow(row: Record<string, unknown>): CustomTemplate {
   return {
     ...(row as Omit<
       CustomTemplate,
