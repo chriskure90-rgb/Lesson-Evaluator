@@ -3705,7 +3705,134 @@ function DetectedSectionsPanel({
   );
 }
 
-/* ── Phase 5: Field Mapping Panel (supersedes the Phase 3 Layout Preview) ─────
+/* ── Phase 3: Layout Preview (wireframe only) ─────────────────────────────────
+   Table STRUCTURE (tables/rows/cells/spans) is rendered exactly as the server
+   computed it during registration (see detectTemplateLayout in
+   api/custom-templates.js) — no fetching, no editing of structure. Cell
+   LABELS, however, are resolved live against template.detected_sections at
+   render time (matched via cell.sectionIds[i]) rather than the static
+   cell.labels[i] snapshot, so renames/deletes made in DetectedSectionsPanel
+   show up here immediately without any new state plumbing (this component
+   just re-renders with fresh props, same as every other panel in this card).
+   Deliberately a real HTML <table> with colSpan/rowSpan so merged cells
+   render correctly for free, styled as a neutral wireframe (borders only, no
+   fonts/colors/margins from the original document) — this previews
+   STRUCTURE, not the final formatted document (that's ReproducedTemplatePreview,
+   used for the generated lesson, a separate component). Empty cells are
+   rendered too (an explicit "(empty)" cell), since they still occupy a
+   column position and affect alignment even with no text in them.
+──────────────────────────────────────────────────────────────────────────── */
+function LayoutPreviewPanel({ template }: { template: CustomTemplate }) {
+  const isPdf = template.original_filename.toLowerCase().endsWith(".pdf");
+  const layout = template.detected_layout;
+
+  // Live lookup: cell.sectionIds[i] -> current DetectedSectionItem, so
+  // renames/deletes in DetectedSectionsPanel are reflected here for free
+  // instead of showing the stale cell.labels[i] string baked in at upload.
+  const allSections = [
+    ...template.detected_sections.contentSections,
+    ...template.detected_sections.metadataFields,
+    ...template.detected_sections.instructionTexts,
+  ];
+  const sectionById = new Map(allSections.map((s) => [s.id, s]));
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+      <p style={{ fontWeight: 700, fontSize: 13, margin: "0 0 8px" }}>Layout Preview</p>
+
+      {template.status === "processing" ? (
+        <p style={{ fontSize: 12.5, color: "var(--muted-fg)" }}>Detecting layout…</p>
+      ) : isPdf || layout.sourceType === "pdf" ? (
+        <p style={{ fontSize: 12.5, color: "var(--muted-fg)" }}>
+          Layout preview is currently available for DOCX templates only.
+        </p>
+      ) : template.layout_detection_status === "error" ? (
+        <p style={{ fontSize: 12.5, color: "var(--destructive)" }}>
+          Layout detection failed{template.layout_detection_error ? `: ${template.layout_detection_error}` : "."}
+        </p>
+      ) : layout.tables.length === 0 ? (
+        <p style={{ fontSize: 12.5, color: "var(--muted-fg)" }}>No table layout detected.</p>
+      ) : (
+        <>
+          {layout.tables.map((table) => (
+            <table
+              key={table.id}
+              style={{ borderCollapse: "collapse", width: "100%", marginBottom: 14, tableLayout: "fixed" }}
+            >
+              <tbody>
+                {table.rows.map((row) => (
+                  <tr key={row.id}>
+                    {row.cells.map((cell) => (
+                      <td
+                        key={cell.id}
+                        colSpan={cell.colspan}
+                        rowSpan={cell.rowspan}
+                        style={{
+                          border: "1px solid var(--border)",
+                          padding: 6,
+                          verticalAlign: "top",
+                          fontSize: 12,
+                          minWidth: 60,
+                          height: 32,
+                        }}
+                      >
+                        {cell.labels.length === 0 ? (
+                          <span style={{ color: "var(--muted-fg)", fontStyle: "italic" }}>(empty)</span>
+                        ) : (
+                          cell.labels.map((staleLabel, i) => {
+                            const sectionId = cell.sectionIds[i];
+                            const current = sectionId ? sectionById.get(sectionId) : undefined;
+                            // No sectionId: never linked at detection time (unchanged
+                            // original behavior). sectionId present but unresolved: the
+                            // linked section was deleted since detection — fall back to
+                            // the stale label (struck through) rather than going blank.
+                            const label = current ? current.originalLabel : staleLabel;
+                            const state: "linked" | "unmatched" | "removed" =
+                              !sectionId ? "unmatched" : current ? "linked" : "removed";
+                            return (
+                              <div
+                                key={i}
+                                style={{ marginBottom: i < cell.labels.length - 1 ? 4 : 0, display: "flex", alignItems: "center", gap: 6 }}
+                              >
+                                <span style={state === "removed" ? { textDecoration: "line-through", color: "var(--muted-fg)" } : undefined}>
+                                  {label}
+                                </span>
+                                <span
+                                  className={`lib-badge ${state === "linked" ? "badge-ready" : "badge-needs"}`}
+                                  style={{ fontSize: 9.5, padding: "1px 6px" }}
+                                >
+                                  {state}
+                                </span>
+                              </div>
+                            );
+                          })
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ))}
+
+          {layout.unmatchedSectionIds.length > 0 && (() => {
+            const unmatchedLabels = layout.unmatchedSectionIds
+              .map((id) => sectionById.get(id)?.originalLabel)
+              .filter((label): label is string => !!label);
+            return unmatchedLabels.length > 0 ? (
+              <p style={{ fontSize: 12, color: "var(--muted-fg)" }}>
+                Unmatched detected sections (no matching cell found): {unmatchedLabels.join(", ")}
+              </p>
+            ) : null;
+          })()}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ── Phase 5: Field Mapping Panel (mapping EDITOR, distinct from the read-only
+   Layout Preview above) ──────────────────────────────────────────────────────
    Interactive review of every detected region: headings/instructions render
    read-only (never overwritten, never a mapping target — enforced by only
    ever rendering a mapping control for editable_field/checkbox_group roles).
@@ -4314,6 +4441,7 @@ function ManageTemplatesModal({
                         }
                         onFinishSetup={() => onFinishTemplateSetup(t.id)}
                       />
+                      <LayoutPreviewPanel template={t} />
                       <FieldMappingPanel
                         template={t}
                         userId={userId}
