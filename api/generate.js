@@ -803,31 +803,24 @@ export default async function handler(req, res) {
       }
     }
 
-    // Generation is gated on the teacher's CONFIRMED field mapping, not raw
-    // detection — "Confirm Field Mapping" (see FieldMappingPanel) is what
-    // turns confirmed: true, and editing any mapping afterward immediately
-    // flips it back to false, so this check always reflects the mapping the
-    // teacher actually last reviewed.
+    // Generation is gated on the template having at least one generatable
+    // field_map region — not on field_map.confirmed. "Confirm Field Mapping"
+    // (see FieldMappingPanel) is still tracked and shown to the teacher, but
+    // it's no longer a hard requirement for Generate Lesson to use this
+    // region-based pipeline (see hasFieldMapRegions in src/App.tsx).
     if (normalizedLessonFormat === "dynamic") {
-      if (!customTemplateFieldMap?.confirmed) {
-        console.log("[Generate][dynamic] stage=validation failed — field mapping not confirmed");
-        throw dynamicStageError(
-          "validation",
-          "This template's field mapping hasn't been confirmed yet. Review and confirm its field mapping in Manage Templates before generating."
-        );
-      }
-      const regionById = new Map((customTemplateFieldMap.regions || []).map((r) => [r.id, r]));
-      const generatableCount = (customTemplateFieldMap.mappings || []).filter((m) => {
+      const regionById = new Map((customTemplateFieldMap?.regions || []).map((r) => [r.id, r]));
+      const generatableCount = (customTemplateFieldMap?.mappings || []).filter((m) => {
         if (m.target === "leave_blank" || m.target === "manual_entry" || m.target === "fixed_original_text") return false;
         if (METADATA_SOURCED_TARGETS.has(m.target)) return false;
         const region = regionById.get(m.regionId);
         return region && region.role === "editable_field";
       }).length;
       if (generatableCount === 0) {
-        console.log("[Generate][dynamic] stage=validation failed — no generatable fields in confirmed mapping");
+        console.log("[Generate][dynamic] stage=validation failed — no generatable fields in field mapping");
         throw dynamicStageError(
           "validation",
-          "This template's confirmed field mapping has no fields for the AI to generate (every field is set to leave blank, manual entry, or fixed text)."
+          "This template's field mapping has no fields for the AI to generate (every field is set to leave blank, manual entry, or fixed text)."
         );
       }
     }

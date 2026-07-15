@@ -1334,6 +1334,16 @@ function ReproducedTemplatePreview({
   );
 }
 
+// A template is eligible for the region-based ("dynamic") generation
+// pipeline as soon as it has any detected field_map regions — this is
+// deliberately not gated on field_map.confirmed. Confirmation is still
+// tracked and shown (FieldMappingPanel/FieldMappingReviewDrawer), but it's
+// no longer a requirement for Generate Lesson to use it; api/generate.js
+// independently validates there's at least one real generatable field.
+function hasFieldMapRegions(t: CustomTemplate | null | undefined): boolean {
+  return (t?.field_map?.regions?.length ?? 0) > 0;
+}
+
 function GeneratorPage({
   sharedLesson,
   sharedTemplate1Lesson,
@@ -1449,13 +1459,22 @@ function GeneratorPage({
       setSelectedCustomTemplateId(null);
       setLessonFormat((prev) => (prev === "custom" || prev === "dynamic" ? "standard" : prev));
     } else {
-      // Confirming field mapping (Manage Templates) after the chip was already
+      // Detecting regions (Manage Templates) after the chip was already
       // selected must upgrade the pipeline the same way selecting the chip
-      // fresh would (src/App.tsx chip onClick) — otherwise a teacher who
-      // confirms mapping without re-clicking the chip stays stuck generating
-      // through the old Template1/CustomTemplateLessonView path forever.
-      setLessonFormat((prev) => (prev === "custom" || prev === "dynamic" ? (current.field_map?.confirmed ? "dynamic" : "custom") : prev));
+      // fresh would (src/App.tsx chip onClick) — otherwise a teacher whose
+      // template only just finished field-region detection stays stuck
+      // generating through the old Template1/CustomTemplateLessonView path.
+      setLessonFormat((prev) => (prev === "custom" || prev === "dynamic" ? (hasFieldMapRegions(current) ? "dynamic" : "custom") : prev));
     }
+  }
+
+  // A freshly uploaded template becomes the active selection right away —
+  // deliberately does not close the Manage Templates modal (unlike
+  // onFinishTemplateSetup below), since the teacher is expected to keep
+  // reviewing sections/layout/mapping in the same modal session.
+  function handleTemplateUploaded(t: CustomTemplate) {
+    setSelectedCustomTemplateId(t.id);
+    setLessonFormat(hasFieldMapRegions(t) ? "dynamic" : "custom");
   }
 
   // Custom standards upload (PDF/DOCX)
@@ -1657,8 +1676,8 @@ function GeneratorPage({
           confirmed: fieldMap?.confirmed ?? false,
           regionCount: fieldMap?.regions?.length ?? 0,
         });
-        if (!selectedCustomTemplate || !fieldMap?.confirmed) {
-          setError("This template's field mapping hasn't been confirmed yet. Review and confirm it in Manage Templates first.");
+        if (!selectedCustomTemplate || !hasFieldMapRegions(selectedCustomTemplate)) {
+          setError("This template has no detected fields to generate into yet.");
           return;
         }
         const mappedRegionIds = fieldMap.mappings.map((m) => m.regionId);
@@ -2119,13 +2138,12 @@ function GeneratorPage({
                           type="button"
                           className={`fw-chip${active ? " fw-chip-active" : ""}`}
                           onClick={() => {
-                            // Once a template's FIELD MAPPING is confirmed
-                            // (Phase 5 — not just its detected sections),
-                            // generation can actually target the exact
-                            // regions the teacher reviewed — default
+                            // Once a template has detected field_map regions
+                            // (Phase 5), generation can actually target the
+                            // exact regions the teacher reviewed — default
                             // straight to dynamic generation instead of the
                             // old fixed Template 1 fields.
-                            setLessonFormat(t.field_map?.confirmed ? "dynamic" : "custom");
+                            setLessonFormat(hasFieldMapRegions(t) ? "dynamic" : "custom");
                             setSelectedCustomTemplateId(t.id);
                           }}
                           aria-pressed={active}
@@ -2622,17 +2640,17 @@ function GeneratorPage({
           templates={customTemplates}
           onTemplatesChange={handleCustomTemplatesChange}
           onClose={() => setShowTemplatesModal(false)}
+          onTemplateUploaded={handleTemplateUploaded}
           onFinishTemplateSetup={(templateId) => {
             // Confirming detected sections here is a separate, earlier step
-            // from confirming the field mapping (Phase 5) — dynamic
-            // generation is gated on field_map.confirmed, not this. Land in
-            // dynamic mode only if the field mapping was already confirmed
-            // in an earlier visit; otherwise "custom" (same default as
-            // selecting the template chip) so Generate doesn't immediately
-            // fail on an unconfirmed mapping.
+            // from field-region detection (Phase 5) — dynamic generation is
+            // gated on the template having field_map regions, not this. Land
+            // in dynamic mode whenever regions were detected; otherwise
+            // "custom" (same default as selecting the template chip) so
+            // Generate doesn't fail on a template with nothing to map into.
             const template = customTemplates.find((t) => t.id === templateId);
             setSelectedCustomTemplateId(templateId);
-            setLessonFormat(template?.field_map?.confirmed ? "dynamic" : "custom");
+            setLessonFormat(hasFieldMapRegions(template) ? "dynamic" : "custom");
             setShowTemplatesModal(false);
           }}
         />
@@ -4453,12 +4471,16 @@ function ManageTemplatesModal({
   templates,
   onTemplatesChange,
   onClose,
+  onTemplateUploaded,
   onFinishTemplateSetup,
 }: {
   userId: string;
   templates: CustomTemplate[];
   onTemplatesChange: (templates: CustomTemplate[]) => void;
   onClose: () => void;
+  // Called right after a new template is registered, so GeneratorPage can
+  // make it the active selection immediately (does not close this modal).
+  onTemplateUploaded: (template: CustomTemplate) => void;
   // "Finish Template Setup" (see DetectedSectionsPanel) hands off to the
   // caller (GeneratorPage) once a template's sections are saved+confirmed —
   // GeneratorPage selects that template and closes this modal itself, since
@@ -4493,6 +4515,7 @@ function ManageTemplatesModal({
         userId,
       });
       onTemplatesChange([saved, ...templates]);
+      onTemplateUploaded(saved);
       setUploadStatus("success");
       setPendingFile(null);
       setTemplateName("");
