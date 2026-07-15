@@ -413,8 +413,17 @@ async function generateDynamicLessonPlan(params: {
     body: JSON.stringify(requestBody),
   });
   if (!res.ok) {
-    const msg = await res.text().catch(() => `HTTP ${res.status}`);
-    throw new Error(msg || `Server error ${res.status}`);
+    const raw = await res.text().catch(() => "");
+    // The server returns { error, details, stage } JSON for a dynamic-stage
+    // failure (see dynamicStageError/api/generate.js) — surface `details`
+    // (the specific, teacher-facing message) rather than the raw JSON text.
+    let details: string | undefined;
+    try {
+      details = JSON.parse(raw)?.details;
+    } catch {
+      // not JSON — fall through to raw text below
+    }
+    throw new Error(details || raw || `Server error ${res.status}`);
   }
   return res.json();
 }
@@ -1652,6 +1661,13 @@ function GeneratorPage({
           setError("This template's field mapping hasn't been confirmed yet. Review and confirm it in Manage Templates first.");
           return;
         }
+        const mappedRegionIds = fieldMap.mappings.map((m) => m.regionId);
+        console.log("[custom-generation-request]", {
+          customTemplateId: selectedCustomTemplateId,
+          fieldMapConfirmed: fieldMap.confirmed,
+          mappedRegionIds,
+          mappedRegionCount: mappedRegionIds.length,
+        });
         const raw = await generateDynamicLessonPlan({
           grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
           technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies,
@@ -1849,6 +1865,11 @@ function GeneratorPage({
       fieldMapConfirmed: dynamicPreviewTemplate?.field_map?.confirmed,
       generatedRegionCount: dynamicLessonPlan?.sections.length ?? 0,
       rendererSelected,
+    });
+    console.log("[custom-generation-render]", {
+      rendererSelected,
+      generatedRegionIds: dynamicLessonPlan?.sections.map((s) => s.id) ?? [],
+      fieldMapRegionCount: dynamicPreviewTemplate?.field_map?.regions?.length ?? 0,
     });
   }, [generatedFormat, dynamicPreviewTemplate, dynamicLessonPlan, selectedCustomTemplateId]);
 

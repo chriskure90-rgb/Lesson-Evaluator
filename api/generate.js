@@ -698,6 +698,27 @@ async function generateDynamicLessonContent(model, prompt, regionIds) {
     throw dynamicStageError("response-mapping", "The model's response was valid JSON but not a flat section-content object.", { rawResponse: cleaned });
   }
 
+  // Every regionId the confirmed field mapping asked for must come back —
+  // silently defaulting a missing one to empty content would look identical
+  // to "the AI generated nothing for this field" instead of "the response
+  // didn't match what was requested," so this must fail loudly instead.
+  const returnedRegionIds = Object.keys(parsed);
+  const missingRegionIds = regionIds.filter((id) => !returnedRegionIds.includes(id));
+  const unexpectedRegionIds = returnedRegionIds.filter((id) => !regionIds.includes(id));
+  console.log("[custom-generation-response]", {
+    returnedRegionIds,
+    returnedRegionCount: returnedRegionIds.length,
+    missingRegionIds,
+    unexpectedRegionIds,
+  });
+  if (missingRegionIds.length > 0) {
+    throw dynamicStageError(
+      "response-mapping",
+      "Custom template generation failed because the response did not match the confirmed field mapping.",
+      { missingRegionIds, unexpectedRegionIds, rawResponse: cleaned }
+    );
+  }
+
   console.log("[Generate][dynamic] stage=response-mapping success — keys:", Object.keys(parsed));
   return parsed;
 }
@@ -851,6 +872,11 @@ export default async function handler(req, res) {
           return region && region.role === "editable_field";
         })
         .map((m) => m.regionId);
+      const targetByRegionId = new Map(customTemplateFieldMap.mappings.map((m) => [m.regionId, m.target]));
+      console.log("[custom-generation-prompt]", {
+        requestedRegionIds: generatableRegionIds,
+        targets: generatableRegionIds.map((id) => targetByRegionId.get(id)),
+      });
       const content = await generateDynamicLessonContent(model, prompt, generatableRegionIds);
       return res.status(200).json(content);
     }
