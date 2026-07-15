@@ -1873,6 +1873,38 @@ function GeneratorPage({
     });
   }, [generatedFormat, dynamicPreviewTemplate, dynamicLessonPlan, selectedCustomTemplateId]);
 
+  // TEMPORARY diagnostic — remove once confirmed the post-generation renderer
+  // never falls back to the legacy cards for a confirmed custom template.
+  // Covers every generatedFormat, not just "dynamic" — this is what actually
+  // reveals a "custom"-format generation (legacy TemplateRenderer/
+  // CustomTemplateLessonView cards) happening because the CURRENTLY
+  // selected template's field_map isn't confirmed, rather than a renderer
+  // bug: lessonFormat only ever becomes "dynamic" when
+  // selectedTemplateFieldMapConfirmed is true (see handleCustomTemplatesChange
+  // and the "My Templates" chip onClick), so a "custom" render with
+  // fieldMapConfirmed: true here would indicate an actual routing bug —
+  // fieldMapConfirmed: false means the render is correct-by-design and the
+  // fix is confirming the mapping, not the renderer.
+  useEffect(() => {
+    if (!generatedFormat) return;
+    const selectedTemplate = customTemplates.find((t) => t.id === selectedCustomTemplateId) ?? null;
+    const rendererSelected =
+      generatedFormat === "dynamic" ? (dynamicPreviewTemplate ? "ReproducedTemplatePreview" : "DynamicLessonPreview")
+      : generatedFormat === "standard" ? "DefaultLessonView (standard)"
+      : template1Lesson ? "TemplateRenderer -> CustomTemplateLessonView/Template1LessonView"
+      : "empty-state";
+    console.log("[final-generated-render]", {
+      selectedTemplateType: lessonFormat,
+      lessonTemplateType: generatedFormat,
+      selectedCustomTemplateId,
+      lessonCustomTemplateId: generatedFormat === "dynamic" ? dynamicPreviewTemplate?.id ?? null : selectedCustomTemplateId,
+      hasFieldMap: Boolean(selectedTemplate?.field_map),
+      fieldMapConfirmed: selectedTemplate?.field_map?.confirmed ?? false,
+      generatedRegionCount: dynamicLessonPlan?.sections.length ?? 0,
+      rendererSelected,
+    });
+  }, [generatedFormat, lessonFormat, selectedCustomTemplateId, customTemplates, dynamicPreviewTemplate, dynamicLessonPlan, template1Lesson]);
+
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: "40px 40px 60px" }}>
       <PageHeader
