@@ -1094,7 +1094,7 @@ function TeachingStrategiesPicker({
 // but kept here as a debugging/fallback view — ReproducedTemplatePreview
 // falls back to this when a template has no usable detected_layout, or when
 // the selected template's data isn't available at render time.
-function DynamicLessonPreview({ plan, breadcrumb }: { plan: DynamicLessonPlan; breadcrumb: string }) {
+function DynamicLessonPreview({ plan, breadcrumb }: { plan: DynamicLessonPlan | null; breadcrumb: string }) {
   // Defensive: plan is normally guaranteed non-null by the caller's
   // dynamicLessonPlan && guard, but never assume .sections is an array too.
   const sections = Array.isArray(plan?.sections) ? plan.sections : [];
@@ -1134,7 +1134,11 @@ function ReproducedTemplatePreview({
   breadcrumb,
 }: {
   template: CustomTemplate;
-  plan: DynamicLessonPlan;
+  // null when previewing a template's structure before any generation has
+  // happened (Generator page, pre-generation) — every editable_field's
+  // resolved value falls back to a "not generated yet" placeholder instead
+  // of the post-generation "no content generated" wording.
+  plan: DynamicLessonPlan | null;
   gradeBandLabel: string;
   subject: string;
   breadcrumb: string;
@@ -1203,7 +1207,10 @@ function ReproducedTemplatePreview({
       return { text: metadataValueByTarget[mapping.target], placeholder: "(no value yet)" };
     }
     const generated = generatedById.get(region.id);
-    return { text: generated?.content?.trim() || undefined, placeholder: "(no content generated)" };
+    return {
+      text: generated?.content?.trim() || undefined,
+      placeholder: plan ? "(no content generated)" : "Generated content will appear here.",
+    };
   }
 
   function renderRegionContent(region: TemplateRegion) {
@@ -2491,6 +2498,52 @@ function GeneratorPage({
               </div>
             </div>
           </>
+        ) : (lessonFormat === "custom" || lessonFormat === "dynamic") && selectedCustomTemplateId ? (
+          (() => {
+            // Pre-generation structural preview — fires whenever a custom
+            // template is selected but nothing has been generated yet this
+            // session (the branches above already cover every "something
+            // was generated" case and take priority). Never touches
+            // TemplateRenderer/CustomTemplateLessonView's generic cards.
+            const previewTemplate = customTemplates.find((t) => t.id === selectedCustomTemplateId) ?? null;
+            const hasFieldMap = (previewTemplate?.field_map?.regions?.length ?? 0) > 0;
+            const rendererSelected = previewTemplate && previewTemplate.status === "ready" && hasFieldMap
+              ? "ReproducedTemplatePreview" : "empty-state";
+            // TEMPORARY diagnostic — remove once pre-generation preview wiring is confirmed working.
+            console.log("[custom-template-preview]", {
+              customTemplateId: selectedCustomTemplateId,
+              hasFieldMap: Boolean(previewTemplate?.field_map),
+              regionCount: previewTemplate?.field_map?.regions?.length ?? 0,
+              mappingCount: previewTemplate?.field_map?.mappings?.length ?? 0,
+              confirmed: previewTemplate?.field_map?.confirmed,
+              rendererSelected,
+            });
+            return rendererSelected === "ReproducedTemplatePreview" ? (
+              <CustomTemplateErrorBoundary>
+                <ReproducedTemplatePreview
+                  template={previewTemplate!}
+                  plan={null}
+                  gradeBandLabel={gradeBandLabel}
+                  subject={subject}
+                  breadcrumb={breadcrumb}
+                />
+              </CustomTemplateErrorBoundary>
+            ) : (
+              <div className="empty-state">
+                <div style={{ textAlign: "center", maxWidth: 280 }}>
+                  <div className="empty-icon">
+                    {previewTemplate?.status === "processing" ? <Icon.Loader /> : <Icon.FileText />}
+                  </div>
+                  <p className="empty-title">
+                    {previewTemplate?.status === "processing" ? "Detecting layout…" : "No layout detected for this template yet"}
+                  </p>
+                  <p className="empty-sub">
+                    Fill in the form and generate a draft you can review and send to the evaluator.
+                  </p>
+                </div>
+              </div>
+            );
+          })()
         ) : (
           <div className="empty-state">
             <div style={{ textAlign: "center", maxWidth: 280 }}>
