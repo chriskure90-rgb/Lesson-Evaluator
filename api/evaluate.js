@@ -114,14 +114,30 @@ const TEMPLATE1_FIELD_GUIDE = [
   "",
 ].join("\n");
 
+// Dynamic (field_map-based) lessons have no fixed schema — the teacher's own
+// uploaded template determines what regions exist, so content is a flat
+// sections[] array keyed by regionId rather than named fields.
+const DYNAMIC_FIELD_GUIDE = [
+  "FIELD GUIDE (dynamic/field-map lesson format):",
+  "This lesson plan uses the teacher's own uploaded template structure, not a fixed schema.",
+  '- sections is an array of { id, originalLabel, content }.',
+  "- originalLabel is the human-readable name of that field as the teacher's template labeled it (e.g. \"Learning Objectives\", \"Materials\").",
+  "- content is the generated text for that field.",
+  "- Evaluate holistically against originalLabel/content pairs the same way you would the named fields of any other lesson format — a section whose originalLabel maps to a rubric criterion (e.g. an objectives-like label) should inform that criterion's rating.",
+  "",
+].join("\n");
+
 // ── Prompt builder ────────────────────────────────────────────────────────────
 // Builds the full rubric evaluation prompt from the lesson JSON. templateType
-// is "standard" or "template1" — it only changes the field-guide preamble
-// injected before the raw JSON; the rubric criteria are identical either way.
+// is "standard", "template1", or "dynamic" — it only changes the field-guide
+// preamble injected before the raw JSON; the rubric criteria are identical
+// across all three.
 function buildEvaluationPrompt(lesson, templateType) {
   // Serialize the lesson plan so Mistral can read every section
   const lessonText = JSON.stringify(lesson, null, 2);
-  const fieldGuide = templateType === "template1" ? TEMPLATE1_FIELD_GUIDE : "";
+  const fieldGuide = templateType === "template1" ? TEMPLATE1_FIELD_GUIDE
+    : templateType === "dynamic" ? DYNAMIC_FIELD_GUIDE
+    : "";
 
   // Build one criteria block per rubric item
   const criteriaBlocks = RUBRIC_CRITERIA.map((c) =>

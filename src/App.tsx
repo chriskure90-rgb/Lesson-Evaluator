@@ -61,7 +61,7 @@ export type Lesson = {
   differentiation?: string;
 };
 
-type LessonMeta = { model: string; grade: string; standards: string; duration: number };
+type LessonMeta = { model: string; grade: string; subject: string; standards: string; duration: number };
 
 // ── Template 1 (PSU/GTEP-style) lesson plan ───────────────────────────────────
 // A completely separate data shape from Lesson — Template 1 is not "Standard
@@ -519,9 +519,10 @@ function buildEvaluationExportDocument(
 // templateType tells the backend which field names to read when building the
 // evaluation prompt ("standard" reads title/objectives/activities/etc.,
 // "template1" reads centralFocus/lessonObjectives/introduction.teacherActions/
-// etc. — see buildEvaluationPrompt in api/evaluate.js). lessonData is passed
-// through as-is either way; it is never converted between formats.
-async function evaluateLessonData(lessonData: Lesson | Template1Lesson, templateType: "standard" | "template1"): Promise<EvaluationResult> {
+// etc., "dynamic" reads a flat sections[] array keyed by regionId — see
+// buildEvaluationPrompt in api/evaluate.js). lessonData is passed through
+// as-is either way; it is never converted between formats.
+async function evaluateLessonData(lessonData: Lesson | Template1Lesson | DynamicLessonPlan, templateType: "standard" | "template1" | "dynamic"): Promise<EvaluationResult> {
   const res = await fetch("/api/evaluate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1326,6 +1327,7 @@ function GeneratorPage({
   onCustomTemplateSelected,
   onLessonSaved,
   onLessonMetaGenerated,
+  onDynamicLessonGenerated,
   onEvaluateLesson,
   lessonId,
   userId,
@@ -1338,6 +1340,7 @@ function GeneratorPage({
   onCustomTemplateSelected: (id: string | null) => void;
   onLessonSaved: (id: number) => void;
   onLessonMetaGenerated?: (meta: LessonMeta) => void;
+  onDynamicLessonGenerated?: (plan: DynamicLessonPlan) => void;
   onEvaluateLesson: () => void;
   lessonId?: number | null;
   userId: string;
@@ -1424,9 +1427,18 @@ function GeneratorPage({
   // the format-selector chips update immediately without a page refresh.
   function handleCustomTemplatesChange(updated: CustomTemplate[]) {
     setCustomTemplates(updated);
-    if (selectedCustomTemplateId && !updated.some((t) => t.id === selectedCustomTemplateId && t.status === "ready")) {
+    if (!selectedCustomTemplateId) return;
+    const current = updated.find((t) => t.id === selectedCustomTemplateId);
+    if (!current || current.status !== "ready") {
       setSelectedCustomTemplateId(null);
       setLessonFormat((prev) => (prev === "custom" || prev === "dynamic" ? "standard" : prev));
+    } else {
+      // Confirming field mapping (Manage Templates) after the chip was already
+      // selected must upgrade the pipeline the same way selecting the chip
+      // fresh would (src/App.tsx chip onClick) — otherwise a teacher who
+      // confirms mapping without re-clicking the chip stays stuck generating
+      // through the old Template1/CustomTemplateLessonView path forever.
+      setLessonFormat((prev) => (prev === "custom" || prev === "dynamic" ? (current.field_map?.confirmed ? "dynamic" : "custom") : prev));
     }
   }
 
@@ -1643,7 +1655,47 @@ function GeneratorPage({
         setDynamicLessonPlan(plan);
         setDynamicPreviewTemplate(selectedCustomTemplate);
         setGeneratedFormat("dynamic");
-        onLessonMetaGenerated?.({ model, grade, standards: resolvedFrameworks().join(", "), duration });
+        onDynamicLessonGenerated?.(plan);   // share with the Evaluator
+        onCustomTemplateSelected(selectedCustomTemplate.id);
+        onLessonMetaGenerated?.({ model, grade, subject, standards: resolvedFrameworks().join(", "), duration });
+
+        const { data: savedDynamicLesson, error: dynamicSaveError } = await supabase
+          .from("lesson_generation")
+          .insert([{
+            template_type:       "dynamic",
+            custom_template_id:  selectedCustomTemplate.id,
+            lesson_topic:        topic,
+            api_model:           model,
+            grade_level:         String(grade),
+            subject:             subject,
+            standards_framework: resolvedFrameworks().join(", "),
+            standard_code:       code,
+            lesson_goal:         goal,
+            duration:            String(duration),
+            lesson_json:         plan,
+            is_demo:             false,
+            user_id:             userId,
+          }])
+          .select("id")
+          .single();
+
+        if (dynamicSaveError) {
+          console.error("[Supabase] lesson_generation insert error (dynamic):", dynamicSaveError);
+        } else if (!savedDynamicLesson?.id) {
+          console.warn("[Supabase] lesson_generation insert returned no id (dynamic). Possible RLS block.");
+        } else {
+          console.debug("[Supabase] lesson_generation saved (dynamic), id:", savedDynamicLesson.id);
+          onLessonSaved(savedDynamicLesson.id);
+          logGeneratorAction({
+            lesson_id:      savedDynamicLesson.id,
+            user_id:        userId,
+            action_type:    "lesson_created",
+            previous_data:  null,
+            new_data:       plan,
+            changed_fields: [],
+            api_model:      model,
+          });
+        }
         return;
       }
 
@@ -1672,7 +1724,7 @@ function GeneratorPage({
         setGeneratedFormat(isCustom ? "custom" : "template1");
         onTemplate1LessonGenerated(result);   // share with the Evaluator
         onCustomTemplateSelected(isCustom ? selectedCustomTemplateId : null);
-        onLessonMetaGenerated?.({ model, grade, standards: resolvedFrameworks().join(", "), duration });
+        onLessonMetaGenerated?.({ model, grade, subject, standards: resolvedFrameworks().join(", "), duration });
 
         const insertPayload = {
           template_type:       isCustom ? "custom" : "template1",
@@ -1725,7 +1777,7 @@ function GeneratorPage({
       setGeneratedFormat("standard");
       onLessonGenerated(result);   // share with the Evaluator
       onCustomTemplateSelected(null); // clear any stale custom-template linkage
-      onLessonMetaGenerated?.({ model, grade, standards: resolvedFrameworks().join(", "), duration });
+      onLessonMetaGenerated?.({ model, grade, subject, standards: resolvedFrameworks().join(", "), duration });
 
       // ── Supabase save ──────────────────────────────────────────────────
       const insertPayload = {
@@ -1778,6 +1830,20 @@ function GeneratorPage({
   const modelLabel    = MODELS.find((m) => m.value === model)?.label ?? model;
   const gradeBandLabel = `Grades ${GRADE_BANDS.find((b) => b.value === grade)?.label ?? grade}`;
   const breadcrumb = [modelLabel, subject, ...resolvedFrameworks(), code, gradeBandLabel, `${duration} min`].filter(Boolean).join(" · ");
+
+  // TEMPORARY diagnostic — remove once dynamic-preview wiring is confirmed working.
+  useEffect(() => {
+    if (generatedFormat !== "dynamic") return;
+    const rendererSelected = dynamicPreviewTemplate ? "ReproducedTemplatePreview" : "DynamicLessonPreview";
+    console.log("[lesson-preview]", {
+      templateType: generatedFormat,
+      customTemplateId: selectedCustomTemplateId,
+      hasFieldMap: Boolean(dynamicPreviewTemplate?.field_map),
+      fieldMapConfirmed: dynamicPreviewTemplate?.field_map?.confirmed,
+      generatedRegionCount: dynamicLessonPlan?.sections.length ?? 0,
+      rendererSelected,
+    });
+  }, [generatedFormat, dynamicPreviewTemplate, dynamicLessonPlan, selectedCustomTemplateId]);
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: "40px 40px 60px" }}>
@@ -2777,6 +2843,7 @@ function EvalSection({
 function EvaluatorPage({
   lesson,
   template1Lesson,
+  dynamicLessonPlan,
   customTemplateId,
   lessonId,
   userId,
@@ -2786,6 +2853,11 @@ function EvaluatorPage({
 }: {
   lesson: Lesson | null;
   template1Lesson: Template1Lesson | null;
+  // Present only when the last generation used the field_map-based dynamic
+  // pipeline (see App's sharedDynamicLessonPlan, set from GeneratorPage's
+  // onDynamicLessonGenerated). Reproduces the uploaded template's structure
+  // via ReproducedTemplatePreview instead of the generic Template1 view.
+  dynamicLessonPlan?: DynamicLessonPlan | null;
   // Present only when the shared Template1Lesson was generated against a
   // custom template (see App's sharedCustomTemplateId, set from
   // GeneratorPage's onCustomTemplateSelected). Null for plain Template 1.
@@ -2802,10 +2874,10 @@ function EvaluatorPage({
 
   // Loads the CustomTemplate row so TemplateRenderer can render
   // CustomTemplateLessonView (its own section order) instead of falling
-  // back to the generic Template1LessonView for template_type "custom".
+  // back to the generic Template1LessonView for template_type "custom" — and
+  // so ReproducedTemplatePreview has the field_map it needs for "dynamic".
   const [customTemplate, setCustomTemplate] = useState<CustomTemplate | null>(null);
   useEffect(() => {
-    console.log("[EvaluatorPage] selected template state:", { customTemplateId, hasTemplate1Lesson: !!template1Lesson });
     if (!customTemplateId) { setCustomTemplate(null); return; }
     let cancelled = false;
     fetchCustomTemplateById(customTemplateId)
@@ -2814,6 +2886,18 @@ function EvaluatorPage({
     return () => { cancelled = true; };
   }, [customTemplateId]);
   const template1FormatType = customTemplateId && customTemplate ? "custom" : "template1";
+  // TEMPORARY diagnostic — remove once dynamic-preview wiring is confirmed working.
+  useEffect(() => {
+    const rendererSelected = dynamicLessonPlan && customTemplate ? "ReproducedTemplatePreview" : template1Lesson ? "TemplateRenderer" : "none";
+    console.log("[lesson-preview]", {
+      templateType: dynamicLessonPlan ? "dynamic" : template1FormatType,
+      customTemplateId,
+      hasFieldMap: Boolean(customTemplate?.field_map),
+      fieldMapConfirmed: customTemplate?.field_map?.confirmed,
+      generatedRegionCount: dynamicLessonPlan?.sections.length ?? 0,
+      rendererSelected,
+    });
+  }, [dynamicLessonPlan, customTemplate, template1Lesson, template1FormatType, customTemplateId]);
 
   // Lifted teacher overrides keyed by section id — shared across all EvalSections
   const [teacherOverrides, setTeacherOverrides] = useState<Record<string, RubricRating | null>>({});
@@ -2958,7 +3042,9 @@ function EvaluatorPage({
     setEvaluating(true);
     setEvalError(null);
     try {
-      const result = template1Lesson
+      const result = dynamicLessonPlan
+        ? await evaluateLessonData(dynamicLessonPlan, "dynamic")
+        : template1Lesson
         ? await evaluateLessonData(template1Lesson, "template1")
         : await evaluateLessonData(displayLesson as Lesson, "standard");
       setEvalResult(result);
@@ -2973,7 +3059,7 @@ function EvaluatorPage({
 
   // When arriving via the "Evaluate Lesson" button, start AI evaluation immediately
   useEffect(() => {
-    if (autoEvaluate && (lesson || template1Lesson) && !evaluating && !evalResult) {
+    if (autoEvaluate && (lesson || template1Lesson || dynamicLessonPlan) && !evaluating && !evalResult) {
       handleEvaluate();
       onAutoEvaluateDone?.();
     }
@@ -3203,7 +3289,17 @@ function EvaluatorPage({
 
       {/* ── Expandable lesson plan panel ── */}
       {showLesson && (
-        template1Lesson ? (
+        dynamicLessonPlan && customTemplate ? (
+          <CustomTemplateErrorBoundary>
+            <ReproducedTemplatePreview
+              template={customTemplate}
+              plan={dynamicLessonPlan}
+              gradeBandLabel={gradeDisplay(lessonMeta?.grade ?? "")}
+              subject={lessonMeta?.subject ?? ""}
+              breadcrumb={[lessonMeta?.model, lessonMeta?.subject, lessonMeta?.standards, gradeDisplay(lessonMeta?.grade ?? ""), lessonMeta?.duration ? `${lessonMeta.duration} min` : null].filter(Boolean).join(" · ")}
+            />
+          </CustomTemplateErrorBoundary>
+        ) : template1Lesson ? (
           <TemplateRenderer templateType={template1FormatType} lessonData={template1Lesson} customTemplate={customTemplate} />
         ) : (
           <div className="lesson-panel">
@@ -3304,8 +3400,8 @@ type LibraryReadiness =
 type LibraryRow = {
   id: number;
   title: string;            // lesson_json.title / .lessonTitle ?? lesson_topic
-  template_type: string | null; // "template1", "custom", or "standard"/null
-  custom_template_id: string | null; // set only when template_type === "custom"
+  template_type: string | null; // "template1", "custom", "dynamic", or "standard"/null
+  custom_template_id: string | null; // set only when template_type === "custom" | "dynamic"
   lesson_topic: string;
   api_model: string;
   grade_level: string;
@@ -3313,7 +3409,7 @@ type LibraryRow = {
   standards_framework: string;
   duration: string;
   created_at: string;
-  lesson_json: Lesson | Template1Lesson | null;
+  lesson_json: Lesson | Template1Lesson | DynamicLessonPlan | null;
   // from lesson_evaluations (may be absent)
   eval_id: number | null;
   readiness_status: string | null;
@@ -3364,7 +3460,7 @@ type RawLesson = {
   standards_framework: string;
   duration: string;
   created_at: string;
-  lesson_json: Lesson | Template1Lesson | null;
+  lesson_json: Lesson | Template1Lesson | DynamicLessonPlan | null;
 };
 
 type RawEval = {
@@ -4706,18 +4802,31 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
   const hasEval = row.eval_id !== null;
 
   // Loads the CustomTemplate row so TemplateRenderer can render
-  // CustomTemplateLessonView (its own section order) instead of falling
-  // back to the generic Template1LessonView for template_type "custom".
+  // CustomTemplateLessonView (its own section order) instead of falling back
+  // to the generic Template1LessonView for template_type "custom" — and so
+  // ReproducedTemplatePreview has the field_map it needs for "dynamic".
   const [customTemplate, setCustomTemplate] = useState<CustomTemplate | null>(null);
   useEffect(() => {
-    console.log("[LessonDetailDrawer] selected template state:", { template_type: row.template_type, custom_template_id: row.custom_template_id });
-    if (row.template_type !== "custom" || !row.custom_template_id) { setCustomTemplate(null); return; }
+    if ((row.template_type !== "custom" && row.template_type !== "dynamic") || !row.custom_template_id) { setCustomTemplate(null); return; }
     let cancelled = false;
     fetchCustomTemplateById(row.custom_template_id)
       .then((t) => { if (!cancelled) setCustomTemplate(t); })
       .catch((err) => { console.error("[LessonDetailDrawer] fetchCustomTemplateById failed:", err); if (!cancelled) setCustomTemplate(null); });
     return () => { cancelled = true; };
   }, [row.template_type, row.custom_template_id]);
+  const isDynamic = row.template_type === "dynamic";
+  // TEMPORARY diagnostic — remove once dynamic-preview wiring is confirmed working.
+  useEffect(() => {
+    const rendererSelected = isDynamic && customTemplate ? "ReproducedTemplatePreview" : "TemplateRenderer";
+    console.log("[lesson-preview]", {
+      templateType: row.template_type,
+      customTemplateId: row.custom_template_id,
+      hasFieldMap: Boolean(customTemplate?.field_map),
+      fieldMapConfirmed: customTemplate?.field_map?.confirmed,
+      generatedRegionCount: isDynamic ? (row.lesson_json as DynamicLessonPlan | null)?.sections.length ?? 0 : 0,
+      rendererSelected,
+    });
+  }, [isDynamic, customTemplate, row.template_type, row.custom_template_id, row.lesson_json]);
 
   // Partition rubric items by final_rating
   const rubricEntries = row.rubric_json ? Object.entries(row.rubric_json) : [];
@@ -4873,7 +4982,19 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
           {lesson && (
             <section className="drawer-section">
               <h3 className="drawer-section-title">Lesson Plan</h3>
-              <TemplateRenderer templateType={row.template_type} lessonData={lesson} customTemplate={customTemplate} date={formatDate(row.created_at)} />
+              {isDynamic && customTemplate ? (
+                <CustomTemplateErrorBoundary>
+                  <ReproducedTemplatePreview
+                    template={customTemplate}
+                    plan={lesson as DynamicLessonPlan}
+                    gradeBandLabel={gradeDisplay(row.grade_level)}
+                    subject={row.subject ?? ""}
+                    breadcrumb={[row.api_model, row.subject, row.standards_framework, gradeDisplay(row.grade_level), `${row.duration} min`].filter(Boolean).join(" · ")}
+                  />
+                </CustomTemplateErrorBoundary>
+              ) : (
+                <TemplateRenderer templateType={row.template_type} lessonData={lesson} customTemplate={customTemplate} date={formatDate(row.created_at)} />
+              )}
             </section>
           )}
 
@@ -5239,6 +5360,7 @@ export default function App() {
   const [page, setPage] = useState<Page>("login");
   const [sharedLesson, setSharedLesson] = useState<Lesson | null>(null);
   const [sharedTemplate1Lesson, setSharedTemplate1Lesson] = useState<Template1Lesson | null>(null);
+  const [sharedDynamicLessonPlan, setSharedDynamicLessonPlan] = useState<DynamicLessonPlan | null>(null);
   const [sharedCustomTemplateId, setSharedCustomTemplateId] = useState<string | null>(null);
   const [sharedLessonMeta, setSharedLessonMeta] = useState<LessonMeta | null>(null);
   const [generatedLessonId, setGeneratedLessonId] = useState<number | null>(null);
@@ -5353,6 +5475,7 @@ export default function App() {
                   onCustomTemplateSelected={setSharedCustomTemplateId}
                   onLessonSaved={setGeneratedLessonId}
                   onLessonMetaGenerated={setSharedLessonMeta}
+                  onDynamicLessonGenerated={setSharedDynamicLessonPlan}
                   onEvaluateLesson={() => { setAutoEvaluate(true); setPage("evaluator"); }}
                   lessonId={generatedLessonId}
                   userId={user!.id}
@@ -5361,6 +5484,7 @@ export default function App() {
               ? <EvaluatorPage
                   lesson={sharedLesson}
                   template1Lesson={sharedTemplate1Lesson}
+                  dynamicLessonPlan={sharedDynamicLessonPlan}
                   customTemplateId={sharedCustomTemplateId}
                   lessonId={generatedLessonId}
                   userId={user!.id}
