@@ -1141,6 +1141,7 @@ function ReproducedTemplatePreview({
   gradeBandLabel,
   subject,
   breadcrumb,
+  editAction,
 }: {
   template: CustomTemplate;
   // null when previewing a template's structure before any generation has
@@ -1151,6 +1152,11 @@ function ReproducedTemplatePreview({
   gradeBandLabel: string;
   subject: string;
   breadcrumb: string;
+  // Rendered top-right of the header, beside the title — same slot/position
+  // Template1LessonView/the Standard preview use for their own Edit button.
+  // Callers that have no "edit" concept for this render (the pre-generation
+  // preview modal, Evaluator, Library) simply omit this prop.
+  editAction?: React.ReactNode;
 }) {
   const fieldMap = template.field_map;
   // Defensive: fieldMap/plan are normally well-formed by the time they
@@ -1275,7 +1281,10 @@ function ReproducedTemplatePreview({
     <div className="card" style={{ overflow: "hidden" }}>
       <div className="preview-header">
         <p className="preview-breadcrumb">{breadcrumb}</p>
-        <p style={{ marginTop: 6, fontSize: "1.05rem", fontWeight: 600 }}>Reproduced Template Preview</p>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+          <p style={{ marginTop: 6, fontSize: "1.05rem", fontWeight: 600 }}>Reproduced Template Preview</p>
+          {editAction}
+        </div>
       </div>
       <div style={{ padding: "16px 20px" }}>
         {topLevel.length > 0 && (
@@ -2647,41 +2656,44 @@ function GeneratorPage({
                   gradeBandLabel={gradeBandLabel}
                   subject={subject}
                   breadcrumb={breadcrumb}
+                  editAction={
+                    // Same top-right header slot Template1LessonView/the
+                    // Standard preview use for their own Edit button —
+                    // editing generated dynamic content isn't wired up yet,
+                    // so this stays a disabled/tooltip button rather than
+                    // doing nothing silently, just relocated to match their
+                    // position instead of sitting in the bottom strip.
+                    <button
+                      type="button"
+                      className="btn-outline-sm"
+                      title="Editing generated content isn't available yet for this preview"
+                      style={{ flexShrink: 0, marginTop: 4, display: "flex", alignItems: "center", gap: 5 }}
+                    >
+                      <Icon.Edit /> Edit
+                    </button>
+                  }
                 />
               ) : (
                 <DynamicLessonPreview plan={dynamicLessonPlan} breadcrumb={breadcrumb} />
               )}
             </CustomTemplateErrorBoundary>
             {/* Same preview-evaluate-strip used by Standard/Template1/custom
-                (Export left, Edit + Evaluate right) — reused as-is, not a
-                custom-template-only layout. Editing generated dynamic
-                content isn't wired up yet, so Edit surfaces a tooltip
-                instead of doing nothing silently; Export/Evaluate reuse the
-                exact same handlers/components the other formats use. */}
+                (Export + Evaluate only — Edit moved into the header above,
+                matching the Standard preview's layout exactly). */}
             <div className="preview-evaluate-strip">
               <ExportDropdown
                 label="Export lesson"
                 filenameBase={slugifyFilename(topic, "lesson-plan")}
                 getDocument={() => buildDynamicLessonExportDocument(dynamicLessonPlan, topic)}
               />
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <button
-                  type="button"
-                  className="btn-outline-sm"
-                  title="Editing generated content isn't available yet for this preview"
-                  style={{ display: "flex", alignItems: "center", gap: 5 }}
-                >
-                  <Icon.Edit /> Edit
-                </button>
-                <button
-                  type="button"
-                  className="btn-primary"
-                  style={{ width: "auto", padding: "0 22px", height: 38, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}
-                  onClick={() => onEvaluateLesson()}
-                >
-                  <Icon.FileCheck /> Evaluate Lesson
-                </button>
-              </div>
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ width: "auto", padding: "0 22px", height: 38, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}
+                onClick={() => onEvaluateLesson()}
+              >
+                <Icon.FileCheck /> Evaluate Lesson
+              </button>
             </div>
           </>
         ) : (
