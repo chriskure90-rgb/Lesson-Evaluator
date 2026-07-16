@@ -1334,6 +1334,83 @@ function ReproducedTemplatePreview({
   );
 }
 
+// On-demand structural preview for a custom template, mirroring the
+// built-in TemplatePreviewModal's open/close/use-template shape and CSS
+// (.template-preview-*) — but shows the real ReproducedTemplatePreview for
+// this specific uploaded template instead of a hardcoded mockup. Only ever
+// rendered when the teacher explicitly clicks "Preview" on a custom
+// template chip; selecting the chip itself never triggers this.
+function CustomTemplatePreviewModal({
+  template,
+  gradeBandLabel,
+  subject,
+  breadcrumb,
+  onClose,
+  onUseTemplate,
+}: {
+  template: CustomTemplate | null;
+  gradeBandLabel: string;
+  subject: string;
+  breadcrumb: string;
+  onClose: () => void;
+  onUseTemplate: () => void;
+}) {
+  const hasFieldMap = (template?.field_map?.regions?.length ?? 0) > 0;
+  const canShowPreview = template !== null && template.status === "ready" && hasFieldMap;
+
+  return (
+    <div className="template-preview-backdrop" onClick={onClose}>
+      <div className="template-preview-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="template-preview-header">
+          <div style={{ minWidth: 0 }}>
+            <p className="drawer-eyebrow" style={{ marginBottom: 4 }}>Template Preview</p>
+            <h2 className="drawer-title">{template?.name ?? "Template"}</h2>
+          </div>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="Close">
+            ✕
+          </button>
+        </div>
+
+        <div className="template-preview-body">
+          <div className="template-preview-doc">
+            {canShowPreview ? (
+              <CustomTemplateErrorBoundary>
+                <ReproducedTemplatePreview
+                  template={template}
+                  plan={null}
+                  gradeBandLabel={gradeBandLabel}
+                  subject={subject}
+                  breadcrumb={breadcrumb}
+                />
+              </CustomTemplateErrorBoundary>
+            ) : (
+              <div className="empty-state">
+                <div style={{ textAlign: "center", maxWidth: 280 }}>
+                  <div className="empty-icon">
+                    {template?.status === "processing" ? <Icon.Loader /> : <Icon.FileText />}
+                  </div>
+                  <p className="empty-title">
+                    {template?.status === "processing" ? "Detecting layout…" : "No layout detected for this template yet"}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="template-preview-footer">
+          <button type="button" className="btn-outline-sm" onClick={onClose}>
+            Close
+          </button>
+          <button type="button" className="btn-primary" style={{ width: "auto", padding: "0 20px" }} onClick={onUseTemplate}>
+            Use This Template
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // A template is eligible for the region-based ("dynamic") generation
 // pipeline as soon as it has any detected field_map regions — this is
 // deliberately not gated on field_map.confirmed. Confirmation is still
@@ -1447,6 +1524,11 @@ function GeneratorPage({
   const [selectedCustomTemplateId, setSelectedCustomTemplateId] = useState<string | null>(sharedCustomTemplateId);
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
   const [previewingTemplateId, setPreviewingTemplateId] = useState<BuiltInTemplateId | null>(null);
+  // On-demand structural preview for a custom template — parallel to
+  // previewingTemplateId, not merged into it (different type/modal; that
+  // one drives a hardcoded built-in mockup, this one drives the real
+  // ReproducedTemplatePreview for an actual uploaded template).
+  const [previewingCustomTemplateId, setPreviewingCustomTemplateId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -2161,15 +2243,28 @@ function GeneratorPage({
                     {readyCustomTemplates.map((t) => {
                       const active = (lessonFormat === "custom" || lessonFormat === "dynamic") && selectedCustomTemplateId === t.id;
                       return (
-                        <button
-                          key={t.id}
-                          type="button"
-                          className={`fw-chip${active ? " fw-chip-active" : ""}`}
-                          onClick={() => selectCustomTemplate(t)}
-                          aria-pressed={active}
-                        >
-                          {t.name}
-                        </button>
+                        <div key={t.id} style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
+                          <button
+                            type="button"
+                            className={`fw-chip${active ? " fw-chip-active" : ""}`}
+                            onClick={() => selectCustomTemplate(t)}
+                            aria-pressed={active}
+                          >
+                            {t.name}
+                          </button>
+                          <button
+                            type="button"
+                            className="fw-chip-preview-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPreviewingCustomTemplateId(t.id);
+                            }}
+                            title="Preview Template"
+                            aria-label={`Preview ${t.name} template`}
+                          >
+                            <Icon.Eye /> Preview
+                          </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -2589,52 +2684,6 @@ function GeneratorPage({
               </div>
             </div>
           </>
-        ) : (lessonFormat === "custom" || lessonFormat === "dynamic") && selectedCustomTemplateId ? (
-          (() => {
-            // Pre-generation structural preview — fires whenever a custom
-            // template is selected but nothing has been generated yet this
-            // session (the branches above already cover every "something
-            // was generated" case and take priority). Never touches
-            // TemplateRenderer/CustomTemplateLessonView's generic cards.
-            const previewTemplate = customTemplates.find((t) => t.id === selectedCustomTemplateId) ?? null;
-            const hasFieldMap = (previewTemplate?.field_map?.regions?.length ?? 0) > 0;
-            const rendererSelected = previewTemplate && previewTemplate.status === "ready" && hasFieldMap
-              ? "ReproducedTemplatePreview" : "empty-state";
-            // TEMPORARY diagnostic — remove once pre-generation preview wiring is confirmed working.
-            console.log("[custom-template-preview]", {
-              customTemplateId: selectedCustomTemplateId,
-              hasFieldMap: Boolean(previewTemplate?.field_map),
-              regionCount: previewTemplate?.field_map?.regions?.length ?? 0,
-              mappingCount: previewTemplate?.field_map?.mappings?.length ?? 0,
-              confirmed: previewTemplate?.field_map?.confirmed,
-              rendererSelected,
-            });
-            return rendererSelected === "ReproducedTemplatePreview" ? (
-              <CustomTemplateErrorBoundary>
-                <ReproducedTemplatePreview
-                  template={previewTemplate!}
-                  plan={null}
-                  gradeBandLabel={gradeBandLabel}
-                  subject={subject}
-                  breadcrumb={breadcrumb}
-                />
-              </CustomTemplateErrorBoundary>
-            ) : (
-              <div className="empty-state">
-                <div style={{ textAlign: "center", maxWidth: 280 }}>
-                  <div className="empty-icon">
-                    {previewTemplate?.status === "processing" ? <Icon.Loader /> : <Icon.FileText />}
-                  </div>
-                  <p className="empty-title">
-                    {previewTemplate?.status === "processing" ? "Detecting layout…" : "No layout detected for this template yet"}
-                  </p>
-                  <p className="empty-sub">
-                    Fill in the form and generate a draft you can review and send to the evaluator.
-                  </p>
-                </div>
-              </div>
-            );
-          })()
         ) : (
           <div className="empty-state">
             <div style={{ textAlign: "center", maxWidth: 280 }}>
@@ -2688,6 +2737,23 @@ function GeneratorPage({
           }}
         />
       )}
+
+      {previewingCustomTemplateId && (() => {
+        const previewTemplate = customTemplates.find((t) => t.id === previewingCustomTemplateId) ?? null;
+        return (
+          <CustomTemplatePreviewModal
+            template={previewTemplate}
+            gradeBandLabel={gradeBandLabel}
+            subject={subject}
+            breadcrumb={breadcrumb}
+            onClose={() => setPreviewingCustomTemplateId(null)}
+            onUseTemplate={() => {
+              if (previewTemplate) selectCustomTemplate(previewTemplate);
+              setPreviewingCustomTemplateId(null);
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }
