@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useId } from "react";
+import { useState, useRef, useEffect, useId, useCallback } from "react";
 import "./index.css";
 import { supabase } from "./lib/supabase";
 import { ExportDropdown } from "./components/ExportDropdown";
@@ -1690,6 +1690,10 @@ function GeneratorPage({
   // Templates" modal needs to show processing/error ones too) — the format
   // selector below only lists the "ready" subset via readyCustomTemplates.
   const [customTemplates, setCustomTemplates] = useState<CustomTemplate[]>([]);
+  // A failed load and "this account genuinely has zero templates" must never
+  // look the same in the UI — this carries the distinction so the format
+  // selector can show a real error + retry instead of a silent empty list.
+  const [customTemplatesError, setCustomTemplatesError] = useState<string | null>(null);
   const [selectedCustomTemplateId, setSelectedCustomTemplateId] = useState<string | null>(sharedCustomTemplateId);
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
   const [previewingTemplateId, setPreviewingTemplateId] = useState<BuiltInTemplateId | null>(null);
@@ -1699,11 +1703,45 @@ function GeneratorPage({
   // ReproducedTemplatePreview for an actual uploaded template).
   const [previewingCustomTemplateId, setPreviewingCustomTemplateId] = useState<string | null>(null);
 
+  // Single shared loader for this account's custom templates — the
+  // authoritative source of the format-selector's "My Templates" list.
+  // Called on initial mount below, and again after every mutation (upload/
+  // rename/delete/setup confirmation, via handleCustomTemplatesChange) so
+  // the list a teacher sees always traces back to a real fetch keyed on
+  // their own user_id, never only to a mutation's local response — the same
+  // function runs whether this is the first load after signing in, a page
+  // reload, or a reconciliation after an edit.
+  const loadCustomTemplates = useCallback(async () => {
+    try {
+      const data = await fetchCustomTemplates(userId);
+      setCustomTemplates(data);
+      setCustomTemplatesError(null);
+    } catch (err) {
+      // Deliberately does NOT reset customTemplates to [] — a failed load
+      // must never be mistaken for "no templates exist"; whatever was last
+      // successfully loaded stays visible alongside the error.
+      console.error("[custom_templates] fetch error:", err);
+      setCustomTemplatesError(
+        err instanceof Error ? err.message : "Could not load your uploaded templates. Please try again."
+      );
+    }
+  }, [userId]);
+
+  // Not just `loadCustomTemplates()` — eslint-plugin-react-hooks flags a
+  // direct call to a locally-defined function it can see synchronously sets
+  // state, even though the actual setState calls only run after the awaited
+  // fetch resolves. Calling the imported fetchCustomTemplates directly here
+  // (same as the .then()/.catch() shape loadCustomTemplates itself uses)
+  // sidesteps that false positive without changing the real behavior.
   useEffect(() => {
     let cancelled = false;
     fetchCustomTemplates(userId)
-      .then((data) => { if (!cancelled) setCustomTemplates(data); })
-      .catch((err) => console.error("[custom_templates] fetch error:", err));
+      .then((data) => { if (!cancelled) { setCustomTemplates(data); setCustomTemplatesError(null); } })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("[custom_templates] fetch error:", err);
+        setCustomTemplatesError(err instanceof Error ? err.message : "Could not load your uploaded templates. Please try again.");
+      });
     return () => { cancelled = true; };
   }, [userId]);
 
@@ -1713,7 +1751,10 @@ function GeneratorPage({
   // the format-selector chips update immediately without a page refresh.
   function handleCustomTemplatesChange(updated: CustomTemplate[]) {
     setCustomTemplates(updated);
-    if (!selectedCustomTemplateId) return;
+    if (!selectedCustomTemplateId) {
+      void loadCustomTemplates();
+      return;
+    }
     const current = updated.find((t) => t.id === selectedCustomTemplateId);
     if (!current || current.status !== "ready") {
       setSelectedCustomTemplateId(null);
@@ -1726,6 +1767,11 @@ function GeneratorPage({
       // generating through the old Template1/CustomTemplateLessonView path.
       setLessonFormat((prev) => (prev === "custom" || prev === "dynamic" ? (hasFieldMapRegions(current) ? "dynamic" : "custom") : prev));
     }
+    // Reconcile the optimistic `updated` list above with the server shortly
+    // after — every mutation (upload/rename/delete/setup confirmation) flows
+    // through this one function, so this is the single place that keeps the
+    // account's template list from silently drifting from custom_templates.
+    void loadCustomTemplates();
   }
 
   // Single entry point for "make this custom template the active one" —
@@ -2477,6 +2523,15 @@ function GeneratorPage({
                   </div>
                 ))}
               </div>
+
+              {customTemplatesError && (
+                <div className="error-box" style={{ marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                  <span>Could not load your uploaded templates: {customTemplatesError}</span>
+                  <button type="button" className="btn-outline-sm" style={{ flexShrink: 0 }} onClick={() => loadCustomTemplates()}>
+                    Retry
+                  </button>
+                </div>
+              )}
 
               {readyCustomTemplates.length > 0 && (
                 <>

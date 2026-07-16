@@ -1645,6 +1645,27 @@ async function convertHeadingsToPlaceholderDocx(text, originalPath) {
   return { ok: true, buffer: synthesizedBuffer, storagePath: synthesizedPath, structuredFields };
 }
 
+// Every action in this file creates/reads/modifies rows scoped to a specific
+// teacher's account, but this whole route runs with the service-role key
+// (see server-lib/supabase.js) — which bypasses RLS entirely. That means
+// authorization here can't lean on RLS the way direct-from-browser calls
+// (renameCustomTemplate/updateFieldMap) do; it has to be enforced in this
+// file instead. A client-supplied userId in the request body is NEVER
+// trusted for that: it's trivial for any caller to put an arbitrary uuid in
+// a JSON body. Instead, the browser sends its real Supabase session token
+// (Authorization: Bearer <access_token> — see authHeaders() in
+// src/lib/custom-templates.ts), and this validates that token against
+// Supabase Auth itself — the returned user id is the only one ever used for
+// user_id/ownership below.
+async function getAuthenticatedUserId(req) {
+  const authHeader = req.headers?.authorization || req.headers?.Authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
+  if (!token) return null;
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data?.user) return null;
+  return data.user.id;
+}
+
 // ── action: "upload-init" ──────────────────────────────────────────────────────
 // Issues a short-lived signed upload URL so the browser can PUT the file
 // straight into Supabase Storage without routing the bytes through this
@@ -1666,8 +1687,8 @@ function logFullError(label, error) {
   console.error(`${label} stack:`, error?.stack);
 }
 
-async function handleUploadInit(req, res) {
-  const { filename, userId, mimeType } = req.body ?? {};
+async function handleUploadInit(req, res, authenticatedUserId) {
+  const { filename, mimeType } = req.body ?? {};
   const trimmedName = (filename || "").trim();
   const lower = trimmedName.toLowerCase();
   const extension = lower.includes(".") ? lower.slice(lower.lastIndexOf(".")) : "(none)";
@@ -1676,21 +1697,18 @@ async function handleUploadInit(req, res) {
     filename: trimmedName || "(empty)",
     extension,
     mimeType: mimeType || "(not sent by client)",
-    userId: userId || "(missing)",
+    userId: authenticatedUserId,
     usingServiceRole: SUPABASE_KEY_SOURCE === "SUPABASE_SERVICE_ROLE_KEY",
     keySource: SUPABASE_KEY_SOURCE,
   });
 
-  if (!userId) {
-    return res.status(400).json({ error: "Missing userId." });
-  }
   if (!trimmedName || (!lower.endsWith(".docx") && !lower.endsWith(".pdf"))) {
     console.log("[custom-templates:upload-init] rejected: unsupported extension", extension);
     return res.status(400).json({ error: "Please upload a .docx or .pdf file." });
   }
 
   const safeName = trimmedName.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const path = `${userId}/${Date.now()}-${randomUUID()}-${safeName}`;
+  const path = `${authenticatedUserId}/${Date.now()}-${randomUUID()}-${safeName}`;
   console.log("[custom-templates:upload-init] validation passed:", { bucket: BUCKET, path });
 
   // Confirm the bucket itself is reachable with the key this function is
@@ -1746,10 +1764,9 @@ async function handleUploadInit(req, res) {
 // custom_templates. Unlike the standards-upload pipeline, the storage object
 // is never deleted here — it's the permanent export template, not a
 // processing relay.
-async function handleRegister(req, res) {
-  const { path, filename, name, userId, debugSections, debugLayout, debugFieldMap } = req.body ?? {};
-  if (!path)   return res.status(400).json({ error: "Missing upload path." });
-  if (!userId) return res.status(400).json({ error: "Missing userId." });
+async function handleRegister(req, res, authenticatedUserId) {
+  const { path, filename, name, debugSections, debugLayout, debugFieldMap } = req.body ?? {};
+  if (!path) return res.status(400).json({ error: "Missing upload path." });
 
   // Debug mode for the section-recognition pipeline specifically (separate
   // from IS_DEV, which gates unrelated error-detail exposure elsewhere in
@@ -1990,7 +2007,7 @@ async function handleRegister(req, res) {
   }
 
   const insertPayload = {
-    user_id:                    userId,
+    user_id:                    authenticatedUserId,
     name:                       templateName,
     original_filename:          filename || path,
     storage_path:               storagePath,
@@ -2072,10 +2089,9 @@ async function handleRegister(req, res) {
 // service-role key (the bucket is private, so the browser can't do this
 // directly) — that's why this lives here rather than as a direct client
 // Supabase call like renameCustomTemplate.
-async function handleDelete(req, res) {
-  const { customTemplateId, userId } = req.body ?? {};
+async function handleDelete(req, res, authenticatedUserId) {
+  const { customTemplateId } = req.body ?? {};
   if (!customTemplateId) return res.status(400).json({ error: "Missing customTemplateId." });
-  if (!userId)           return res.status(400).json({ error: "Missing userId." });
 
   const { data: template, error: fetchError } = await supabase
     .from("custom_templates")
@@ -2086,7 +2102,7 @@ async function handleDelete(req, res) {
   if (fetchError || !template) {
     return res.status(404).json({ error: "Template not found." });
   }
-  if (template.user_id !== userId) {
+  if (template.user_id !== authenticatedUserId) {
     return res.status(403).json({ error: "You do not have access to this template." });
   }
 
@@ -2119,10 +2135,9 @@ async function handleDelete(req, res) {
 // streams the merged .docx back. The built-in Template1 DOCX builder
 // (src/lib/template1-docx.ts) is never used for custom templates — this is
 // the only export path for template_type "custom".
-async function handleExport(req, res) {
-  const { customTemplateId, userId, lessonData } = req.body ?? {};
+async function handleExport(req, res, authenticatedUserId) {
+  const { customTemplateId, lessonData } = req.body ?? {};
   if (!customTemplateId) return res.status(400).json({ error: "Missing customTemplateId." });
-  if (!userId)           return res.status(400).json({ error: "Missing userId." });
   if (!lessonData)       return res.status(400).json({ error: "Missing lessonData." });
 
   const { data: template, error: fetchError } = await supabase
@@ -2134,7 +2149,7 @@ async function handleExport(req, res) {
   if (fetchError || !template) {
     return res.status(404).json({ error: "Template not found." });
   }
-  if (template.user_id !== userId) {
+  if (template.user_id !== authenticatedUserId) {
     return res.status(403).json({ error: "You do not have access to this template." });
   }
   if (template.status !== "ready") {
@@ -2179,12 +2194,17 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Supabase is not configured." });
     }
 
+    const authenticatedUserId = await getAuthenticatedUserId(req);
+    if (!authenticatedUserId) {
+      return res.status(401).json({ error: "Not authenticated." });
+    }
+
     const { action } = req.body ?? {};
     switch (action) {
-      case "upload-init": return await handleUploadInit(req, res);
-      case "register":    return await handleRegister(req, res);
-      case "delete":      return await handleDelete(req, res);
-      case "export":      return await handleExport(req, res);
+      case "upload-init": return await handleUploadInit(req, res, authenticatedUserId);
+      case "register":    return await handleRegister(req, res, authenticatedUserId);
+      case "delete":      return await handleDelete(req, res, authenticatedUserId);
+      case "export":      return await handleExport(req, res, authenticatedUserId);
       default:
         return res.status(400).json({ error: `Unknown action: ${action}` });
     }

@@ -262,10 +262,21 @@ async function parseCustomTemplatesResponse<T>(res: Response, fallbackErrorMessa
    than one file each — Vercel's Hobby plan caps a project at 12 Serverless
    Functions and every file under /api counts toward that.
 ────────────────────────────────────────────────────────────────────────────── */
+// /api/custom-templates runs with the service-role key (bypasses RLS), so it
+// can't lean on RLS for authorization the way direct client calls elsewhere
+// in this file do — it validates this token against Supabase Auth itself and
+// uses THAT user id for every user_id/ownership check, never trusting a
+// client-supplied userId in the request body.
+async function authHeaders(): Promise<Record<string, string>> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export async function uploadCustomTemplateFile(file: File, userId: string): Promise<{ path: string }> {
   const initRes = await fetch("/api/custom-templates", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify({ action: "upload-init", filename: file.name, mimeType: file.type, userId }),
   });
   const initData = await parseCustomTemplatesResponse<{ path: string; token: string }>(
@@ -390,7 +401,7 @@ export async function registerCustomTemplate(params: {
 }): Promise<CustomTemplate> {
   const res = await fetch("/api/custom-templates", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     // TEMP DEBUG — remove debugSections/debugLayout when done
     body: JSON.stringify({ action: "register", ...params, debugSections: TEMP_DEBUG_SECTIONS, debugLayout: TEMP_DEBUG_LAYOUT }),
   });
@@ -684,7 +695,7 @@ export async function updateFieldMap(
 export async function deleteCustomTemplate(id: string, userId: string): Promise<void> {
   const res = await fetch("/api/custom-templates", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify({ action: "delete", customTemplateId: id, userId }),
   });
   if (res.ok) return;
@@ -701,7 +712,7 @@ export async function exportCustomTemplateLessonDocx(
 ): Promise<Blob> {
   const res = await fetch("/api/custom-templates", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify({ action: "export", customTemplateId, userId, lessonData }),
   });
   if (!res.ok) {
