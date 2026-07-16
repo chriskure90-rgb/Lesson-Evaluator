@@ -27,6 +27,7 @@ import {
   type DetectedSections,
   type DetectedSectionItem,
   type DynamicLessonPlan,
+  type DynamicLessonSection,
   type TemplateRegion,
   type FieldMapping,
   type FieldMappingTarget,
@@ -1103,26 +1104,70 @@ function TeachingStrategiesPicker({
 // but kept here as a debugging/fallback view — ReproducedTemplatePreview
 // falls back to this when a template has no usable detected_layout, or when
 // the selected template's data isn't available at render time.
-function DynamicLessonPreview({ plan, breadcrumb }: { plan: DynamicLessonPlan | null; breadcrumb: string }) {
+function DynamicLessonPreview({
+  plan,
+  breadcrumb,
+  editAction,
+  isEditingContent,
+  draftSections,
+  onSectionContentChange,
+  editFormActions,
+}: {
+  plan: DynamicLessonPlan | null;
+  breadcrumb: string;
+  // Same top-right header slot ReproducedTemplatePreview/Template1LessonView/
+  // the Standard preview use for their own Edit button.
+  editAction?: React.ReactNode;
+  // While true, every section renders as a textarea bound to draftSections
+  // instead of read-only text — mirrors ReproducedTemplatePreview's own
+  // edit-mode rendering so the two fallback/primary preview paths behave
+  // identically.
+  isEditingContent?: boolean;
+  draftSections?: DynamicLessonSection[] | null;
+  onSectionContentChange?: (regionId: string, value: string) => void;
+  // Same Save/Cancel row (.lesson-edit-actions) the built-in editors use,
+  // rendered at the bottom of the content only while editing.
+  editFormActions?: React.ReactNode;
+}) {
   // Defensive: plan is normally guaranteed non-null by the caller's
   // dynamicLessonPlan && guard, but never assume .sections is an array too.
-  const sections = Array.isArray(plan?.sections) ? plan.sections : [];
+  const sections = isEditingContent && draftSections
+    ? draftSections
+    : Array.isArray(plan?.sections) ? plan.sections : [];
   return (
     <div className="card" style={{ overflow: "hidden" }}>
       <div className="preview-header">
         <p className="preview-breadcrumb">{breadcrumb}</p>
-        <p style={{ marginTop: 6, fontSize: "1.05rem", fontWeight: 600 }}>Lesson Plan Preview</p>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+          <p style={{ marginTop: 6, fontSize: "1.05rem", fontWeight: 600 }}>Lesson Plan Preview</p>
+          {editAction}
+        </div>
       </div>
       <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 18 }}>
         {sections.map((section) => (
           <div key={section.id}>
             <p style={{ fontWeight: 600, marginBottom: 4 }}>{section.originalLabel}</p>
-            <p style={{ whiteSpace: "pre-wrap", color: "var(--muted-fg)" }}>
-              {section.content || "(no content generated)"}
-            </p>
+            {isEditingContent ? (
+              <textarea
+                className="textarea"
+                rows={4}
+                value={section.content}
+                onChange={(e) => onSectionContentChange?.(section.id, e.target.value)}
+                style={{ width: "100%" }}
+              />
+            ) : (
+              <p style={{ whiteSpace: "pre-wrap", color: "var(--muted-fg)" }}>
+                {section.content || "(no content generated)"}
+              </p>
+            )}
           </div>
         ))}
       </div>
+      {isEditingContent && editFormActions && (
+        <div className="lesson-edit-actions" style={{ margin: "0 20px 16px" }}>
+          {editFormActions}
+        </div>
+      )}
     </div>
   );
 }
@@ -1142,6 +1187,10 @@ function ReproducedTemplatePreview({
   subject,
   breadcrumb,
   editAction,
+  isEditingContent,
+  draftSections,
+  onSectionContentChange,
+  editFormActions,
 }: {
   template: CustomTemplate;
   // null when previewing a template's structure before any generation has
@@ -1157,6 +1206,18 @@ function ReproducedTemplatePreview({
   // Callers that have no "edit" concept for this render (the pre-generation
   // preview modal, Evaluator, Library) simply omit this prop.
   editAction?: React.ReactNode;
+  // While true, every region whose resolved value is real AI-generated
+  // content (i.e. present in plan.sections — not a heading/instruction/
+  // leave_blank/manual_entry/fixed_original_text/checkbox_group, and not one
+  // of the Generator-state-sourced metadata targets) renders as a textarea
+  // bound to draftSections instead of read-only text. Field labels/mappings/
+  // geometry are never touched — only which control renders under them.
+  isEditingContent?: boolean;
+  draftSections?: DynamicLessonSection[] | null;
+  onSectionContentChange?: (regionId: string, value: string) => void;
+  // Same Save/Cancel row (.lesson-edit-actions) the built-in editors use,
+  // rendered at the bottom of the content only while editing.
+  editFormActions?: React.ReactNode;
 }) {
   const fieldMap = template.field_map;
   // Defensive: fieldMap/plan are normally well-formed by the time they
@@ -1172,7 +1233,15 @@ function ReproducedTemplatePreview({
         <p style={{ fontSize: 12.5, color: "var(--muted-fg)", marginBottom: 8 }}>
           Layout preview is currently available for DOCX templates only.
         </p>
-        <DynamicLessonPreview plan={plan} breadcrumb={breadcrumb} />
+        <DynamicLessonPreview
+          plan={plan}
+          breadcrumb={breadcrumb}
+          editAction={editAction}
+          isEditingContent={isEditingContent}
+          draftSections={draftSections}
+          onSectionContentChange={onSectionContentChange}
+          editFormActions={editFormActions}
+        />
       </>
     );
   }
@@ -1183,7 +1252,15 @@ function ReproducedTemplatePreview({
         <p style={{ fontSize: 12.5, color: "var(--muted-fg)", marginBottom: 8 }}>
           No structural layout was detected for this template yet — showing the flat list view instead.
         </p>
-        <DynamicLessonPreview plan={plan} breadcrumb={breadcrumb} />
+        <DynamicLessonPreview
+          plan={plan}
+          breadcrumb={breadcrumb}
+          editAction={editAction}
+          isEditingContent={isEditingContent}
+          draftSections={draftSections}
+          onSectionContentChange={onSectionContentChange}
+          editFormActions={editFormActions}
+        />
       </>
     );
   }
@@ -1191,6 +1268,10 @@ function ReproducedTemplatePreview({
   const mappingByRegionId = new Map((fieldMap.mappings || []).map((m) => [m.regionId, m]));
   const generatedSections = Array.isArray(plan?.sections) ? plan.sections : [];
   const generatedById = new Map(generatedSections.map((s) => [s.id, s]));
+  // While editing, textareas read/write draftSections instead of the
+  // last-saved plan — same "draft is the source of truth for the fields
+  // being edited" pattern as Standard's setDraftField/draft.
+  const draftById = draftSections ? new Map(draftSections.map((s) => [s.id, s])) : null;
   // Only what the Generator page actually has values for today — see
   // METADATA_SOURCED_TARGETS/buildDynamicLessonPromptFromFieldMap in
   // api/generate.js, which never asks the AI to generate these.
@@ -1203,28 +1284,35 @@ function ReproducedTemplatePreview({
   // Returns the value to render under a region's label, or null when this
   // role never carries a value at all — headings/instructions/blanks are
   // permanently read-only, never a mapping target, by construction.
-  function valueForRegion(region: TemplateRegion): { text: string | undefined; placeholder: string } | null {
+  // `editable` marks the one case backed by plan.sections/draftSections
+  // (real AI-generated content) — the only case a textarea can render for
+  // in edit mode; every other case is either the template's own fixed text
+  // or metadata sourced from elsewhere in the Generator, never something
+  // this editor should overwrite.
+  function valueForRegion(region: TemplateRegion): { text: string | undefined; placeholder: string; editable: boolean } | null {
     if (region.role !== "editable_field" && region.role !== "checkbox_group") return null;
     const mapping = mappingByRegionId.get(region.id);
     if (!mapping) return null;
     usedRegionIds.add(region.id);
 
-    if (mapping.target === "leave_blank") return { text: undefined, placeholder: "(intentionally left blank)" };
-    if (mapping.target === "manual_entry") return { text: undefined, placeholder: "(fill in manually)" };
-    if (mapping.target === "fixed_original_text") return { text: region.text || undefined, placeholder: "(original text preserved)" };
+    if (mapping.target === "leave_blank") return { text: undefined, placeholder: "(intentionally left blank)", editable: false };
+    if (mapping.target === "manual_entry") return { text: undefined, placeholder: "(fill in manually)", editable: false };
+    if (mapping.target === "fixed_original_text") return { text: region.text || undefined, placeholder: "(original text preserved)", editable: false };
     if (region.role === "checkbox_group") {
       // Requirement: checkbox regions display selected options, not
       // generated prose — AI-driven selection isn't wired up this phase.
       const options = region.checkboxOptions?.join(", ") || "none detected";
-      return { text: undefined, placeholder: `(checkbox options: ${options} — selection not yet automated)` };
+      return { text: undefined, placeholder: `(checkbox options: ${options} — selection not yet automated)`, editable: false };
     }
     if (METADATA_SOURCED_TARGETS.has(mapping.target)) {
-      return { text: metadataValueByTarget[mapping.target], placeholder: "(no value yet)" };
+      return { text: metadataValueByTarget[mapping.target], placeholder: "(no value yet)", editable: false };
     }
-    const generated = generatedById.get(region.id);
+    const source = isEditingContent && draftById ? draftById : generatedById;
+    const generated = source.get(region.id);
     return {
       text: generated?.content?.trim() || undefined,
       placeholder: plan ? "(no content generated)" : "Generated content will appear here.",
+      editable: true,
     };
   }
 
@@ -1241,6 +1329,21 @@ function ReproducedTemplatePreview({
       );
     }
     const resolved = valueForRegion(region);
+    if (isEditingContent && resolved?.editable) {
+      const draftValue = draftById?.get(region.id)?.content ?? "";
+      return (
+        <div>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>{region.contextLabel || region.text || "(field)"}</div>
+          <textarea
+            className="textarea"
+            rows={4}
+            value={draftValue}
+            onChange={(e) => onSectionContentChange?.(region.id, e.target.value)}
+            style={{ width: "100%" }}
+          />
+        </div>
+      );
+    }
     return (
       <div>
         <div style={{ fontWeight: 600 }}>{region.contextLabel || region.text || "(field)"}</div>
@@ -1322,22 +1425,44 @@ function ReproducedTemplatePreview({
         ))}
 
         {(() => {
-          const unmapped = generatedSections.filter((s) => !usedRegionIds.has(s.id));
+          // Edge case: a section present in the generated plan but no
+          // longer tied to any mapped region (e.g. the field map changed
+          // after generation) — still one of "all populated custom-template
+          // fields", so it stays editable here too rather than being
+          // silently dropped from the edit surface.
+          const displaySections = isEditingContent && draftSections ? draftSections : generatedSections;
+          const unmapped = displaySections.filter((s) => !usedRegionIds.has(s.id));
           if (unmapped.length === 0) return null;
           return (
             <div style={{ marginTop: 8, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
               <p style={{ fontWeight: 700, fontSize: 13, margin: "0 0 8px" }}>Unmapped Generated Sections</p>
               {unmapped.map((s) => (
                 <div key={s.id} style={{ marginBottom: 10 }}>
-                  <div style={{ fontWeight: 600, fontSize: 12.5 }}>{s.originalLabel}</div>
-                  <div style={{ fontSize: 12.5, color: "var(--muted-fg)", whiteSpace: "pre-wrap" }}>
-                    {s.content || "(no content generated)"}
-                  </div>
+                  <div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: isEditingContent ? 4 : 0 }}>{s.originalLabel}</div>
+                  {isEditingContent ? (
+                    <textarea
+                      className="textarea"
+                      rows={3}
+                      value={s.content}
+                      onChange={(e) => onSectionContentChange?.(s.id, e.target.value)}
+                      style={{ width: "100%" }}
+                    />
+                  ) : (
+                    <div style={{ fontSize: 12.5, color: "var(--muted-fg)", whiteSpace: "pre-wrap" }}>
+                      {s.content || "(no content generated)"}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
           );
         })()}
+
+        {isEditingContent && editFormActions && (
+          <div className="lesson-edit-actions" style={{ marginTop: 16 }}>
+            {editFormActions}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1555,6 +1680,11 @@ function GeneratorPage({
   // DynamicLessonPreview because the CURRENTLY selected template's layout
   // doesn't match.
   const [dynamicPreviewTemplate, setDynamicPreviewTemplate] = useState<CustomTemplate | null>(null);
+  // Editable draft for the dynamic/custom-template lesson — parallel to
+  // draft/template1Draft, reuses the same shared `editing` boolean (only one
+  // format is ever displayed at a time, exactly like Standard/Template1
+  // already share it below).
+  const [dynamicDraft, setDynamicDraft] = useState<DynamicLessonSection[] | null>(null);
 
   // Teacher's own uploaded DOCX templates. Holds every status (the "Manage
   // Templates" modal needs to show processing/error ones too) — the format
@@ -1771,6 +1901,49 @@ function GeneratorPage({
   }
   function addTemplate1Material() {
     setTemplate1Draft(prev => prev ? { ...prev, materials: [...prev.materials, ""] } : prev);
+  }
+
+  // ── Dynamic/custom-template edit helpers ────────────────────
+  // dynamicLessonPlan.sections is already the flat, dynamically-sized field
+  // structure (id/originalLabel/content) generation produced and
+  // ReproducedTemplatePreview reads from — reused as-is for the draft
+  // instead of a separate parallel shape, so this works for any template
+  // regardless of its field count/labels.
+  function handleStartDynamicEdit() {
+    if (!dynamicLessonPlan) return;
+    setDynamicDraft(dynamicLessonPlan.sections.map(s => ({ ...s })));
+    setEditing(true);
+  }
+  function handleCancelDynamicEdit() { setEditing(false); setDynamicDraft(null); }
+  function handleSaveDynamicEdit() {
+    if (!dynamicDraft) return;
+    const previousPlan = dynamicLessonPlan;
+    const savedPlan: DynamicLessonPlan = { sections: dynamicDraft };
+    setDynamicLessonPlan(savedPlan);
+    onDynamicLessonGenerated?.(savedPlan);   // keep the Evaluator's shared copy in sync
+    setEditing(false);
+    setDynamicDraft(null);
+    if (lessonId != null) {
+      const lid = lessonId;
+      supabase
+        .from("lesson_generation")
+        .update({ lesson_json: savedPlan })
+        .eq("id", lid)
+        .then(({ error }) => {
+          if (error) { console.error("[lesson_generation] update:", error); return; }
+          logGeneratorAction({
+            lesson_id:      lid,
+            user_id:        userId,
+            action_type:    "lesson_edited",
+            previous_data:  previousPlan,
+            new_data:       savedPlan,
+            changed_fields: [],
+          });
+        });
+    }
+  }
+  function setDynamicSectionContent(regionId: string, value: string) {
+    setDynamicDraft(prev => prev ? prev.map(s => s.id === regionId ? { ...s, content: value } : s) : prev);
   }
 
   const CUSTOM_ID = "custom";
@@ -2021,6 +2194,36 @@ function GeneratorPage({
   const modelLabel    = MODELS.find((m) => m.value === model)?.label ?? model;
   const gradeBandLabel = `Grades ${GRADE_BANDS.find((b) => b.value === grade)?.label ?? grade}`;
   const breadcrumb = [modelLabel, subject, ...resolvedFrameworks(), code, gradeBandLabel, `${duration} min`].filter(Boolean).join(" · ");
+
+  // Shared between ReproducedTemplatePreview and its internal
+  // DynamicLessonPreview fallback so both render the identical top-right
+  // Edit button / bottom Save-Cancel row regardless of which one a given
+  // template ends up using.
+  const dynamicEditAction = !editing && (
+    <button
+      type="button"
+      className="btn-outline-sm"
+      onClick={handleStartDynamicEdit}
+      style={{ flexShrink: 0, marginTop: 4, display: "flex", alignItems: "center", gap: 5 }}
+    >
+      <Icon.Edit /> Edit
+    </button>
+  );
+  const dynamicEditFormActions = editing && (
+    <>
+      <button type="button" className="btn-outline-sm" onClick={handleCancelDynamicEdit}>
+        Cancel
+      </button>
+      <button
+        type="button"
+        className="btn-primary"
+        style={{ width: "auto", padding: "0 20px", height: 36, fontSize: 13 }}
+        onClick={handleSaveDynamicEdit}
+      >
+        Save changes
+      </button>
+    </>
+  );
 
   // TEMPORARY diagnostic — remove once dynamic-preview wiring is confirmed working.
   useEffect(() => {
@@ -2685,37 +2888,36 @@ function GeneratorPage({
                   gradeBandLabel={gradeBandLabel}
                   subject={subject}
                   breadcrumb={breadcrumb}
-                  editAction={
-                    // Same top-right header slot Template1LessonView/the
-                    // Standard preview use for their own Edit button —
-                    // editing generated dynamic content isn't wired up yet,
-                    // so this stays a disabled/tooltip button rather than
-                    // doing nothing silently, just relocated to match their
-                    // position instead of sitting in the bottom strip.
-                    <button
-                      type="button"
-                      className="btn-outline-sm"
-                      title="Editing generated content isn't available yet for this preview"
-                      style={{ flexShrink: 0, marginTop: 4, display: "flex", alignItems: "center", gap: 5 }}
-                    >
-                      <Icon.Edit /> Edit
-                    </button>
-                  }
+                  editAction={dynamicEditAction}
+                  isEditingContent={editing}
+                  draftSections={dynamicDraft}
+                  onSectionContentChange={setDynamicSectionContent}
+                  editFormActions={dynamicEditFormActions}
                 />
               ) : (
-                <DynamicLessonPreview plan={dynamicLessonPlan} breadcrumb={breadcrumb} />
+                <DynamicLessonPreview
+                  plan={dynamicLessonPlan}
+                  breadcrumb={breadcrumb}
+                  editAction={dynamicEditAction}
+                  isEditingContent={editing}
+                  draftSections={dynamicDraft}
+                  onSectionContentChange={setDynamicSectionContent}
+                  editFormActions={dynamicEditFormActions}
+                />
               )}
             </CustomTemplateErrorBoundary>
-            <LessonActionRow
-              exportDropdown={
-                <ExportDropdown
-                  label="Export lesson"
-                  filenameBase={slugifyFilename(topic, "lesson-plan")}
-                  getDocument={() => buildDynamicLessonExportDocument(dynamicLessonPlan, topic)}
-                />
-              }
-              onEvaluate={() => onEvaluateLesson()}
-            />
+            {!editing && (
+              <LessonActionRow
+                exportDropdown={
+                  <ExportDropdown
+                    label="Export lesson"
+                    filenameBase={slugifyFilename(topic, "lesson-plan")}
+                    getDocument={() => buildDynamicLessonExportDocument(dynamicLessonPlan, topic)}
+                  />
+                }
+                onEvaluate={() => onEvaluateLesson()}
+              />
+            )}
           </>
         ) : (
           <div className="empty-state">
