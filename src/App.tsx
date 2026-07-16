@@ -2457,7 +2457,14 @@ function GeneratorPage({
           </div>
         </div>
 
-        {/* ── Preview ────────────────────────────── */}
+        {/* ── Preview ──────────────────────────────
+            Wrapped in one real DOM element (not a Fragment) so this whole
+            branch chain is always a single .gen-grid item. Fragments used
+            inside individual branches below (card + LessonActionRow) get
+            hoisted to be children of THIS div rather than of .gen-grid —
+            without this wrapper, CSS grid auto-placement would scatter the
+            preview card and the action row into separate grid rows. */}
+        <div className="lesson-preview-column" style={{ minWidth: 0 }}>
         {(generatedFormat === "template1" || generatedFormat === "custom") && template1Lesson ? (
           /* ── Template 1 (PSU/GTEP-style) — its own WYSIWYG preview/edit, not the card/accordion layout ──
              "custom" (a teacher's own uploaded DOCX) reuses this exact same preview/edit UI — only the
@@ -2727,6 +2734,7 @@ function GeneratorPage({
             </div>
           </div>
         )}
+        </div>
       </div>
 
       {showTemplatesModal && (
