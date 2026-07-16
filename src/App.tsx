@@ -1430,6 +1430,36 @@ function hasFieldMapRegions(t: CustomTemplate | null | undefined): boolean {
   return (t?.field_map?.regions?.length ?? 0) > 0;
 }
 
+// One shared action row for every generated-lesson format (Standard,
+// Template1/custom, dynamic) — always rendered as a sibling directly below
+// the lesson preview card, never inside it, so Export/Evaluate sit in the
+// identical right-aligned position/spacing regardless of format. Takes the
+// already-configured <ExportDropdown> element itself (each format's own
+// filenameBase/getDocument/getDocxOverride vary, but the row's layout never
+// should), so this only owns the shared layout, not any export/evaluate
+// logic — that stays exactly where it already lived.
+function LessonActionRow({
+  exportDropdown,
+  onEvaluate,
+}: {
+  exportDropdown: React.ReactNode;
+  onEvaluate: () => void;
+}) {
+  return (
+    <div className="preview-evaluate-strip">
+      {exportDropdown}
+      <button
+        type="button"
+        className="btn-primary"
+        style={{ width: "auto", padding: "0 22px", height: 38, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}
+        onClick={onEvaluate}
+      >
+        <Icon.FileCheck /> Evaluate Lesson
+      </button>
+    </div>
+  );
+}
+
 function GeneratorPage({
   sharedLesson,
   sharedTemplate1Lesson,
@@ -2456,29 +2486,25 @@ function GeneratorPage({
                 breadcrumb={breadcrumb}
                 onEdit={handleStartTemplate1Edit}
               />
-              <div className="preview-evaluate-strip">
-                <ExportDropdown
-                  label="Export lesson"
-                  filenameBase={slugifyFilename(template1Lesson.lessonTitle, "lesson-plan")}
-                  getDocument={() => buildTemplate1ExportDocument(template1Lesson)}
-                  getDocxOverride={() =>
-                    generatedFormat === "custom" && selectedCustomTemplateId
-                      ? exportCustomTemplateLessonDocx(selectedCustomTemplateId, userId, template1Lesson)
-                      : buildTemplate1LessonDocx(template1Lesson)
-                  }
-                />
-                <button
-                  type="button"
-                  className="btn-primary"
-                  onClick={() => onEvaluateLesson()}
-                  style={{ width: "auto", padding: "0 22px", height: 38, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}
-                >
-                  <Icon.FileCheck /> Evaluate Lesson
-                </button>
-              </div>
+              <LessonActionRow
+                exportDropdown={
+                  <ExportDropdown
+                    label="Export lesson"
+                    filenameBase={slugifyFilename(template1Lesson.lessonTitle, "lesson-plan")}
+                    getDocument={() => buildTemplate1ExportDocument(template1Lesson)}
+                    getDocxOverride={() =>
+                      generatedFormat === "custom" && selectedCustomTemplateId
+                        ? exportCustomTemplateLessonDocx(selectedCustomTemplateId, userId, template1Lesson)
+                        : buildTemplate1LessonDocx(template1Lesson)
+                    }
+                  />
+                }
+                onEvaluate={() => onEvaluateLesson()}
+              />
             </>
           )
         ) : generatedFormat === "standard" && lesson ? (
+          <>
           <div className="card" style={{ overflow: "hidden" }}>
             {editing && draft ? (
               /* ── Edit mode ── */
@@ -2616,26 +2642,22 @@ function GeneratorPage({
                 <div className="preview-body">
                   <TemplateRenderer templateType="standard" lessonData={lesson} />
                 </div>
-
-                {/* Export + Evaluate Lesson CTA */}
-                <div className="preview-evaluate-strip">
-                  <ExportDropdown
-                    label="Export lesson"
-                    filenameBase={slugifyFilename(lesson.title, "lesson-plan")}
-                    getDocument={() => buildLessonExportDocument(lesson, breadcrumb)}
-                  />
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    style={{ width: "auto", padding: "0 22px", height: 38, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}
-                    onClick={() => onEvaluateLesson()}
-                  >
-                    <Icon.FileCheck /> Evaluate Lesson
-                  </button>
-                </div>
               </>
             )}
           </div>
+          {!editing && (
+            <LessonActionRow
+              exportDropdown={
+                <ExportDropdown
+                  label="Export lesson"
+                  filenameBase={slugifyFilename(lesson.title, "lesson-plan")}
+                  getDocument={() => buildLessonExportDocument(lesson, breadcrumb)}
+                />
+              }
+              onEvaluate={() => onEvaluateLesson()}
+            />
+          )}
+          </>
         ) : generatedFormat === "dynamic" && dynamicLessonPlan ? (
           <>
             {/* dynamicPreviewTemplate is pinned at generation time (see
@@ -2677,24 +2699,16 @@ function GeneratorPage({
                 <DynamicLessonPreview plan={dynamicLessonPlan} breadcrumb={breadcrumb} />
               )}
             </CustomTemplateErrorBoundary>
-            {/* Same preview-evaluate-strip used by Standard/Template1/custom
-                (Export + Evaluate only — Edit moved into the header above,
-                matching the Standard preview's layout exactly). */}
-            <div className="preview-evaluate-strip">
-              <ExportDropdown
-                label="Export lesson"
-                filenameBase={slugifyFilename(topic, "lesson-plan")}
-                getDocument={() => buildDynamicLessonExportDocument(dynamicLessonPlan, topic)}
-              />
-              <button
-                type="button"
-                className="btn-primary"
-                style={{ width: "auto", padding: "0 22px", height: 38, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}
-                onClick={() => onEvaluateLesson()}
-              >
-                <Icon.FileCheck /> Evaluate Lesson
-              </button>
-            </div>
+            <LessonActionRow
+              exportDropdown={
+                <ExportDropdown
+                  label="Export lesson"
+                  filenameBase={slugifyFilename(topic, "lesson-plan")}
+                  getDocument={() => buildDynamicLessonExportDocument(dynamicLessonPlan, topic)}
+                />
+              }
+              onEvaluate={() => onEvaluateLesson()}
+            />
           </>
         ) : (
           <div className="empty-state">
