@@ -696,6 +696,36 @@ h1, h2, h3, h4, h5 {
   outline-offset: 2px;
 }
 
+/* Same shape/size as .fw-chip-preview-btn — a matching ghost-button
+   sitting next to it, distinguished only by its destructive hover tint
+   (same red used by .lesson-edit-remove-btn) rather than a separate style. */
+.fw-chip-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--muted-fg);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.fw-chip-delete-btn:hover {
+  background: rgb(192 68 42 / 0.08);
+  color: var(--destructive);
+}
+.fw-chip-delete-btn:focus-visible {
+  outline: 2px solid var(--destructive);
+  outline-offset: 2px;
+}
+
 .fw-upload-area {
   margin-top: 10px;
   border: 1.5px dashed var(--border);
@@ -2302,6 +2332,38 @@ details[open] .scoring-rules-trigger::before { transform: rotate(90deg); }
   .template-preview-backdrop { padding: 0; }
   .template-preview-modal { width: 100%; max-height: 100vh; height: 100%; border-radius: 0; }
   .template-preview-doc { padding: 18px; }
+}
+
+/* ── Generic confirm dialog (e.g. delete confirmation) ───────
+   Reuses .template-preview-backdrop for the dimmed overlay, but its own
+   much smaller centered box — a yes/no confirmation reads better compact
+   than the 720px document-preview modal above. */
+.confirm-dialog-modal {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 2px);
+  box-shadow: var(--shadow-soft);
+  width: min(380px, 100%);
+  animation: previewModalIn 160ms ease;
+}
+.confirm-dialog-body {
+  padding: 24px 24px 8px;
+}
+.confirm-dialog-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+.confirm-dialog-message {
+  font-size: 13.5px;
+  color: var(--muted-fg);
+  line-height: 1.5;
+}
+.confirm-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 24px 24px;
 }
 
 /* ── Login page ──────────────────────────────────────────── */

@@ -1468,6 +1468,54 @@ function ReproducedTemplatePreview({
   );
 }
 
+// Generic yes/no confirmation dialog — used by the "My Templates" delete
+// action below. Stays open (with an error message in place of the button
+// row) when onConfirm rejects, so a failed delete never silently closes the
+// dialog out from under the user.
+function ConfirmDialog({
+  title,
+  message,
+  confirmLabel,
+  onConfirm,
+  onCancel,
+  busy,
+  error,
+}: {
+  title: string;
+  message: React.ReactNode;
+  confirmLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  busy?: boolean;
+  error?: string | null;
+}) {
+  return (
+    <div className="template-preview-backdrop" onClick={onCancel}>
+      <div className="confirm-dialog-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="confirm-dialog-body">
+          <h2 className="confirm-dialog-title">{title}</h2>
+          <div className="confirm-dialog-message">{message}</div>
+          {error && <div className="error-box" style={{ marginTop: 12 }}>{error}</div>}
+        </div>
+        <div className="confirm-dialog-footer">
+          <button type="button" className="btn-outline-sm" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ width: "auto", padding: "0 20px", height: 36, fontSize: 13, background: "var(--destructive)" }}
+            onClick={onConfirm}
+            disabled={busy}
+          >
+            {busy ? "Deleting…" : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // On-demand structural preview for a custom template, mirroring the
 // built-in TemplatePreviewModal's open/close/use-template shape and CSS
 // (.template-preview-*) — but shows the real ReproducedTemplatePreview for
@@ -1702,6 +1750,13 @@ function GeneratorPage({
   // one drives a hardcoded built-in mockup, this one drives the real
   // ReproducedTemplatePreview for an actual uploaded template).
   const [previewingCustomTemplateId, setPreviewingCustomTemplateId] = useState<string | null>(null);
+  // Delete confirmation for the "My Templates" chip row (below) — parallel
+  // to previewingCustomTemplateId, tracks which template's confirm dialog is
+  // open, independent of the Manage Templates modal's own inline delete
+  // (which has its own confirmDeleteId inside ManageTemplatesModal).
+  const [confirmDeleteCustomTemplateId, setConfirmDeleteCustomTemplateId] = useState<string | null>(null);
+  const [deletingCustomTemplateId, setDeletingCustomTemplateId] = useState<string | null>(null);
+  const [customTemplateDeleteError, setCustomTemplateDeleteError] = useState<string | null>(null);
 
   // Single shared loader for this account's custom templates — the
   // authoritative source of the format-selector's "My Templates" list.
@@ -1772,6 +1827,33 @@ function GeneratorPage({
     // through this one function, so this is the single place that keeps the
     // account's template list from silently drifting from custom_templates.
     void loadCustomTemplates();
+  }
+
+  // Delete from the "My Templates" chip row (below) — deleteCustomTemplate
+  // removes both the custom_templates row and its Storage file (see
+  // handleDelete in api/custom-templates.js), scoped to the authenticated
+  // user's own templates only (server-validated session token + RLS).
+  // Reuses handleCustomTemplatesChange for the resulting state update so
+  // deselecting back to Standard and reconciling via loadCustomTemplates()
+  // behave identically to every other template mutation in this file.
+  async function handleConfirmDeleteCustomTemplate() {
+    const id = confirmDeleteCustomTemplateId;
+    if (!id) return;
+    setDeletingCustomTemplateId(id);
+    setCustomTemplateDeleteError(null);
+    try {
+      await deleteCustomTemplate(id, userId);
+      if (previewingCustomTemplateId === id) setPreviewingCustomTemplateId(null);
+      handleCustomTemplatesChange(customTemplates.filter((t) => t.id !== id));
+      setConfirmDeleteCustomTemplateId(null);
+    } catch (err) {
+      // Deliberately keeps the dialog open on failure — a failed delete
+      // must be visible right where the teacher confirmed it, not silently
+      // dropped or closed out from under them.
+      setCustomTemplateDeleteError(err instanceof Error ? err.message : "Could not delete this template. Please try again.");
+    } finally {
+      setDeletingCustomTemplateId(null);
+    }
   }
 
   // Single entry point for "make this custom template the active one" —
@@ -2561,6 +2643,19 @@ function GeneratorPage({
                           >
                             <Icon.Eye /> Preview
                           </button>
+                          <button
+                            type="button"
+                            className="fw-chip-delete-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setCustomTemplateDeleteError(null);
+                              setConfirmDeleteCustomTemplateId(t.id);
+                            }}
+                            title="Delete Template"
+                            aria-label={`Delete ${t.name} template`}
+                          >
+                            <Icon.Trash /> Delete
+                          </button>
                         </div>
                       );
                     })}
@@ -3045,6 +3140,28 @@ function GeneratorPage({
           />
         );
       })()}
+
+      {confirmDeleteCustomTemplateId && (
+        <ConfirmDialog
+          title="Delete Template?"
+          message={
+            <>
+              Are you sure you want to delete this template?
+              <br />
+              <br />
+              This action cannot be undone.
+            </>
+          }
+          confirmLabel="Delete"
+          busy={deletingCustomTemplateId === confirmDeleteCustomTemplateId}
+          error={customTemplateDeleteError}
+          onConfirm={handleConfirmDeleteCustomTemplate}
+          onCancel={() => {
+            setConfirmDeleteCustomTemplateId(null);
+            setCustomTemplateDeleteError(null);
+          }}
+        />
+      )}
     </div>
   );
 }
