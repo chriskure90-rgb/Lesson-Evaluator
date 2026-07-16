@@ -223,6 +223,11 @@ export type CustomTemplate = {
   status: CustomTemplateStatus;
   error_message: string | null;
   created_at: string;
+  // Soft-delete marker (scripts/sql/add-custom-templates-deleted-at-column.sql)
+  // — fetchCustomTemplates excludes rows where this is set; fetchCustomTemplateById
+  // deliberately does not, so a historical lesson's already-referenced template
+  // stays fully readable after being "deleted" from the account's active list.
+  deleted_at: string | null;
 };
 
 const BUCKET = "custom-templates";
@@ -447,6 +452,7 @@ const OPTIONAL_COLUMNS = [
   "structured_fields", "detected_sections", "section_detection_status", "section_detection_error",
   "detected_layout", "layout_detection_status", "layout_detection_error",
   "field_map", "field_map_status", "field_map_error",
+  "deleted_at",
 ] as const;
 
 function isMissingColumnError(error: { code?: string; message?: string } | null, column: string): boolean {
@@ -499,7 +505,7 @@ export function normalizeCustomTemplateRow(row: Record<string, unknown>): Custom
       CustomTemplate,
       "structured_fields" | "detected_sections" | "section_detection_status" | "section_detection_error"
       | "detected_layout" | "layout_detection_status" | "layout_detection_error"
-      | "field_map" | "field_map_status" | "field_map_error"
+      | "field_map" | "field_map_status" | "field_map_error" | "deleted_at"
     >),
     structured_fields: Array.isArray(row.structured_fields)
       ? (row.structured_fields as CustomTemplateStructuredField[])
@@ -513,6 +519,7 @@ export function normalizeCustomTemplateRow(row: Record<string, unknown>): Custom
     field_map: normalizeFieldMap(row.field_map),
     field_map_status: typeof row.field_map_status === "string" ? row.field_map_status : null,
     field_map_error: typeof row.field_map_error === "string" ? row.field_map_error : null,
+    deleted_at: typeof row.deleted_at === "string" ? row.deleted_at : null,
   };
 }
 
@@ -525,11 +532,16 @@ export async function fetchCustomTemplates(userId: string): Promise<CustomTempla
     // The select column list is built at runtime (not a string literal), so
     // supabase-js can't infer a row type from it — cast to the shape we
     // handle manually via normalizeCustomTemplateRow below regardless.
-    const result = (await supabase
+    let query = supabase
       .from("custom_templates")
       .select(buildSelectColumns(excluded))
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })) as unknown as {
+      .eq("user_id", userId);
+    // Soft-deleted templates must never appear in the account's active
+    // list (see scripts/sql/add-custom-templates-deleted-at-column.sql) —
+    // omitted once a prior attempt below shows the column doesn't exist
+    // yet, same graceful-degradation as every other optional column here.
+    if (!excluded.has("deleted_at")) query = query.is("deleted_at", null);
+    const result = (await query.order("created_at", { ascending: false })) as unknown as {
       data: Record<string, unknown>[] | null;
       error: { code?: string; message?: string } | null;
     };

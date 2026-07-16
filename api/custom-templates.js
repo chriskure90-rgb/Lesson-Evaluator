@@ -2085,10 +2085,15 @@ async function handleRegister(req, res, authenticatedUserId) {
 }
 
 // ── action: "delete" ───────────────────────────────────────────────────────────
-// Removes the Storage object and the custom_templates row. Requires the
-// service-role key (the bucket is private, so the browser can't do this
-// directly) — that's why this lives here rather than as a direct client
-// Supabase call like renameCustomTemplate.
+// Soft delete only (scripts/sql/add-custom-templates-deleted-at-column.sql)
+// — marks deleted_at rather than removing the row or its Storage file.
+// Physically deleting either would break any lesson_generation row that
+// already references this template (can't open/render/export/evaluate a
+// lesson whose template row or file is gone), and a hard delete on the row
+// itself would fail outright with a foreign-key violation the moment any
+// lesson referenced it. fetchCustomTemplates (src/lib/custom-templates.ts)
+// excludes deleted_at rows from "My Templates"/generation; fetchCustomTemplateById
+// deliberately does not, so historical lessons keep working exactly as before.
 async function handleDelete(req, res, authenticatedUserId) {
   const { customTemplateId } = req.body ?? {};
   if (!customTemplateId) return res.status(400).json({ error: "Missing customTemplateId." });
@@ -2106,23 +2111,13 @@ async function handleDelete(req, res, authenticatedUserId) {
     return res.status(403).json({ error: "You do not have access to this template." });
   }
 
-  const { error: removeError } = await supabase.storage.from(BUCKET).remove([template.storage_path]);
-  if (removeError) {
-    // Don't block deleting the row over a storage cleanup failure — an
-    // orphaned file in a private bucket is harmless, an undeletable row isn't.
-    console.warn("[custom-templates:delete] storage remove failed:", removeError.message);
-  }
-
-  const { error: deleteError } = await supabase
+  const { error: updateError } = await supabase
     .from("custom_templates")
-    .delete()
+    .update({ deleted_at: new Date().toISOString() })
     .eq("id", customTemplateId);
 
-  if (deleteError) {
-    console.error("[custom-templates:delete] delete error:", deleteError.message);
-    if (deleteError.code === "23503") {
-      return res.status(409).json({ error: "This template has saved lessons using it and can't be deleted." });
-    }
+  if (updateError) {
+    console.error("[custom-templates:delete] soft-delete update error:", updateError.message);
     return res.status(500).json({ error: "Could not delete the template." });
   }
 
