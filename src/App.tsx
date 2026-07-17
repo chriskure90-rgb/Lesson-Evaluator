@@ -1231,7 +1231,7 @@ function ReproducedTemplatePreview({
     return (
       <>
         <p style={{ fontSize: 12.5, color: "var(--muted-fg)", marginBottom: 8 }}>
-          Layout preview is currently available for DOCX templates only.
+          This template was originally uploaded as a PDF. Layout preview is not available for this format.
         </p>
         <DynamicLessonPreview
           plan={plan}
@@ -5100,21 +5100,26 @@ function ManageTemplatesModal({
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.pdf,application/pdf"
+                  accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                   style={{ display: "none" }}
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     e.target.value = ""; // allow re-selecting the same file later
-                    if (file) {
-                      setPendingFile(file);
-                      setUploadStatus("idle");
-                      setUploadError(null);
+                    if (!file) return;
+                    const lower = file.name.toLowerCase();
+                    if (!lower.endsWith(".docx")) {
+                      setUploadError("Only DOCX lesson plan templates are currently supported. Please upload a .docx file.");
+                      setUploadStatus("error");
+                      return;
                     }
+                    setPendingFile(file);
+                    setUploadStatus("idle");
+                    setUploadError(null);
                   }}
                 />
                 <div className="fw-upload-area-icon">↑</div>
                 <p className="fw-upload-area-label">
-                  Upload a .docx template with {"{{PLACEHOLDER}}"} tags, or a .pdf lesson plan template — we'll detect its sections automatically. Both formats are supported.
+                  Upload a Word (.docx) lesson plan template with {"{{PLACEHOLDER}}"} tags — we'll detect its sections automatically. DOCX files only.
                 </p>
 
                 <button
@@ -5123,16 +5128,14 @@ function ManageTemplatesModal({
                   disabled={busy}
                   onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
                 >
-                  Choose .docx or .pdf File
+                  Choose .docx File
                 </button>
 
                 {pendingFile && <p className="fw-upload-filename">{pendingFile.name}</p>}
 
                 {uploadStatus === "uploading" && <p className="fw-upload-status">Uploading…</p>}
                 {uploadStatus === "processing" && (
-                  <p className="fw-upload-status">
-                    {pendingFile?.name.toLowerCase().endsWith(".pdf") ? "Converting PDF and detecting sections…" : "Detecting placeholders…"}
-                  </p>
+                  <p className="fw-upload-status">Detecting placeholders…</p>
                 )}
                 {uploadStatus === "success" && (
                   <p className="fw-upload-status fw-upload-status-success">Template uploaded.</p>
@@ -5191,7 +5194,7 @@ function ManageTemplatesModal({
                     <p style={{ fontSize: 12.5, color: "var(--muted-fg)", marginBottom: 10 }}>
                       {t.original_filename}
                       {t.original_filename.toLowerCase().endsWith(".pdf") && (
-                        <span className="lib-badge badge-needs" style={{ marginLeft: 8 }}>Converted from PDF</span>
+                        <span className="lib-badge badge-needs" style={{ marginLeft: 8 }}>Legacy format</span>
                       )}
                     </p>
 

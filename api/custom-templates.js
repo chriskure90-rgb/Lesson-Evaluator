@@ -1702,9 +1702,9 @@ async function handleUploadInit(req, res, authenticatedUserId) {
     keySource: SUPABASE_KEY_SOURCE,
   });
 
-  if (!trimmedName || (!lower.endsWith(".docx") && !lower.endsWith(".pdf"))) {
+  if (!trimmedName || !lower.endsWith(".docx")) {
     console.log("[custom-templates:upload-init] rejected: unsupported extension", extension);
-    return res.status(400).json({ error: "Please upload a .docx or .pdf file." });
+    return res.status(400).json({ error: "Only DOCX lesson plan templates are currently supported. Please upload a .docx file." });
   }
 
   const safeName = trimmedName.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -1784,6 +1784,11 @@ async function handleRegister(req, res, authenticatedUserId) {
 
   const templateName = (name || filename || "Untitled Template").trim();
   const isPdf = (filename || path || "").toLowerCase().endsWith(".pdf");
+
+  const lowerFilename = (filename || path || "").toLowerCase();
+  if (lowerFilename && !lowerFilename.endsWith(".docx")) {
+    return res.status(400).json({ error: "Only DOCX lesson plan templates are currently supported. Please upload a .docx file." });
+  }
 
   const { data: fileData, error: downloadError } = await supabase.storage
     .from(BUCKET)
