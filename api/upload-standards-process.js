@@ -1,6 +1,7 @@
 import { PDFParse }        from "pdf-parse";
 import mammoth              from "mammoth";
 import { supabase }         from "../server-lib/supabase.js";
+import { getAuthenticatedUserId } from "../server-lib/auth.js";
 import { splitIntoChunks }  from "../server-lib/chunk-text.js";
 import { embedBatch }       from "../server-lib/embeddings.js";
 import { ensurePdfEnvironmentReady } from "../server-lib/pdf-node-setup.js";
@@ -50,8 +51,13 @@ export default async function handler(req, res) {
     if (!supabase) return res.status(500).json({ error: "Supabase is not configured." });
     if (!path)      return res.status(400).json({ error: "Missing upload path." });
 
+    const userId = await getAuthenticatedUserId(req);
+    if (!userId) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+
     try {
-      return await processUpload({ path, filename, res });
+      return await processUpload({ path, filename, userId, res });
     } finally {
       // Always clear the relay file, whether processing succeeded or bailed
       // out early (unsupported type, empty text, etc.) — it's write-only
@@ -67,7 +73,7 @@ export default async function handler(req, res) {
   }
 }
 
-async function processUpload({ path, filename, res }) {
+async function processUpload({ path, filename, userId, res }) {
   const { data: fileData, error: downloadError } = await supabase.storage
     .from(BUCKET)
     .download(path);
@@ -118,12 +124,15 @@ async function processUpload({ path, filename, res }) {
     `| unknown-grade: ${unknownCount}/${total}`
   );
 
-  // ── Dedupe against existing teacher-uploaded content ─────────────────────
+  // ── Dedupe against this user's existing teacher-uploaded content ─────────
+  // Filter by user_id to avoid cross-user dedup; also include legacy rows
+  // (user_id IS NULL) that may belong to this user from before the migration.
   const { data: existingRows, error: fetchError } = await supabase
     .from("standards")
     .select("content")
     .eq("framework", "Custom")
-    .eq("source", "teacher_upload");
+    .eq("source", "teacher_upload")
+    .or(`user_id.eq.${userId},user_id.is.null`);
 
   if (fetchError) {
     console.error("[upload-standards-process] fetch existing error:", fetchError.message);
@@ -180,6 +189,7 @@ async function processUpload({ path, filename, res }) {
         subject:       meta.subject      ?? null,
         content,
         source:        "teacher_upload",
+        user_id:       userId,
         embedding:     vectors[k],
       });
 
@@ -193,5 +203,24 @@ async function processUpload({ path, filename, res }) {
     }
   }
 
-  return res.status(200).json({ total, embedded, skipped, failed, unknownGrade: unknownCount });
+  // ── Persist the upload record so the UI can restore it on next login ─────
+  let uploadId = null;
+  const { data: uploadRow, error: uploadInsertError } = await supabase
+    .from("standard_uploads")
+    .insert({ user_id: userId, filename: filename || null, row_count: embedded })
+    .select("id")
+    .single();
+
+  if (uploadInsertError) {
+    console.error("[upload-standards-process] standard_uploads insert failed:", uploadInsertError.message);
+  } else {
+    uploadId = uploadRow?.id ?? null;
+    console.log(
+      `[upload-standards-process] upload saved: uploadId=${uploadId}`,
+      `user_id=${userId}`,
+      `rows_inserted=${embedded}`
+    );
+  }
+
+  return res.status(200).json({ total, embedded, skipped, failed, unknownGrade: unknownCount, uploadId });
 }

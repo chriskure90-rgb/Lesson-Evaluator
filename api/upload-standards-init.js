@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { supabase } from "../server-lib/supabase.js";
+import { getAuthenticatedUserId } from "../server-lib/auth.js";
 
 // Bucket used purely as a relay: the browser uploads the raw file here
 // directly (bypassing the serverless function body-size limit), then
@@ -24,6 +25,11 @@ export default async function handler(req, res) {
   try {
     if (!supabase) {
       return res.status(500).json({ error: "Supabase is not configured." });
+    }
+
+    const userId = await getAuthenticatedUserId(req);
+    if (!userId) {
+      return res.status(401).json({ error: "Authentication required." });
     }
 
     const { filename } = req.body ?? {};

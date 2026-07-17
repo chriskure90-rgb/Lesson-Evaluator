@@ -763,6 +763,58 @@ h1, h2, h3, h4, h5 {
 }
 .fw-upload-status-success { color: #2d6a4f; }
 .fw-upload-status-error   { color: var(--destructive); }
+@media (prefers-color-scheme: dark) { .fw-upload-status-success { color: #6fcf97; } }
+:root[data-theme="dark"]  .fw-upload-status-success { color: #6fcf97; }
+:root[data-theme="light"] .fw-upload-status-success { color: #2d6a4f; }
+
+/* ── Custom standards upload list ────────────────────────── */
+.custom-standards-list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.custom-standards-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--surface-raised, var(--bg-secondary));
+  font-size: 13px;
+}
+.custom-standards-filename {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.custom-standards-count {
+  font-size: 11.5px;
+  color: var(--muted-fg);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.custom-standards-delete {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--muted-fg);
+  padding: 0 2px;
+  flex-shrink: 0;
+  border-radius: 3px;
+  transition: color 120ms, background 120ms;
+}
+.custom-standards-delete:hover { color: var(--destructive); background: var(--destructive-hover-bg, rgba(220,38,38,.08)); }
+.custom-standards-delete:disabled { opacity: 0.4; cursor: default; }
+.custom-standards-empty { opacity: 0.55; margin-bottom: 8px; }
+
 @keyframes slideDown {
   from { opacity: 0; transform: translateY(-4px); }
   to   { opacity: 1; transform: translateY(0); }

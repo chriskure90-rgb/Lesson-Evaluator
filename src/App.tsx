@@ -35,6 +35,12 @@ import {
   type TemplateFieldMap,
 } from "./lib/custom-templates";
 import {
+  fetchCustomStandardsUploads,
+  softDeleteCustomStandardsUpload,
+  standardsAuthHeaders,
+  type StandardUpload,
+} from "./lib/custom-standards";
+import {
   fetchTeachingStrategies,
   resolveTeachingStrategyNames,
   resolveMarzanoStrategies,
@@ -430,7 +436,7 @@ async function generateDynamicLessonPlan(params: {
 }
 
 // Result shape returned by /api/upload-standards-process.
-type UploadSummary = { total: number; embedded: number; skipped: number; failed: number };
+type UploadSummary = { total: number; embedded: number; skipped: number; failed: number; uploadId: string | null };
 
 /* ── Custom standards upload ──────────────────────────────────────────────────
    Split into two calls (same two endpoints as before — just split out here so
@@ -442,9 +448,10 @@ type UploadSummary = { total: number; embedded: number; skipped: number; failed:
         text, and insert it into `standards` (framework="Custom").
 ────────────────────────────────────────────────────────────────────────────── */
 async function uploadFileToStorage(file: File): Promise<{ path: string }> {
+  const authHeader = await standardsAuthHeaders();
   const initRes = await fetch("/api/upload-standards-init", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeader },
     body: JSON.stringify({ filename: file.name }),
   });
   const initData = await initRes.json();
@@ -459,9 +466,10 @@ async function uploadFileToStorage(file: File): Promise<{ path: string }> {
 }
 
 async function processUploadedStandards(path: string, filename: string): Promise<UploadSummary> {
+  const authHeader = await standardsAuthHeaders();
   const processRes = await fetch("/api/upload-standards-process", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeader },
     body: JSON.stringify({ path, filename }),
   });
   const processData = await processRes.json();
@@ -1881,6 +1889,44 @@ function GeneratorPage({
   const [uploadError, setUploadError]     = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Persistent list of this user's custom uploads — fetched on mount and
+  // refreshed after each successful upload or delete.
+  const [customStandardsUploads, setCustomStandardsUploads] = useState<StandardUpload[]>([]);
+  const [customStandardsLoading, setCustomStandardsLoading] = useState(false);
+  const [customStandardsError, setCustomStandardsError]     = useState<string | null>(null);
+  const [deletingUploadId, setDeletingUploadId]             = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCustomStandardsLoading(true);
+    fetchCustomStandardsUploads(userId)
+      .then((data) => {
+        if (cancelled) return;
+        setCustomStandardsUploads(data);
+        setCustomStandardsLoading(false);
+        console.log(`[standard_uploads] fetched ${data.length} upload(s) for user ${userId}`);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("[standard_uploads] fetch error:", err);
+        setCustomStandardsError(err instanceof Error ? err.message : "Could not load your uploaded standards.");
+        setCustomStandardsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [userId]);
+
+  async function handleDeleteCustomStandardsUpload(uploadId: string) {
+    setDeletingUploadId(uploadId);
+    try {
+      await softDeleteCustomStandardsUpload(uploadId);
+      setCustomStandardsUploads((prev) => prev.filter((u) => u.id !== uploadId));
+    } catch (err) {
+      console.error("[standard_uploads] delete error:", err);
+    } finally {
+      setDeletingUploadId(null);
+    }
+  }
+
   async function handleUploadFile(file: File) {
     setUploadFileName(file.name);
     setUploadError(null);
@@ -1892,6 +1938,10 @@ function GeneratorPage({
       const summary = await processUploadedStandards(path, file.name);
       setUploadSummary(summary);
       setUploadStatus("success");
+      // Refresh the persistent list so the new upload appears immediately
+      fetchCustomStandardsUploads(userId)
+        .then((data) => setCustomStandardsUploads(data))
+        .catch(() => {});
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed. Please try again.");
       setUploadStatus("error");
@@ -2499,57 +2549,88 @@ function GeneratorPage({
               {hasCustom && (() => {
                 const busy = uploadStatus === "uploading" || uploadStatus === "processing";
                 return (
-                  <div
-                    className="fw-upload-area"
-                    onClick={() => !busy && fileInputRef.current?.click()}
-                    style={{ cursor: busy ? "default" : "pointer" }}
-                  >
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                      style={{ display: "none" }}
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        e.target.value = ""; // allow re-selecting the same file later
-                        if (file) void handleUploadFile(file);
-                      }}
-                    />
-                    <div className="fw-upload-area-icon">↑</div>
-                    <p className="fw-upload-area-label">Upload your standards document (PDF or DOCX)</p>
+                  <div style={{ marginTop: 8 }}>
+                    {/* Previously uploaded standards list */}
+                    {customStandardsLoading ? (
+                      <p className="fw-upload-status" style={{ marginBottom: 8 }}>Loading your standards…</p>
+                    ) : customStandardsError ? (
+                      <p className="fw-upload-status fw-upload-status-error" style={{ marginBottom: 8 }}>{customStandardsError}</p>
+                    ) : customStandardsUploads.length > 0 ? (
+                      <ul className="custom-standards-list">
+                        {customStandardsUploads.map((u) => (
+                          <li key={u.id} className="custom-standards-item">
+                            <span className="custom-standards-filename">{u.filename ?? "Untitled"}</span>
+                            <span className="custom-standards-count">{u.row_count} chunk{u.row_count !== 1 ? "s" : ""}</span>
+                            <button
+                              type="button"
+                              className="custom-standards-delete"
+                              disabled={deletingUploadId === u.id}
+                              onClick={() => void handleDeleteCustomStandardsUpload(u.id)}
+                              title="Remove this upload"
+                              aria-label={`Remove ${u.filename ?? "upload"}`}
+                            >
+                              ×
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="fw-upload-status custom-standards-empty">No standards uploaded yet.</p>
+                    )}
 
-                    <button
-                      type="button"
-                      className="btn-outline-sm"
-                      disabled={busy}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        fileInputRef.current?.click();
-                      }}
+                    {/* File picker */}
+                    <div
+                      className="fw-upload-area"
+                      onClick={() => !busy && fileInputRef.current?.click()}
+                      style={{ cursor: busy ? "default" : "pointer" }}
                     >
-                      Choose PDF/DOCX File
-                    </button>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = ""; // allow re-selecting the same file later
+                          if (file) void handleUploadFile(file);
+                        }}
+                      />
+                      <div className="fw-upload-area-icon">↑</div>
+                      <p className="fw-upload-area-label">Upload your standards document (PDF or DOCX)</p>
 
-                    {uploadFileName && (
-                      <p className="fw-upload-filename">{uploadFileName}</p>
-                    )}
+                      <button
+                        type="button"
+                        className="btn-outline-sm"
+                        disabled={busy}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          fileInputRef.current?.click();
+                        }}
+                      >
+                        Choose PDF/DOCX File
+                      </button>
 
-                    {uploadStatus === "uploading" && (
-                      <p className="fw-upload-status">Uploading…</p>
-                    )}
-                    {uploadStatus === "processing" && (
-                      <p className="fw-upload-status">Processing standards…</p>
-                    )}
-                    {uploadStatus === "success" && uploadSummary && (
-                      <p className="fw-upload-status fw-upload-status-success">
-                        Upload complete — {uploadSummary.embedded} embedded
-                        {uploadSummary.skipped > 0 ? `, ${uploadSummary.skipped} already added` : ""}
-                        {uploadSummary.failed > 0 ? `, ${uploadSummary.failed} failed` : ""}.
-                      </p>
-                    )}
-                    {uploadStatus === "error" && (
-                      <p className="fw-upload-status fw-upload-status-error">{uploadError}</p>
-                    )}
+                      {uploadFileName && (
+                        <p className="fw-upload-filename">{uploadFileName}</p>
+                      )}
+
+                      {uploadStatus === "uploading" && (
+                        <p className="fw-upload-status">Uploading…</p>
+                      )}
+                      {uploadStatus === "processing" && (
+                        <p className="fw-upload-status">Processing standards…</p>
+                      )}
+                      {uploadStatus === "success" && uploadSummary && (
+                        <p className="fw-upload-status fw-upload-status-success">
+                          Upload complete — {uploadSummary.embedded} embedded
+                          {uploadSummary.skipped > 0 ? `, ${uploadSummary.skipped} already added` : ""}
+                          {uploadSummary.failed > 0 ? `, ${uploadSummary.failed} failed` : ""}.
+                        </p>
+                      )}
+                      {uploadStatus === "error" && (
+                        <p className="fw-upload-status fw-upload-status-error">{uploadError}</p>
+                      )}
+                    </div>
                   </div>
                 );
               })()}
