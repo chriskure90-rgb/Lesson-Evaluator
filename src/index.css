@@ -1344,6 +1344,7 @@ details[open] .scoring-rules-trigger::before { transform: rotate(90deg); }
 .scoring-point-high   { background: var(--score-strong-bg); color: var(--accent-fg); }
 .scoring-point-medium { background: var(--score-amber-bg);  color: #7a4f00; }
 .scoring-point-low    { background: var(--score-weak-bg);   color: var(--destructive); }
+.scoring-point-na     { background: var(--muted);           color: var(--muted-fg); }
 
 /* Threshold list */
 .scoring-thresholds {
@@ -1567,6 +1568,16 @@ details[open] .scoring-rules-trigger::before { transform: rotate(90deg); }
   color: var(--destructive);
 }
 
+.rating-btn-active-na {
+  background: var(--muted);
+  border-color: var(--muted-fg);
+  color: var(--muted-fg);
+}
+.rating-btn-active-na .rating-btn-ai-tag {
+  background: rgb(0 0 0 / 0.08);
+  color: var(--muted-fg);
+}
+
 /* "Edited" chip shown in the accordion trigger when overridden */
 .override-chip {
   font-size: 10px;
@@ -1593,6 +1604,7 @@ details[open] .scoring-rules-trigger::before { transform: rotate(90deg); }
 .rubric-badge-high   { background: var(--score-strong-bg); color: var(--accent-fg);  }
 .rubric-badge-medium { background: var(--score-amber-bg);  color: #7a4f00;           }
 .rubric-badge-low    { background: var(--score-weak-bg);   color: var(--destructive); }
+.rubric-badge-na     { background: var(--muted);           color: var(--muted-fg); border: 1px solid var(--border); }
 
 /* Section description (italicised rubric description line) */
 .rubric-description {

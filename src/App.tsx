@@ -471,12 +471,13 @@ async function processUploadedStandards(path: string, filename: string): Promise
 }
 
 // Shape returned by /api/evaluate
-type RubricRating = "high" | "medium" | "low";
+type RubricRating = "high" | "medium" | "low" | "na";
 
-const RATING_META: Record<RubricRating, { label: string; cat: "strong" | "amber" | "weak" }> = {
+const RATING_META: Record<RubricRating, { label: string; cat: "strong" | "amber" | "weak" | "na" }> = {
   high:   { label: "High",   cat: "strong" },
   medium: { label: "Medium", cat: "amber"  },
   low:    { label: "Low",    cat: "weak"   },
+  na:     { label: "N/A",    cat: "na"     },
 };
 
 type EvaluationSection = {
@@ -497,14 +498,17 @@ type EvaluationResult = {
 function buildEvaluationExportDocument(
   title: string,
   meta: string,
-  readiness: { status: string; totalScore: number; maxScore: number; lowCount: number },
+  readiness: { status: string; totalScore: number; maxScore: number; lowCount: number; naCount: number },
   summary: string,
   sections: EvaluationSection[],
   activeRatings: RubricRating[],
   notes: Record<string, string>
 ): ExportDocument {
+  const scoreText = readiness.maxScore === 0
+    ? "No applicable criteria — all criteria marked N/A."
+    : `${readiness.totalScore}/${readiness.maxScore} points, ${readiness.lowCount} low rating(s)${readiness.naCount > 0 ? `, ${readiness.naCount} N/A` : ""}.`;
   const overviewParagraphs = [
-    `Readiness: ${readiness.status} — ${readiness.totalScore}/${readiness.maxScore} points, ${readiness.lowCount} low rating(s).`,
+    `Readiness: ${readiness.maxScore === 0 ? "N/A" : readiness.status} — ${scoreText}`,
   ];
   if (summary) overviewParagraphs.push(summary);
 
@@ -3181,7 +3185,7 @@ type SectionTemplate = {
   id: string;
   title: string;
   description: string;
-  criteria: Record<RubricRating, string>;
+  criteria: Record<"high" | "medium" | "low", string>; // N/A has no rubric criteria text
   feedback: string;   // default demo feedback; API response overrides this
 };
 
@@ -3300,39 +3304,51 @@ const SECTION_TEMPLATES: SectionTemplate[] = [
 
 
 /* ── Rubric readiness calculation ────────────────────────────────────────────
-   High = 2 pts · Medium = 1 pt · Low = 0 pts · Max = 20 (10 criteria × 2)
+   High = 2 pts · Medium = 1 pt · Low = 0 pts · N/A = excluded from scoring
+   Max = applicable criteria × 2  (dynamic when some criteria are N/A)
 
-   Classroom Ready              18-20, zero Low ratings
-   Classroom Ready w/ Revision  14-17  OR  18-20 with exactly 1 Low
-   Needs Revision               8-13
-   Not Ready                    0-7
+   Thresholds expressed as % of applicable max (mirrors original 10-criterion
+   absolute values: 18/20 = 90%, 14/20 = 70%, 8/20 = 40%):
+
+   Classroom Ready              ≥ 90% · zero Low ratings
+   Classroom Ready w/ Revision  ≥ 70%  OR  ≥ 90% with exactly 1 Low
+   Needs Revision               ≥ 40%
+   Not Ready                    < 40%
 ────────────────────────────────────────────────────────────────────────────── */
-const RATING_POINTS: Record<RubricRating, number> = { high: 2, medium: 1, low: 0 };
-const MAX_SCORE = 20;
+const RATING_POINTS: Record<RubricRating, number> = { high: 2, medium: 1, low: 0, na: 0 };
 
 type ReadinessResult = {
   status: string;
   totalScore: number;
-  maxScore: number;
+  maxScore: number;  // applicable criteria × 2; 0 when every criterion is N/A
   lowCount: number;
+  naCount: number;
 };
 
 function calcReadiness(ratings: RubricRating[]): ReadinessResult {
-  const totalScore = ratings.reduce((sum, r) => sum + RATING_POINTS[r], 0);
-  const lowCount   = ratings.filter((r) => r === "low").length;
+  const applicable = ratings.filter((r) => r !== "na");
+  const naCount    = ratings.length - applicable.length;
+  const totalScore = applicable.reduce((sum, r) => sum + RATING_POINTS[r], 0);
+  const maxScore   = applicable.length * 2;
+  const lowCount   = applicable.filter((r) => r === "low").length;
 
+  if (applicable.length === 0) {
+    return { status: "Not Evaluated", totalScore: 0, maxScore: 0, lowCount: 0, naCount };
+  }
+
+  const pct = totalScore / maxScore;
   let status: string;
-  if (totalScore >= 18 && lowCount === 0) {
+  if (pct >= 0.9 && lowCount === 0) {
     status = "Classroom Ready";
-  } else if ((totalScore >= 14 && totalScore <= 17) || (totalScore >= 18 && lowCount === 1)) {
+  } else if (pct >= 0.7 || (pct >= 0.9 && lowCount === 1)) {
     status = "Classroom Ready with Teacher Revision";
-  } else if (totalScore >= 8) {
+  } else if (pct >= 0.4) {
     status = "Needs Revision";
   } else {
     status = "Not Ready";
   }
 
-  return { status, totalScore, maxScore: MAX_SCORE, lowCount };
+  return { status, totalScore, maxScore, lowCount, naCount };
 }
 
 
@@ -3402,7 +3418,7 @@ function EvalSection({
         </div>
 
         <div className="rating-btn-group">
-          {(["high", "medium", "low"] as RubricRating[]).map((r) => {
+          {(["high", "medium", "low", "na"] as RubricRating[]).map((r) => {
             const m          = RATING_META[r];
             const isActive   = activeRating === r;
             const isAiChoice = aiRating === r;
@@ -3417,6 +3433,7 @@ function EvalSection({
                 ].join(" ")}
                 onClick={() => onRatingChange(section.id, r === aiRating && teacherRating === null ? null : r)}
                 aria-pressed={isActive}
+                title={r === "na" ? "Not applicable — this criterion does not apply to this lesson or template" : undefined}
               >
                 <span className="rating-btn-label">{m.label}</span>
                 {isAiChoice && (
@@ -3428,8 +3445,8 @@ function EvalSection({
         </div>
       </div>
 
-      {/* Highlighted criteria for the active rating */}
-      {template?.criteria[activeRating] && (
+      {/* Highlighted criteria for the active rating — not shown for N/A */}
+      {activeRating !== "na" && template?.criteria[activeRating] && (
         <div className={`rubric-criteria rubric-criteria-${activeRating}`}>
           <span className="rubric-criteria-label">{activeMeta.label} — </span>
           {template.criteria[activeRating]}
@@ -3711,25 +3728,33 @@ function EvaluatorPage({
             <p style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted-fg)", marginBottom: 8 }}>
               Readiness
             </p>
-            <span className="eval-band-badge">{readiness.status}</span>
-            <div className="readiness-stats">
-              <div className="readiness-stat">
-                <span className="readiness-stat-value">
-                  {readiness.totalScore}<span className="readiness-stat-max">/{readiness.maxScore}</span>
-                </span>
-                <span className="readiness-stat-label">Total score</span>
-              </div>
-              <div className="readiness-stat-divider" />
-              <div className="readiness-stat">
-                <span
-                  className="readiness-stat-value"
-                  style={readiness.lowCount > 0 ? { color: "var(--score-weak)" } : undefined}
-                >
-                  {readiness.lowCount}
-                </span>
-                <span className="readiness-stat-label">Low ratings</span>
-              </div>
-            </div>
+            {readiness.maxScore === 0 ? (
+              <p style={{ fontSize: 13, color: "var(--muted-fg)", maxWidth: 240 }}>
+                No applicable criteria were available to calculate an overall score.
+              </p>
+            ) : (
+              <>
+                <span className="eval-band-badge">{readiness.status}</span>
+                <div className="readiness-stats">
+                  <div className="readiness-stat">
+                    <span className="readiness-stat-value">
+                      {readiness.totalScore}<span className="readiness-stat-max">/{readiness.maxScore}</span>
+                    </span>
+                    <span className="readiness-stat-label">Total score</span>
+                  </div>
+                  <div className="readiness-stat-divider" />
+                  <div className="readiness-stat">
+                    <span
+                      className="readiness-stat-value"
+                      style={readiness.lowCount > 0 ? { color: "var(--score-weak)" } : undefined}
+                    >
+                      {readiness.lowCount}
+                    </span>
+                    <span className="readiness-stat-label">Low ratings</span>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           {/* Vertical divider */}
@@ -3759,6 +3784,7 @@ function EvaluatorPage({
                   <span className="scoring-point scoring-point-high">High = 2 pts</span>
                   <span className="scoring-point scoring-point-medium">Medium = 1 pt</span>
                   <span className="scoring-point scoring-point-low">Low = 0 pts</span>
+                  <span className="scoring-point scoring-point-na">N/A = excluded</span>
                 </div>
               </div>
 
@@ -3787,7 +3813,7 @@ function EvaluatorPage({
 
             </div>
             <p className="scoring-note">
-              Readiness is calculated automatically based on rubric ratings and the number of Low ratings. Teacher overrides update the result instantly.
+              Readiness is calculated automatically based on rubric ratings and the number of Low ratings. Teacher overrides update the result instantly. Criteria marked N/A are excluded from both the score and the denominator — only applicable criteria count.
             </p>
           </div>
         </details>
@@ -5397,7 +5423,11 @@ function LessonCard({ row, onOpen }: { row: LibraryRow; onOpen: (r: LibraryRow) 
         {hasEval ? (
           <span className="lib-rubric-score">
             {row.total_score}
-            <span className="lib-rubric-max">/20</span>
+            <span className="lib-rubric-max">
+              /{row.rubric_json
+                ? Object.values(row.rubric_json).filter((v) => v.final_rating !== "na").length * 2
+                : 20}
+            </span>
             {(row.low_count ?? 0) > 0 && (
               <span className="lib-rubric-lows">{row.low_count}L</span>
             )}
@@ -5466,10 +5496,13 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
     });
   }, [isDynamic, customTemplate, row.template_type, row.custom_template_id, row.lesson_json]);
 
-  // Partition rubric items by final_rating
-  const rubricEntries = row.rubric_json ? Object.entries(row.rubric_json) : [];
+  // Partition rubric items by final_rating — N/A excluded from both lists
+  const rubricEntries  = row.rubric_json ? Object.entries(row.rubric_json) : [];
   const goodItems      = rubricEntries.filter(([, v]) => v.final_rating === "high");
-  const attentionItems = rubricEntries.filter(([, v]) => v.final_rating !== "high");
+  const attentionItems = rubricEntries.filter(([, v]) => v.final_rating !== "high" && v.final_rating !== "na");
+  const applicableMax  = row.rubric_json
+    ? Object.values(row.rubric_json).filter((v) => v.final_rating !== "na").length * 2
+    : 20;
 
   // Non-empty teacher notes
   const noteEntries = row.teacher_notes_json
@@ -5516,7 +5549,7 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
                 </div>
                 <div className="drawer-eval-stats">
                   <div className="drawer-eval-stat">
-                    <span className="drawer-eval-stat-value">{row.total_score}<span className="drawer-eval-stat-denom">/20</span></span>
+                    <span className="drawer-eval-stat-value">{row.total_score}<span className="drawer-eval-stat-denom">/{applicableMax}</span></span>
                     <span className="drawer-eval-stat-label">Total score</span>
                   </div>
                   <div className="drawer-eval-stat-div" />
@@ -5589,7 +5622,7 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
                   ))}
                 </div>
               ) : (
-                <p className="drawer-empty-note">All criteria are rated High.</p>
+                <p className="drawer-empty-note">All applicable criteria are rated High.</p>
               )}
             </section>
           )}
