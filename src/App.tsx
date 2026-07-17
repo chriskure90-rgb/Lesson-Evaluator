@@ -4198,14 +4198,10 @@ type DetectedSectionListKey = "contentSections" | "metadataFields" | "instructio
 function DetectedSectionGroup({
   label,
   items,
-  onLabelChange,
-  onBlurSave,
   onRemove,
 }: {
   label: string;
   items: DetectedSectionItem[];
-  onLabelChange: (id: string, label: string) => void;
-  onBlurSave: () => void;
   onRemove: (id: string) => void;
 }) {
   if (items.length === 0) return null;
@@ -4216,13 +4212,17 @@ function DetectedSectionGroup({
       </p>
       {items.map((item) => (
         <div key={item.id} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
-          <input
-            className="input"
-            value={item.originalLabel}
-            onChange={(e) => onLabelChange(item.id, e.target.value)}
-            onBlur={onBlurSave}
-            style={{ flex: 1, fontSize: 13, padding: "4px 8px" }}
-          />
+          <div style={{
+            flex: 1,
+            fontSize: 13,
+            padding: "4px 8px",
+            background: "var(--muted)",
+            borderRadius: "var(--radius)",
+            color: "var(--foreground)",
+            userSelect: "none",
+          }}>
+            {item.originalLabel}
+          </div>
           {item.normalizedKey === "custom_section" && (
             <span className="lib-badge badge-needs" style={{ fontSize: 10.5 }}>custom</span>
           )}
@@ -4310,13 +4310,6 @@ function DetectedSectionsPanel({
     if (saved) onFinishSetup();
   }
 
-  function updateLabel(listKey: DetectedSectionListKey, id: string, label: string) {
-    setDraft((prev) => ({
-      ...prev,
-      [listKey]: prev[listKey].map((item) => (item.id === id ? { ...item, originalLabel: label } : item)),
-    }));
-  }
-
   function removeItem(listKey: DetectedSectionListKey, id: string) {
     const next = { ...draft, [listKey]: draft[listKey].filter((item) => item.id !== id) };
     setDraft(next);
@@ -4358,22 +4351,16 @@ function DetectedSectionsPanel({
       <DetectedSectionGroup
         label="Content Sections"
         items={draft.contentSections}
-        onLabelChange={(id, label) => updateLabel("contentSections", id, label)}
-        onBlurSave={() => void persist(draft)}
         onRemove={(id) => removeItem("contentSections", id)}
       />
       <DetectedSectionGroup
         label="Metadata Fields"
         items={draft.metadataFields}
-        onLabelChange={(id, label) => updateLabel("metadataFields", id, label)}
-        onBlurSave={() => void persist(draft)}
         onRemove={(id) => removeItem("metadataFields", id)}
       />
       <DetectedSectionGroup
         label="Instruction Text"
         items={draft.instructionTexts}
-        onLabelChange={(id, label) => updateLabel("instructionTexts", id, label)}
-        onBlurSave={() => void persist(draft)}
         onRemove={(id) => removeItem("instructionTexts", id)}
       />
 
