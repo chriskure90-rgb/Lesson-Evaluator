@@ -5902,20 +5902,6 @@ function LoginPage({ forceRecovery }: { forceRecovery: boolean }) {
     setConfirmPassword("");
   }
 
-  async function handleGoogleSignIn() {
-    setError(null);
-    setLoading(true);
-    const { error: authError } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: window.location.origin },
-    });
-    if (authError) {
-      setError(authError.message);
-      setLoading(false);
-    }
-    // On success, browser redirects to Google — App's onAuthStateChange handles return.
-  }
-
   async function handleSubmit() {
     if (!email.trim() || !password) {
       setError("Please enter your email and password.");
@@ -6042,27 +6028,6 @@ function LoginPage({ forceRecovery }: { forceRecovery: boolean }) {
         <div className="login-form">
           {error   && <p className="error-box login-feedback-box">{error}</p>}
           {success && <p className="login-success-box">{success}</p>}
-
-          {/* Google button — signin & signup only */}
-          {showEmailPasswordForm && (
-            <>
-              <button
-                type="button"
-                className="login-google-btn"
-                onClick={handleGoogleSignIn}
-                disabled={loading}
-              >
-                <Icon.GoogleG />
-                {mode === "signup" ? "Sign up with Google" : "Sign in with Google"}
-              </button>
-
-              <div className="login-divider">
-                <div className="login-divider-line" />
-                <span className="login-divider-text">or continue with email</span>
-                <div className="login-divider-line" />
-              </div>
-            </>
-          )}
 
           {/* Email — signin, signup, forgotpw */}
           {mode !== "resetpw" && (
