@@ -1412,6 +1412,12 @@ details[open] .scoring-rules-trigger::before { transform: rotate(90deg); }
   font-weight: 400;
   color: var(--muted-fg);
 }
+.readiness-stat-pct {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted-fg);
+  line-height: 1;
+}
 .readiness-stat-label {
   font-size: 11px;
   color: var(--muted-fg);
@@ -1906,6 +1912,11 @@ details[open] .scoring-rules-trigger::before { transform: rotate(90deg); }
   font-weight: 400;
   color: var(--muted-fg);
 }
+.lib-rubric-pct {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--muted-fg);
+}
 .lib-rubric-lows {
   font-size: 10.5px;
   font-weight: 600;
@@ -2169,6 +2180,12 @@ details[open] .scoring-rules-trigger::before { transform: rotate(90deg); }
   font-size: 13px;
   font-weight: 400;
   color: var(--muted-fg);
+}
+.drawer-eval-stat-pct {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted-fg);
+  line-height: 1;
 }
 .drawer-eval-stat-label {
   font-size: 11px;

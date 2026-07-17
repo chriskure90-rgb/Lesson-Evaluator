@@ -498,7 +498,7 @@ type EvaluationResult = {
 function buildEvaluationExportDocument(
   title: string,
   meta: string,
-  readiness: { status: string; totalScore: number; maxScore: number; lowCount: number; naCount: number },
+  readiness: { status: string; totalScore: number; maxScore: number; percentage: number | null; lowCount: number; naCount: number },
   summary: string,
   sections: EvaluationSection[],
   activeRatings: RubricRating[],
@@ -506,7 +506,7 @@ function buildEvaluationExportDocument(
 ): ExportDocument {
   const scoreText = readiness.maxScore === 0
     ? "No applicable criteria — all criteria marked N/A."
-    : `${readiness.totalScore}/${readiness.maxScore} points, ${readiness.lowCount} low rating(s)${readiness.naCount > 0 ? `, ${readiness.naCount} N/A` : ""}.`;
+    : `${readiness.totalScore}/${readiness.maxScore} points (${readiness.percentage}%), ${readiness.lowCount} low rating(s)${readiness.naCount > 0 ? `, ${readiness.naCount} N/A` : ""}.`;
   const overviewParagraphs = [
     `Readiness: ${readiness.maxScore === 0 ? "N/A" : readiness.status} — ${scoreText}`,
   ];
@@ -3311,7 +3311,8 @@ const RATING_POINTS: Record<RubricRating, number> = { high: 2, medium: 1, low: 0
 type ReadinessResult = {
   status: string;
   totalScore: number;
-  maxScore: number;  // applicable criteria × 2; 0 when every criterion is N/A
+  maxScore: number;      // applicable criteria × 2; 0 when every criterion is N/A
+  percentage: number | null; // null when maxScore === 0 (all-N/A)
   lowCount: number;
   naCount: number;
 };
@@ -3324,10 +3325,12 @@ function calcReadiness(ratings: RubricRating[]): ReadinessResult {
   const lowCount   = applicable.filter((r) => r === "low").length;
 
   if (applicable.length === 0) {
-    return { status: "Not Evaluated", totalScore: 0, maxScore: 0, lowCount: 0, naCount };
+    return { status: "Not Evaluated", totalScore: 0, maxScore: 0, percentage: null, lowCount: 0, naCount };
   }
 
   const pct = totalScore / maxScore;
+  const percentage = Math.round(pct * 100);
+
   let status: string;
   if (pct >= 0.9 && lowCount === 0) {
     status = "Classroom Ready";
@@ -3339,7 +3342,7 @@ function calcReadiness(ratings: RubricRating[]): ReadinessResult {
     status = "Not Ready";
   }
 
-  return { status, totalScore, maxScore, lowCount, naCount };
+  return { status, totalScore, maxScore, percentage, lowCount, naCount };
 }
 
 
@@ -3731,6 +3734,9 @@ function EvaluatorPage({
                     <span className="readiness-stat-value">
                       {readiness.totalScore}<span className="readiness-stat-max">/{readiness.maxScore}</span>
                     </span>
+                    {readiness.percentage !== null && (
+                      <span className="readiness-stat-pct">{readiness.percentage}%</span>
+                    )}
                     <span className="readiness-stat-label">Total score</span>
                   </div>
                   <div className="readiness-stat-divider" />
@@ -3785,19 +3791,19 @@ function EvaluatorPage({
                 <ol className="scoring-thresholds">
                   <li>
                     <span className="scoring-threshold-badge scoring-threshold-ready">Classroom Ready</span>
-                    <span className="scoring-threshold-rule">18–20 pts · no Low ratings</span>
+                    <span className="scoring-threshold-rule">≥ 90% · no Low ratings</span>
                   </li>
                   <li>
                     <span className="scoring-threshold-badge scoring-threshold-revision">Ready with Revision</span>
-                    <span className="scoring-threshold-rule">14–17 pts · or 18–20 pts with 1 Low</span>
+                    <span className="scoring-threshold-rule">70–89% · or ≥ 90% with 1 Low</span>
                   </li>
                   <li>
                     <span className="scoring-threshold-badge scoring-threshold-needs">Needs Revision</span>
-                    <span className="scoring-threshold-rule">8–13 pts</span>
+                    <span className="scoring-threshold-rule">40–69%</span>
                   </li>
                   <li>
                     <span className="scoring-threshold-badge scoring-threshold-not">Not Ready</span>
-                    <span className="scoring-threshold-rule">0–7 pts</span>
+                    <span className="scoring-threshold-rule">&lt; 40%</span>
                   </li>
                 </ol>
               </div>
@@ -5405,6 +5411,12 @@ function LessonCard({ row, onOpen }: { row: LibraryRow; onOpen: (r: LibraryRow) 
   const rKey = readinessKey(row.readiness_status);
   const meta = READINESS_META[rKey];
   const hasEval = row.eval_id !== null;
+  const cardApplicableMax = row.rubric_json
+    ? Object.values(row.rubric_json).filter((v) => v.final_rating !== "na").length * 2
+    : 20;
+  const cardPct = hasEval && cardApplicableMax > 0 && row.total_score !== null
+    ? Math.round((row.total_score / cardApplicableMax) * 100)
+    : null;
 
   return (
     <div className="lib-card">
@@ -5414,11 +5426,8 @@ function LessonCard({ row, onOpen }: { row: LibraryRow; onOpen: (r: LibraryRow) 
         {hasEval ? (
           <span className="lib-rubric-score">
             {row.total_score}
-            <span className="lib-rubric-max">
-              /{row.rubric_json
-                ? Object.values(row.rubric_json).filter((v) => v.final_rating !== "na").length * 2
-                : 20}
-            </span>
+            <span className="lib-rubric-max">/{cardApplicableMax}</span>
+            {cardPct !== null && <span className="lib-rubric-pct">{cardPct}%</span>}
             {(row.low_count ?? 0) > 0 && (
               <span className="lib-rubric-lows">{row.low_count}L</span>
             )}
@@ -5494,6 +5503,9 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
   const applicableMax  = row.rubric_json
     ? Object.values(row.rubric_json).filter((v) => v.final_rating !== "na").length * 2
     : 20;
+  const drawerPct = applicableMax > 0 && row.total_score !== null
+    ? Math.round((row.total_score / applicableMax) * 100)
+    : null;
 
   // Non-empty teacher notes
   const noteEntries = row.teacher_notes_json
@@ -5541,6 +5553,9 @@ function LessonDetailDrawer({ row, onClose }: { row: LibraryRow; onClose: () => 
                 <div className="drawer-eval-stats">
                   <div className="drawer-eval-stat">
                     <span className="drawer-eval-stat-value">{row.total_score}<span className="drawer-eval-stat-denom">/{applicableMax}</span></span>
+                    {drawerPct !== null && (
+                      <span className="drawer-eval-stat-pct">{drawerPct}%</span>
+                    )}
                     <span className="drawer-eval-stat-label">Total score</span>
                   </div>
                   <div className="drawer-eval-stat-div" />
