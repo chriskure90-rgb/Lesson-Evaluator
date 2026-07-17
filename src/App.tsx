@@ -37,6 +37,7 @@ import {
 import {
   fetchCustomStandardsUploads,
   softDeleteCustomStandardsUpload,
+  renameCustomStandardsUpload,
   standardsAuthHeaders,
   type StandardUpload,
 } from "./lib/custom-standards";
@@ -1901,6 +1902,9 @@ function GeneratorPage({
   const [customStandardsLoading, setCustomStandardsLoading] = useState(false);
   const [customStandardsError, setCustomStandardsError]     = useState<string | null>(null);
   const [deletingUploadId, setDeletingUploadId]             = useState<string | null>(null);
+  const [openMenuUploadId, setOpenMenuUploadId]             = useState<string | null>(null);
+  const [renamingUploadId, setRenamingUploadId]             = useState<string | null>(null);
+  const [renameValue, setRenameValue]                       = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -1923,13 +1927,30 @@ function GeneratorPage({
 
   async function handleDeleteCustomStandardsUpload(uploadId: string) {
     setDeletingUploadId(uploadId);
+    setOpenMenuUploadId(null);
     try {
       await softDeleteCustomStandardsUpload(uploadId);
       setCustomStandardsUploads((prev) => prev.filter((u) => u.id !== uploadId));
+      if (selectedUploadId === uploadId) setSelectedUploadId(null);
     } catch (err) {
       console.error("[standard_uploads] delete error:", err);
     } finally {
       setDeletingUploadId(null);
+    }
+  }
+
+  async function handleRenameUpload(uploadId: string) {
+    const trimmed = renameValue.trim();
+    if (!trimmed) { setRenamingUploadId(null); return; }
+    try {
+      await renameCustomStandardsUpload(uploadId, trimmed);
+      setCustomStandardsUploads((prev) =>
+        prev.map((u) => u.id === uploadId ? { ...u, filename: trimmed } : u)
+      );
+    } catch (err) {
+      console.error("[standard_uploads] rename error:", err);
+    } finally {
+      setRenamingUploadId(null);
     }
   }
 
@@ -1944,16 +1965,16 @@ function GeneratorPage({
       const summary = await processUploadedStandards(path, file.name);
       setUploadSummary(summary);
       setUploadStatus("success");
-      // Refresh the persistent list, then switch to My Standards and auto-select
+      // Refresh the persistent list, switch to My Standards and auto-select new doc
       fetchCustomStandardsUploads(userId)
         .then((data) => {
           setCustomStandardsUploads(data);
           if (summary.uploadId) {
             setSelectedUploadId(summary.uploadId);
-            setFramework(MY_STANDARDS_ID);
           }
+          setFramework(MY_STANDARDS_ID);
         })
-        .catch(() => {});
+        .catch(() => { setFramework(MY_STANDARDS_ID); });
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed. Please try again.");
       setUploadStatus("error");
@@ -2132,14 +2153,11 @@ function GeneratorPage({
   }
 
   const MY_STANDARDS_ID = "my_standards";
-  const UPLOAD_NEW_ID   = "upload_new";
   const isMyStandards   = framework === MY_STANDARDS_ID;
-  const isUploadNew     = framework === UPLOAD_NEW_ID;
-  const isCustomTab     = isMyStandards || isUploadNew;
 
   /** Resolved label(s) sent to the API and shown in the breadcrumb */
   function resolvedFrameworks(): string[] {
-    if (isCustomTab) return ["Custom"];
+    if (isMyStandards) return ["Custom"];
     return [FRAMEWORKS.find((f) => f.value === framework)?.label ?? framework];
   }
 
@@ -2544,35 +2562,79 @@ function GeneratorPage({
             <div className="field">
               <FieldLabel>Standards Framework</FieldLabel>
 
-              <div className="fw-chip-row">
-                {FRAMEWORKS.map((f) => (
+              {/* Always-hidden file input — triggered by the + Upload button */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (file) void handleUploadFile(file);
+                }}
+              />
+
+              {/* Chip row + right-aligned upload button */}
+              <div className="fw-chip-row-bar">
+                <div className="fw-chip-row">
+                  {FRAMEWORKS.map((f) => (
+                    <button
+                      key={f.value}
+                      type="button"
+                      className={`fw-chip${framework === f.value ? " fw-chip-active" : ""}`}
+                      onClick={() => setFramework(f.value)}
+                      aria-pressed={framework === f.value}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
                   <button
-                    key={f.value}
                     type="button"
-                    className={`fw-chip${framework === f.value ? " fw-chip-active" : ""}`}
-                    onClick={() => setFramework(f.value)}
-                    aria-pressed={framework === f.value}
+                    className={`fw-chip${isMyStandards ? " fw-chip-active" : ""}`}
+                    onClick={() => setFramework(MY_STANDARDS_ID)}
+                    aria-pressed={isMyStandards}
                   >
-                    {f.label}
+                    My Standards
                   </button>
-                ))}
+                </div>
                 <button
                   type="button"
-                  className={`fw-chip${isMyStandards ? " fw-chip-active" : ""}`}
-                  onClick={() => setFramework(MY_STANDARDS_ID)}
-                  aria-pressed={isMyStandards}
+                  className="fw-upload-btn"
+                  disabled={uploadStatus === "uploading" || uploadStatus === "processing"}
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Upload a PDF or DOCX standards document"
                 >
-                  My Standards
-                </button>
-                <button
-                  type="button"
-                  className={`fw-chip${isUploadNew ? " fw-chip-active" : ""}`}
-                  onClick={() => setFramework(UPLOAD_NEW_ID)}
-                  aria-pressed={isUploadNew}
-                >
-                  Upload New
+                  + Upload
                 </button>
               </div>
+
+              {/* Upload status line — shown whenever an upload is in progress or just finished */}
+              {uploadStatus !== "idle" && (
+                <div className="fw-upload-status-bar">
+                  {uploadStatus === "uploading"  && <span className="fw-upload-status">Uploading {uploadFileName}…</span>}
+                  {uploadStatus === "processing" && <span className="fw-upload-status">Processing standards…</span>}
+                  {uploadStatus === "success" && uploadSummary && (
+                    <span className="fw-upload-status fw-upload-status-success">
+                      {uploadFileName} saved — {uploadSummary.embedded} standard{uploadSummary.embedded !== 1 ? "s" : ""} added
+                      {uploadSummary.skipped > 0 ? `, ${uploadSummary.skipped} already existed` : ""}.
+                    </span>
+                  )}
+                  {uploadStatus === "error" && (
+                    <span className="fw-upload-status fw-upload-status-error">{uploadError}</span>
+                  )}
+                  {(uploadStatus === "success" || uploadStatus === "error") && (
+                    <button
+                      type="button"
+                      className="fw-upload-status-dismiss"
+                      onClick={() => { setUploadStatus("idle"); setUploadFileName(null); setUploadSummary(null); setUploadError(null); }}
+                      aria-label="Dismiss"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              )}
 
               {/* My Standards panel */}
               {isMyStandards && (
@@ -2587,41 +2649,93 @@ function GeneratorPage({
                       <button
                         type="button"
                         className="btn-outline-sm"
-                        onClick={() => setFramework(UPLOAD_NEW_ID)}
+                        onClick={() => fileInputRef.current?.click()}
                       >
                         Upload Standards
                       </button>
                     </div>
                   ) : (
-                    <ul className="my-standards-list">
+                    <ul className="my-standards-list" onClick={() => setOpenMenuUploadId(null)}>
                       {customStandardsUploads.map((u) => {
-                        const isSelected = selectedUploadId === u.id;
+                        const isSelected     = selectedUploadId === u.id;
+                        const isMenuOpen     = openMenuUploadId === u.id;
+                        const isRenaming     = renamingUploadId === u.id;
                         const meta: string[] = [];
                         if (u.subject)    meta.push(u.subject);
                         if (u.grade_band) meta.push(`Grades ${u.grade_band}`);
-                        meta.push(`${u.row_count} standard${u.row_count !== 1 ? "s" : ""}`);
                         return (
                           <li
                             key={u.id}
                             className={`my-standards-item${isSelected ? " my-standards-item-selected" : ""}`}
-                            onClick={() => setSelectedUploadId(u.id)}
+                            onClick={() => { if (!isRenaming) setSelectedUploadId(u.id); }}
                             role="option"
                             aria-selected={isSelected}
                           >
                             <div className="my-standards-item-body">
-                              <span className="my-standards-filename">{u.filename ?? "Untitled"}</span>
-                              <span className="my-standards-meta">{meta.join(" · ")}</span>
+                              {isRenaming ? (
+                                <input
+                                  className="my-standards-rename-input"
+                                  autoFocus
+                                  value={renameValue}
+                                  onChange={(e) => setRenameValue(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter")  { e.preventDefault(); void handleRenameUpload(u.id); }
+                                    if (e.key === "Escape") { setRenamingUploadId(null); }
+                                  }}
+                                  onBlur={() => void handleRenameUpload(u.id)}
+                                  onClick={(e) => e.stopPropagation()}
+                                />
+                              ) : (
+                                <span className="my-standards-filename">{u.filename ?? "Untitled"}</span>
+                              )}
+                              {meta.length > 0 && (
+                                <span className="my-standards-meta">{meta.join(" · ")}</span>
+                              )}
                             </div>
-                            <button
-                              type="button"
-                              className="custom-standards-delete"
-                              disabled={deletingUploadId === u.id}
-                              onClick={(e) => { e.stopPropagation(); void handleDeleteCustomStandardsUpload(u.id); }}
-                              title="Remove this upload"
-                              aria-label={`Remove ${u.filename ?? "upload"}`}
+
+                            {/* Three-dot overflow menu */}
+                            <div
+                              className="my-standards-menu-wrap"
+                              onClick={(e) => e.stopPropagation()}
                             >
-                              ×
-                            </button>
+                              <button
+                                type="button"
+                                className="my-standards-menu-btn"
+                                aria-label="More options"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpenMenuUploadId(isMenuOpen ? null : u.id);
+                                }}
+                              >
+                                ···
+                              </button>
+                              {isMenuOpen && (
+                                <ul className="my-standards-menu">
+                                  <li>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setOpenMenuUploadId(null);
+                                        setRenameValue(u.filename ?? "");
+                                        setRenamingUploadId(u.id);
+                                      }}
+                                    >
+                                      Rename
+                                    </button>
+                                  </li>
+                                  <li>
+                                    <button
+                                      type="button"
+                                      className="my-standards-menu-danger"
+                                      disabled={deletingUploadId === u.id}
+                                      onClick={() => void handleDeleteCustomStandardsUpload(u.id)}
+                                    >
+                                      Delete
+                                    </button>
+                                  </li>
+                                </ul>
+                              )}
+                            </div>
                           </li>
                         );
                       })}
@@ -2629,53 +2743,6 @@ function GeneratorPage({
                   )}
                 </div>
               )}
-
-              {/* Upload New panel */}
-              {isUploadNew && (() => {
-                const busy = uploadStatus === "uploading" || uploadStatus === "processing";
-                return (
-                  <div
-                    className="fw-upload-area"
-                    style={{ marginTop: 8, cursor: busy ? "default" : "pointer" }}
-                    onClick={() => !busy && fileInputRef.current?.click()}
-                  >
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                      style={{ display: "none" }}
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        e.target.value = "";
-                        if (file) void handleUploadFile(file);
-                      }}
-                    />
-                    <div className="fw-upload-area-icon">↑</div>
-                    <p className="fw-upload-area-label">Upload your standards document (PDF or DOCX)</p>
-                    <button
-                      type="button"
-                      className="btn-outline-sm"
-                      disabled={busy}
-                      onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
-                    >
-                      Choose PDF/DOCX File
-                    </button>
-                    {uploadFileName && <p className="fw-upload-filename">{uploadFileName}</p>}
-                    {uploadStatus === "uploading"  && <p className="fw-upload-status">Uploading…</p>}
-                    {uploadStatus === "processing" && <p className="fw-upload-status">Processing standards…</p>}
-                    {uploadStatus === "success" && uploadSummary && (
-                      <p className="fw-upload-status fw-upload-status-success">
-                        Upload complete — {uploadSummary.embedded} embedded
-                        {uploadSummary.skipped > 0 ? `, ${uploadSummary.skipped} already added` : ""}
-                        {uploadSummary.failed > 0 ? `, ${uploadSummary.failed} failed` : ""}.
-                      </p>
-                    )}
-                    {uploadStatus === "error" && (
-                      <p className="fw-upload-status fw-upload-status-error">{uploadError}</p>
-                    )}
-                  </div>
-                );
-              })()}
 
               {/* Preferred Standard Code — shown for all frameworks */}
               <div style={{ marginTop: 10 }}>

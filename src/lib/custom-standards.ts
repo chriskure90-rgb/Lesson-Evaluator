@@ -39,6 +39,16 @@ export async function softDeleteCustomStandardsUpload(uploadId: string): Promise
   if (error) throw new Error(error.message);
 }
 
+// Renames an upload by updating its filename. RLS UPDATE policy guards ownership.
+export async function renameCustomStandardsUpload(uploadId: string, filename: string): Promise<void> {
+  const { error } = await supabase
+    .from("standard_uploads")
+    .update({ filename: filename.trim() || null })
+    .eq("id", uploadId);
+
+  if (error) throw new Error(error.message);
+}
+
 // Returns Authorization header using the active Supabase session token.
 // Used when calling upload API routes that require authentication.
 export async function standardsAuthHeaders(): Promise<Record<string, string>> {
