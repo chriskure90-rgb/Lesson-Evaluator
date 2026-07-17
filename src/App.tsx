@@ -4274,7 +4274,6 @@ function DetectedSectionsPanel({
     sections.contentSections.length > 0 || sections.metadataFields.length > 0 || sections.instructionTexts.length > 0;
 
   const [draft, setDraft] = useState<DetectedSections>(sections);
-  const [newSectionLabel, setNewSectionLabel] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -4316,29 +4315,6 @@ function DetectedSectionsPanel({
     void persist(next);
   }
 
-  function addSection() {
-    const label = newSectionLabel.trim();
-    if (!label) return;
-    const next: DetectedSections = {
-      ...draft,
-      contentSections: [
-        ...draft.contentSections,
-        {
-          id: `section_new_${Date.now()}`,
-          originalLabel: label,
-          normalizedKey: "custom_section",
-          type: "content_section",
-          order: draft.contentSections.length + 1,
-          confidence: 0.5,
-          detectionReason: "manually added",
-        },
-      ],
-    };
-    setDraft(next);
-    setNewSectionLabel("");
-    void persist(next);
-  }
-
   return (
     <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -4363,19 +4339,6 @@ function DetectedSectionsPanel({
         items={draft.instructionTexts}
         onRemove={(id) => removeItem("instructionTexts", id)}
       />
-
-      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-        <input
-          className="input"
-          placeholder="Add a missing section…"
-          value={newSectionLabel}
-          onChange={(e) => setNewSectionLabel(e.target.value)}
-          style={{ flex: 1, fontSize: 13 }}
-        />
-        <button type="button" className="btn-outline-sm" disabled={saving || !newSectionLabel.trim()} onClick={addSection}>
-          Add
-        </button>
-      </div>
 
       {/* Sticky within this template's card as the modal's template list
           scrolls (position: sticky is bounded by this div's own containing
