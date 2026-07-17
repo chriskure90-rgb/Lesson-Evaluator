@@ -160,17 +160,18 @@ async function embedQuery(text) {
   return response.data[0].embedding;
 }
 
-async function vectorSearchStandards({ framework, queryText, matchCount = VECTOR_MATCH_COUNT, gradeBand = null }) {
+async function vectorSearchStandards({ framework, queryText, matchCount = VECTOR_MATCH_COUNT, gradeBand = null, uploadId = null }) {
   if (!supabase) throw new Error("Supabase client not initialised");
   if (!framework) throw new Error("No framework selected for vector search");
 
   const queryEmbedding = await embedQuery(queryText);
 
   const { data, error } = await supabase.rpc("match_standards", {
-    query_embedding: queryEmbedding,
-    match_framework: framework,
-    match_count: matchCount,
+    query_embedding:  queryEmbedding,
+    match_framework:  framework,
+    match_count:      matchCount,
     match_grade_band: gradeBand,
+    match_upload_id:  uploadId,
   });
 
   if (error) throw new Error(error.message);
@@ -203,7 +204,7 @@ const MIN_IN_BAND_FOR_NO_FALLBACK = 1;
 //
 // Returns { chunks, totalCandidates, filteredByGrade } so callers can surface
 // the right message when filtering leaves zero in-band results.
-async function retrieveRelevantStandards({ framework, code, topic, goal, subject, grade }) {
+async function retrieveRelevantStandards({ framework, code, topic, goal, subject, grade, uploadId = null }) {
   const exactChunks = [];
   let totalCandidates = 0;
   let filteredByGrade = 0;
@@ -228,6 +229,7 @@ async function retrieveRelevantStandards({ framework, code, topic, goal, subject
       queryText,
       gradeBand: grade || null,
       matchCount: VECTOR_CANDIDATE_POOL,
+      uploadId,
     });
     totalCandidates = matches.length;
 
@@ -845,7 +847,7 @@ export default async function handler(req, res) {
   console.log("=== STANDARDS DIAGNOSTICS ENABLED ===");
   console.log("[standards:diag] /api/generate handler entered");
   try {
-    const { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat, customTemplateId, customTemplateName, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies } = req.body;
+    const { grade, subject, frameworks, code, topic, goal, duration, model, lessonFormat, customTemplateId, customTemplateName, technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies, uploadId } = req.body;
 
     // Unrecognized/missing values fall back to "standard" so existing
     // clients (and the Standard Lesson Plan option) behave exactly as before.
@@ -947,7 +949,7 @@ export default async function handler(req, res) {
     // standards map when neither is available.
     const primaryFramework = Array.isArray(frameworks) ? frameworks[0] : frameworks;
     const { chunks: relevantChunks, totalCandidates, filteredByGrade } =
-      await retrieveRelevantStandards({ framework: primaryFramework, code, topic, goal, subject, grade });
+      await retrieveRelevantStandards({ framework: primaryFramework, code, topic, goal, subject, grade, uploadId: uploadId ?? null });
 
     let standardDescription;
     if (relevantChunks.length > 0) {

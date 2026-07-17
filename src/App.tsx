@@ -332,6 +332,7 @@ async function generateLesson(params: {
   instructionalApproach: InstructionalApproach;
   teachingStrategies: string[];
   marzanoStrategies: { name: string; promptDescription: string }[];
+  uploadId?: string | null;
 }): Promise<Lesson> {
   const res = await fetch("/api/generate", {
     method: "POST",
@@ -373,6 +374,7 @@ async function generateTemplate1Lesson(params: {
   // template (see api/generate.js).
   customTemplateId?: string | null;
   customTemplateName?: string | null;
+  uploadId?: string | null;
 }): Promise<Template1Lesson> {
   const requestBody = { ...params, lessonFormat: "template1" };
   console.log("[generateTemplate1Lesson] request payload:", requestBody);
@@ -411,6 +413,7 @@ async function generateDynamicLessonPlan(params: {
   marzanoStrategies: { name: string; promptDescription: string }[];
   customTemplateId: string;
   customTemplateName: string;
+  uploadId?: string | null;
 }): Promise<Record<string, unknown>> {
   const requestBody = { ...params, lessonFormat: "dynamic" };
   console.log("[generateDynamicLessonPlan] request payload:", requestBody);
@@ -1882,6 +1885,9 @@ function GeneratorPage({
     selectCustomTemplate(t);
   }
 
+  // Which saved upload is actively selected for RAG retrieval (null = none)
+  const [selectedUploadId, setSelectedUploadId] = useState<string | null>(null);
+
   // Custom standards upload (PDF/DOCX)
   const [uploadStatus, setUploadStatus]   = useState<"idle" | "uploading" | "processing" | "success" | "error">("idle");
   const [uploadSummary, setUploadSummary] = useState<UploadSummary | null>(null);
@@ -1938,9 +1944,15 @@ function GeneratorPage({
       const summary = await processUploadedStandards(path, file.name);
       setUploadSummary(summary);
       setUploadStatus("success");
-      // Refresh the persistent list so the new upload appears immediately
+      // Refresh the persistent list, then switch to My Standards and auto-select
       fetchCustomStandardsUploads(userId)
-        .then((data) => setCustomStandardsUploads(data))
+        .then((data) => {
+          setCustomStandardsUploads(data);
+          if (summary.uploadId) {
+            setSelectedUploadId(summary.uploadId);
+            setFramework(MY_STANDARDS_ID);
+          }
+        })
         .catch(() => {});
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed. Please try again.");
@@ -2119,12 +2131,15 @@ function GeneratorPage({
     setDynamicDraft(prev => prev ? prev.map(s => s.id === regionId ? { ...s, content: value } : s) : prev);
   }
 
-  const CUSTOM_ID = "custom";
-  const hasCustom = framework === CUSTOM_ID;
+  const MY_STANDARDS_ID = "my_standards";
+  const UPLOAD_NEW_ID   = "upload_new";
+  const isMyStandards   = framework === MY_STANDARDS_ID;
+  const isUploadNew     = framework === UPLOAD_NEW_ID;
+  const isCustomTab     = isMyStandards || isUploadNew;
 
   /** Resolved label(s) sent to the API and shown in the breadcrumb */
   function resolvedFrameworks(): string[] {
-    if (framework === CUSTOM_ID) return ["Custom"];
+    if (isCustomTab) return ["Custom"];
     return [FRAMEWORKS.find((f) => f.value === framework)?.label ?? framework];
   }
 
@@ -2144,6 +2159,10 @@ function GeneratorPage({
     }
     if (lessonFormat === "dynamic" && !selectedCustomTemplateId) {
       setError("Please select one of your uploaded templates first.");
+      return;
+    }
+    if (isMyStandards && !selectedUploadId) {
+      setError("Please select a standards document from My Standards.");
       return;
     }
 
@@ -2185,6 +2204,7 @@ function GeneratorPage({
           technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies,
           customTemplateId: selectedCustomTemplate.id,
           customTemplateName: selectedCustomTemplate.name,
+          uploadId: isMyStandards ? selectedUploadId : null,
         });
         const plan = toDynamicLessonPlanFromFieldMap(raw, fieldMap);
         setDynamicLessonPlan(plan);
@@ -2255,6 +2275,7 @@ function GeneratorPage({
           gradeLabel: gradeBandLabel.replace(/^Grades\s*/, ""),
           customTemplateId: isCustom ? selectedCustomTemplateId : null,
           customTemplateName: isCustom ? selectedCustomTemplate?.name ?? null : null,
+          uploadId: isMyStandards ? selectedUploadId : null,
         });
         setTemplate1Lesson(result);
         setGeneratedFormat(isCustom ? "custom" : "template1");
@@ -2309,6 +2330,7 @@ function GeneratorPage({
       const result = await generateLesson({
         grade, subject, frameworks: resolvedFrameworks(), code, topic, goal, duration, model,
         technologyUsage, studentTechnology, instructionalApproach, teachingStrategies, marzanoStrategies,
+        uploadId: isMyStandards ? selectedUploadId : null,
       });
       setLesson(result);
       setGeneratedFormat("standard");
@@ -2534,120 +2556,138 @@ function GeneratorPage({
                     {f.label}
                   </button>
                 ))}
-
                 <button
                   type="button"
-                  className={`fw-chip${hasCustom ? " fw-chip-active" : ""}`}
-                  onClick={() => setFramework(CUSTOM_ID)}
-                  aria-pressed={hasCustom}
+                  className={`fw-chip${isMyStandards ? " fw-chip-active" : ""}`}
+                  onClick={() => setFramework(MY_STANDARDS_ID)}
+                  aria-pressed={isMyStandards}
                 >
-                  Custom Upload
+                  My Standards
+                </button>
+                <button
+                  type="button"
+                  className={`fw-chip${isUploadNew ? " fw-chip-active" : ""}`}
+                  onClick={() => setFramework(UPLOAD_NEW_ID)}
+                  aria-pressed={isUploadNew}
+                >
+                  Upload New
                 </button>
               </div>
 
-              {/* Upload area — only when Custom Upload is selected */}
-              {hasCustom && (() => {
-                const busy = uploadStatus === "uploading" || uploadStatus === "processing";
-                return (
-                  <div style={{ marginTop: 8 }}>
-                    {/* Previously uploaded standards list */}
-                    {customStandardsLoading ? (
-                      <p className="fw-upload-status" style={{ marginBottom: 8 }}>Loading your standards…</p>
-                    ) : customStandardsError ? (
-                      <p className="fw-upload-status fw-upload-status-error" style={{ marginBottom: 8 }}>{customStandardsError}</p>
-                    ) : customStandardsUploads.length > 0 ? (
-                      <ul className="custom-standards-list">
-                        {customStandardsUploads.map((u) => (
-                          <li key={u.id} className="custom-standards-item">
-                            <span className="custom-standards-filename">{u.filename ?? "Untitled"}</span>
-                            <span className="custom-standards-count">{u.row_count} chunk{u.row_count !== 1 ? "s" : ""}</span>
+              {/* My Standards panel */}
+              {isMyStandards && (
+                <div className="my-standards-panel" style={{ marginTop: 8 }}>
+                  {customStandardsLoading ? (
+                    <p className="fw-upload-status">Loading your standards…</p>
+                  ) : customStandardsError ? (
+                    <p className="fw-upload-status fw-upload-status-error">{customStandardsError}</p>
+                  ) : customStandardsUploads.length === 0 ? (
+                    <div className="my-standards-empty">
+                      <p>No saved standards yet.</p>
+                      <button
+                        type="button"
+                        className="btn-outline-sm"
+                        onClick={() => setFramework(UPLOAD_NEW_ID)}
+                      >
+                        Upload Standards
+                      </button>
+                    </div>
+                  ) : (
+                    <ul className="my-standards-list">
+                      {customStandardsUploads.map((u) => {
+                        const isSelected = selectedUploadId === u.id;
+                        const meta: string[] = [];
+                        if (u.subject)    meta.push(u.subject);
+                        if (u.grade_band) meta.push(`Grades ${u.grade_band}`);
+                        meta.push(`${u.row_count} standard${u.row_count !== 1 ? "s" : ""}`);
+                        return (
+                          <li
+                            key={u.id}
+                            className={`my-standards-item${isSelected ? " my-standards-item-selected" : ""}`}
+                            onClick={() => setSelectedUploadId(u.id)}
+                            role="option"
+                            aria-selected={isSelected}
+                          >
+                            <div className="my-standards-item-body">
+                              <span className="my-standards-filename">{u.filename ?? "Untitled"}</span>
+                              <span className="my-standards-meta">{meta.join(" · ")}</span>
+                            </div>
                             <button
                               type="button"
                               className="custom-standards-delete"
                               disabled={deletingUploadId === u.id}
-                              onClick={() => void handleDeleteCustomStandardsUpload(u.id)}
+                              onClick={(e) => { e.stopPropagation(); void handleDeleteCustomStandardsUpload(u.id); }}
                               title="Remove this upload"
                               aria-label={`Remove ${u.filename ?? "upload"}`}
                             >
                               ×
                             </button>
                           </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="fw-upload-status custom-standards-empty">No standards uploaded yet.</p>
-                    )}
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              )}
 
-                    {/* File picker */}
-                    <div
-                      className="fw-upload-area"
-                      onClick={() => !busy && fileInputRef.current?.click()}
-                      style={{ cursor: busy ? "default" : "pointer" }}
+              {/* Upload New panel */}
+              {isUploadNew && (() => {
+                const busy = uploadStatus === "uploading" || uploadStatus === "processing";
+                return (
+                  <div
+                    className="fw-upload-area"
+                    style={{ marginTop: 8, cursor: busy ? "default" : "pointer" }}
+                    onClick={() => !busy && fileInputRef.current?.click()}
+                  >
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = "";
+                        if (file) void handleUploadFile(file);
+                      }}
+                    />
+                    <div className="fw-upload-area-icon">↑</div>
+                    <p className="fw-upload-area-label">Upload your standards document (PDF or DOCX)</p>
+                    <button
+                      type="button"
+                      className="btn-outline-sm"
+                      disabled={busy}
+                      onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
                     >
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                        style={{ display: "none" }}
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          e.target.value = ""; // allow re-selecting the same file later
-                          if (file) void handleUploadFile(file);
-                        }}
-                      />
-                      <div className="fw-upload-area-icon">↑</div>
-                      <p className="fw-upload-area-label">Upload your standards document (PDF or DOCX)</p>
-
-                      <button
-                        type="button"
-                        className="btn-outline-sm"
-                        disabled={busy}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          fileInputRef.current?.click();
-                        }}
-                      >
-                        Choose PDF/DOCX File
-                      </button>
-
-                      {uploadFileName && (
-                        <p className="fw-upload-filename">{uploadFileName}</p>
-                      )}
-
-                      {uploadStatus === "uploading" && (
-                        <p className="fw-upload-status">Uploading…</p>
-                      )}
-                      {uploadStatus === "processing" && (
-                        <p className="fw-upload-status">Processing standards…</p>
-                      )}
-                      {uploadStatus === "success" && uploadSummary && (
-                        <p className="fw-upload-status fw-upload-status-success">
-                          Upload complete — {uploadSummary.embedded} embedded
-                          {uploadSummary.skipped > 0 ? `, ${uploadSummary.skipped} already added` : ""}
-                          {uploadSummary.failed > 0 ? `, ${uploadSummary.failed} failed` : ""}.
-                        </p>
-                      )}
-                      {uploadStatus === "error" && (
-                        <p className="fw-upload-status fw-upload-status-error">{uploadError}</p>
-                      )}
-                    </div>
+                      Choose PDF/DOCX File
+                    </button>
+                    {uploadFileName && <p className="fw-upload-filename">{uploadFileName}</p>}
+                    {uploadStatus === "uploading"  && <p className="fw-upload-status">Uploading…</p>}
+                    {uploadStatus === "processing" && <p className="fw-upload-status">Processing standards…</p>}
+                    {uploadStatus === "success" && uploadSummary && (
+                      <p className="fw-upload-status fw-upload-status-success">
+                        Upload complete — {uploadSummary.embedded} embedded
+                        {uploadSummary.skipped > 0 ? `, ${uploadSummary.skipped} already added` : ""}
+                        {uploadSummary.failed > 0 ? `, ${uploadSummary.failed} failed` : ""}.
+                      </p>
+                    )}
+                    {uploadStatus === "error" && (
+                      <p className="fw-upload-status fw-upload-status-error">{uploadError}</p>
+                    )}
                   </div>
                 );
               })()}
 
-              {/* Standard Code — only for NGSS / Common Core */}
-              {!hasCustom && (
-                <div style={{ marginTop: 10 }}>
-                  <FieldLabel htmlFor="code" hint="Optional">Standard Code</FieldLabel>
-                  <input
-                    id="code"
-                    className="input"
-                    value={code}
-                    onChange={(e) => setCode(e.target.value)}
-                    placeholder="e.g. MS-LS1-6"
-                  />
-                </div>
-              )}
+              {/* Preferred Standard Code — shown for all frameworks */}
+              <div style={{ marginTop: 10 }}>
+                <FieldLabel htmlFor="code" hint="Optional">Preferred Standard Code</FieldLabel>
+                <input
+                  id="code"
+                  className="input"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  placeholder="e.g. MS-LS1-6 — leave blank to retrieve automatically"
+                />
+              </div>
             </div>
 
             {/* Lesson Plan Format */}

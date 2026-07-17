@@ -5,6 +5,8 @@ export type StandardUpload = {
   user_id: string;
   filename: string | null;
   row_count: number;
+  subject: string | null;
+  grade_band: string | null;
   deleted_at: string | null;
   created_at: string;
 };

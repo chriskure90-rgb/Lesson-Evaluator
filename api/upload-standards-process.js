@@ -99,14 +99,10 @@ async function processUpload({ path, filename, userId, res }) {
   }
 
   // ── Document-level context scan ───────────────────────────────────────────
-  // Reads the first portion of extracted text to establish grade/subject
-  // defaults that individual chunks inherit when their own metadata is absent.
   const documentContext = scanDocumentContext(normalizedText);
   console.log("[upload-standards-process] document context:", documentContext);
 
   // ── Per-chunk metadata extraction ─────────────────────────────────────────
-  // Extract grade_level, grade_band, subject, standard_code for each chunk
-  // BEFORE embedding so the metadata is persisted at insert time.
   const chunkMeta = chunks.map((content, i) =>
     extractChunkMetadata(content, {
       prevContent: i > 0 ? chunks[i - 1] : "",
@@ -114,7 +110,6 @@ async function processUpload({ path, filename, userId, res }) {
     })
   );
 
-  // Diagnostic summary
   const unknownCount = chunkMeta.filter((m) => m.extraction_source === "unknown").length;
   const bySource = {};
   for (const m of chunkMeta) bySource[m.extraction_source] = (bySource[m.extraction_source] ?? 0) + 1;
@@ -124,9 +119,27 @@ async function processUpload({ path, filename, userId, res }) {
     `| unknown-grade: ${unknownCount}/${total}`
   );
 
+  // ── Create the upload record FIRST so chunks can be linked via upload_id ──
+  const { data: uploadRow, error: uploadCreateError } = await supabase
+    .from("standard_uploads")
+    .insert({
+      user_id:    userId,
+      filename:   filename || null,
+      row_count:  0,
+      subject:    documentContext.subject   ?? null,
+      grade_band: documentContext.grade_band ?? null,
+    })
+    .select("id")
+    .single();
+
+  if (uploadCreateError) {
+    console.error("[upload-standards-process] standard_uploads create failed:", uploadCreateError.message);
+    return res.status(500).json({ error: "Could not create upload record." });
+  }
+  const uploadId = uploadRow.id;
+  console.log(`[upload-standards-process] upload record created: uploadId=${uploadId} user_id=${userId}`);
+
   // ── Dedupe against this user's existing teacher-uploaded content ─────────
-  // Filter by user_id to avoid cross-user dedup; also include legacy rows
-  // (user_id IS NULL) that may belong to this user from before the migration.
   const { data: existingRows, error: fetchError } = await supabase
     .from("standards")
     .select("content")
@@ -190,6 +203,7 @@ async function processUpload({ path, filename, userId, res }) {
         content,
         source:        "teacher_upload",
         user_id:       userId,
+        upload_id:     uploadId,
         embedding:     vectors[k],
       });
 
@@ -203,23 +217,23 @@ async function processUpload({ path, filename, userId, res }) {
     }
   }
 
-  // ── Persist the upload record so the UI can restore it on next login ─────
-  let uploadId = null;
-  const { data: uploadRow, error: uploadInsertError } = await supabase
-    .from("standard_uploads")
-    .insert({ user_id: userId, filename: filename || null, row_count: embedded })
-    .select("id")
-    .single();
+  // ── Finalise the upload record ────────────────────────────────────────────
+  if (embedded === 0 && skipped === 0) {
+    // Nothing went in (all failed) — clean up the empty record
+    await supabase.from("standard_uploads").delete().eq("id", uploadId);
+    console.log(`[upload-standards-process] upload record deleted (all chunks failed): uploadId=${uploadId}`);
+    return res.status(200).json({ total, embedded, skipped, failed, unknownGrade: unknownCount, uploadId: null });
+  }
 
-  if (uploadInsertError) {
-    console.error("[upload-standards-process] standard_uploads insert failed:", uploadInsertError.message);
+  const { error: updateError } = await supabase
+    .from("standard_uploads")
+    .update({ row_count: embedded })
+    .eq("id", uploadId);
+
+  if (updateError) {
+    console.warn("[upload-standards-process] standard_uploads row_count update failed:", updateError.message);
   } else {
-    uploadId = uploadRow?.id ?? null;
-    console.log(
-      `[upload-standards-process] upload saved: uploadId=${uploadId}`,
-      `user_id=${userId}`,
-      `rows_inserted=${embedded}`
-    );
+    console.log(`[upload-standards-process] upload saved: uploadId=${uploadId} rows_inserted=${embedded}`);
   }
 
   return res.status(200).json({ total, embedded, skipped, failed, unknownGrade: unknownCount, uploadId });

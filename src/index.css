@@ -767,38 +767,63 @@ h1, h2, h3, h4, h5 {
 :root[data-theme="dark"]  .fw-upload-status-success { color: #6fcf97; }
 :root[data-theme="light"] .fw-upload-status-success { color: #2d6a4f; }
 
-/* ── Custom standards upload list ────────────────────────── */
-.custom-standards-list {
+/* ── My Standards selection list ─────────────────────────── */
+.my-standards-panel { display: flex; flex-direction: column; }
+.my-standards-list {
   list-style: none;
-  margin: 0 0 10px;
+  margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.custom-standards-item {
+.my-standards-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  border-radius: 6px;
-  background: var(--surface-raised, var(--bg-secondary));
-  font-size: 13px;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1.5px solid var(--border);
+  cursor: pointer;
+  transition: border-color 120ms, background 120ms;
+  background: transparent;
 }
-.custom-standards-filename {
+.my-standards-item:hover { border-color: var(--primary, #4f46e5); background: var(--primary-hover-bg, rgba(79,70,229,.04)); }
+.my-standards-item-selected {
+  border-color: var(--primary, #4f46e5);
+  background: var(--primary-hover-bg, rgba(79,70,229,.06));
+}
+.my-standards-item-body {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.my-standards-filename {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 500;
 }
-.custom-standards-count {
+.my-standards-meta {
   font-size: 11.5px;
   color: var(--muted-fg);
-  white-space: nowrap;
-  flex-shrink: 0;
 }
+.my-standards-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+}
+.my-standards-empty p {
+  font-size: 13px;
+  color: var(--muted-fg);
+  margin: 0;
+}
+/* ── Shared delete button (custom-standards-delete) ──────── */
 .custom-standards-delete {
   background: none;
   border: none;
