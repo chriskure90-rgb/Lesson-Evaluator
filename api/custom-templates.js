@@ -1800,6 +1800,18 @@ async function handleRegister(req, res, authenticatedUserId) {
   }
 
   let buffer = Buffer.from(await fileData.arrayBuffer());
+
+  // Content validation: a DOCX file is a ZIP archive — magic bytes are
+  // 0x50 0x4B (ASCII "PK"). A file renamed to .docx with wrong content
+  // (PDF, plain text, .doc OLE2, etc.) is caught here before we do any
+  // processing or write a DB row. We also remove the orphan storage object
+  // so it doesn't accumulate.
+  if (buffer.length < 4 || buffer[0] !== 0x50 || buffer[1] !== 0x4B) {
+    console.log("[custom-templates:register] content validation: not a ZIP/DOCX file — removing storage object:", path);
+    await supabase.storage.from(BUCKET).remove([path]).catch(() => {});
+    return res.status(400).json({ error: "Only DOCX lesson plan templates are currently supported. Please upload a .docx file." });
+  }
+
   // Kept aside for section detection below, which always re-reads the
   // ORIGINAL uploaded file — for a PDF, `buffer` gets reassigned to the
   // synthesized docx further down, but section recognition should reflect
