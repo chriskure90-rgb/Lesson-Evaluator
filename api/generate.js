@@ -177,26 +177,43 @@ async function vectorSearchStandards({ framework, queryText, matchCount = VECTOR
   return data ?? [];
 }
 
+// Minimum number of confirmed in-band results before unknown-grade rows are
+// used as fallback. Set to 1: if even one in-band standard exists, do not
+// pad with unknown-grade chunks (they may belong to any grade).
+const MIN_IN_BAND_FOR_NO_FALLBACK = 1;
+
 // Combines the exact standard_code lookup (priority, when the teacher entered
 // a code — an explicit user selection, so it is never grade-band filtered)
 // with pgvector semantic search results from the teacher's topic, goal,
-// subject, and grade — de-duplicated and capped at VECTOR_MATCH_COUNT.
+// subject, and grade.
 //
-// Returns { chunks, totalCandidates, filteredByGrade } so callers can tell
-// whether grade enforcement actively removed results (vs. Supabase being
-// unavailable) and surface an appropriate "no in-band standard" message.
+// Tiered retrieval:
+//   Tier 1 — in-band confirmed: grade_band from DB matches, OR the row is
+//             untagged (grade_band=null) and inferGradeFromContent() returns
+//             a grade that falls within the requested band.
+//   Tier 2 — unknown-grade: grade_band=null AND inferGradeFromContent()
+//             returns null — genuinely untagged prose (front matter, callouts).
+//             Used only as fallback when Tier 1 has fewer than
+//             MIN_IN_BAND_FOR_NO_FALLBACK results.
+//   Excluded — grade_band set by DB to a different band: never reaches LLM.
+//
+// Legacy rows (uploaded before Phase 1) have grade_band=null and rely on
+// the runtime inferGradeFromContent() fallback. New rows have grade_band set
+// by the upload pipeline so they are handled entirely by the SQL filter.
+//
+// Returns { chunks, totalCandidates, filteredByGrade } so callers can surface
+// the right message when filtering leaves zero in-band results.
 async function retrieveRelevantStandards({ framework, code, topic, goal, subject, grade }) {
-  const chunks = [];
+  const exactChunks = [];
   let totalCandidates = 0;
   let filteredByGrade = 0;
 
-  // Exact code lookup is treated as an explicit user selection — it is never
-  // grade-band filtered even if the code appears to be from another band.
+  // Exact code lookup — explicit user selection, never grade-filtered.
   const trimmedCode = (code || "").trim();
   if (trimmedCode) {
     const exactContent = await lookupStandardFromSupabase(framework, trimmedCode);
     if (exactContent) {
-      chunks.push({ standard_code: trimmedCode, title: null, content: exactContent });
+      exactChunks.push({ standard_code: trimmedCode, title: null, content: exactContent });
     }
   }
 
@@ -204,10 +221,9 @@ async function retrieveRelevantStandards({ framework, code, topic, goal, subject
     const queryText = [topic, goal, subject, grade].filter(Boolean).join(" | ");
     if (!queryText) throw new Error("No teacher inputs available to embed");
 
-    // We over-fetch (VECTOR_CANDIDATE_POOL) so the application-layer grade
-    // filter and coded-first rerank below have a wide enough pool to work with
-    // even after removing out-of-band results.
-    let matches = await vectorSearchStandards({
+    // Over-fetch so the application-layer tiers have a wide enough pool after
+    // removing out-of-band rows.
+    const matches = await vectorSearchStandards({
       framework,
       queryText,
       gradeBand: grade || null,
@@ -215,66 +231,81 @@ async function retrieveRelevantStandards({ framework, code, topic, goal, subject
     });
     totalCandidates = matches.length;
 
-    // Diagnostic: log every candidate before any application filtering.
-    console.log(`[standards:grade-filter] grade_band="${grade || "none"}" framework="${framework}" — ${totalCandidates} SQL candidates`);
+    console.log(`[standards:retrieval] grade_band="${grade || "none"}" framework="${framework}" — ${totalCandidates} SQL candidates`);
+
+    const tier1 = []; // confirmed in-band
+    const tier2 = []; // unknown-grade (fallback only)
+
     for (const m of matches) {
-      console.log(
-        `[standards:grade-filter]  candidate: code=${m.standard_code ?? "(none)"}`
-        + ` db_grade_band=${m.grade_band ?? "(untagged)"}`
-        + ` similarity=${m.similarity != null ? m.similarity.toFixed(4) : "?"}`
-        + ` | ${(m.content ?? "").slice(0, 70)}`
-      );
-    }
+      const dbBand = m.grade_band;
+      const sim    = m.similarity != null ? m.similarity.toFixed(4) : "?";
+      const code   = m.standard_code ?? "(none)";
+      const head   = (m.content ?? "").slice(0, 70);
 
-    // Hard application-layer grade-band enforcement for untagged rows.
-    //
-    // The SQL match_standards() filter excludes rows tagged with a *different*
-    // band, but rows with grade_band = null pass through regardless (by design,
-    // to keep genuinely un-graded content like Common Core prose visible). For
-    // custom-uploaded state standards (NC.6.RP.1, CA.3.NF.A.1, etc.) that were
-    // stored without grade_band metadata, the standard code embedded in the
-    // content text lets us enforce the hard filter here instead.
-    if (grade && GRADE_BAND_GRADES[grade]) {
-      const before = matches.length;
-      matches = matches.filter((m) => {
-        // SQL already verified this row's grade_band matches — keep it.
-        if (m.grade_band) return true;
-        // Try to infer grade from the content text.
+      if (!grade) {
+        // No grade filter requested — all rows go to tier1.
+        tier1.push(m);
+        continue;
+      }
+
+      if (dbBand) {
+        // DB has grade_band set. SQL already enforced it matches — keep.
+        // (Out-of-band rows with a different grade_band are excluded by SQL.)
+        console.log(`[standards:retrieval]  tier1(db): code=${code} band=${dbBand} sim=${sim} | ${head}`);
+        tier1.push(m);
+      } else {
+        // grade_band = null: either a legacy custom row or genuinely untagged prose.
+        // Runtime inference is the fallback for legacy rows.
         const inferred = inferGradeFromContent(m.content);
-        // No recognizable grade code → genuinely untagged prose — keep it.
-        if (inferred === null) return true;
-        const keep = isGradeInBand(inferred, grade);
-        if (!keep) {
-          console.log(
-            `[standards:grade-filter]  EXCLUDED inferred_grade="${inferred}" outside band="${grade}"`
-            + ` (allowed: ${GRADE_BAND_GRADES[grade].join(",")})`
-            + ` | ${(m.content ?? "").slice(0, 70)}`
-          );
+        if (inferred === null) {
+          // Genuinely untagged — put in tier2 (unknown-grade fallback).
+          console.log(`[standards:retrieval]  tier2(unknown): code=${code} sim=${sim} | ${head}`);
+          tier2.push(m);
+        } else if (isGradeInBand(inferred, grade)) {
+          console.log(`[standards:retrieval]  tier1(inferred grade="${inferred}"): code=${code} sim=${sim} | ${head}`);
+          tier1.push(m);
+        } else {
+          console.log(`[standards:retrieval]  EXCLUDED(inferred grade="${inferred}" outside "${grade}"): code=${code} | ${head}`);
+          filteredByGrade++;
         }
-        return keep;
-      });
-      filteredByGrade = before - matches.length;
+      }
+    }
+
+    console.log(`[standards:retrieval] tier1=${tier1.length} tier2=${tier2.length} excluded=${filteredByGrade}`);
+
+    // Use tier2 only when tier1 is insufficient.
+    const useFallback = tier1.length < MIN_IN_BAND_FOR_NO_FALLBACK;
+    const pool = useFallback ? [...tier1, ...tier2] : tier1;
+    if (useFallback && tier2.length > 0) {
+      console.log(`[standards:retrieval] using ${tier2.length} unknown-grade fallback chunk(s) (tier1=${tier1.length} < threshold ${MIN_IN_BAND_FOR_NO_FALLBACK})`);
+    }
+
+    // Rerank within the pool: coded rows first (favours citing real standard
+    // codes over generic filler when both are similarly relevant).
+    const coded   = pool.filter((m) => m.standard_code);
+    const uncoded = pool.filter((m) => !m.standard_code);
+
+    const combined = [...exactChunks];
+    for (const match of [...coded, ...uncoded]) {
+      const isDuplicate = combined.some((c) => c.content === match.content);
+      if (!isDuplicate) combined.push(match);
+    }
+
+    const finalChunks = combined.slice(0, VECTOR_MATCH_COUNT);
+    if (finalChunks.length > 0) {
       console.log(
-        `[standards:grade-filter] after enforcement: ${before} → ${matches.length}`
-        + ` (${filteredByGrade} out-of-band removed, band="${grade}")`
+        "[standards:retrieval] FINAL:",
+        finalChunks.map((c) =>
+          `${c.standard_code ?? "(no-code)"} sim=${c.similarity != null ? c.similarity.toFixed(3) : "?"}`
+        ).join(" | ")
       );
     }
 
-    // Rerank: coded rows first within their existing similarity ordering so a
-    // real standard code is cited over generic descriptive filler when both are
-    // relevant and similarly scored.
-    const coded   = matches.filter((m) => m.standard_code);
-    const uncoded = matches.filter((m) => !m.standard_code);
-
-    for (const match of [...coded, ...uncoded]) {
-      const isDuplicate = chunks.some((c) => c.content === match.content);
-      if (!isDuplicate) chunks.push(match);
-    }
+    return { chunks: finalChunks, totalCandidates, filteredByGrade };
   } catch (err) {
     console.warn("[standards:vector] search failed, continuing with exact-match/mock fallback:", err.message);
+    return { chunks: exactChunks.slice(0, VECTOR_MATCH_COUNT), totalCandidates: 0, filteredByGrade: 0 };
   }
-
-  return { chunks: chunks.slice(0, VECTOR_MATCH_COUNT), totalCandidates, filteredByGrade };
 }
 
 // Formats retrieved standards chunks for the RELEVANT STANDARDS prompt section.

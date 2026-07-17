@@ -4,6 +4,10 @@ import { supabase }         from "../server-lib/supabase.js";
 import { splitIntoChunks }  from "../server-lib/chunk-text.js";
 import { embedBatch }       from "../server-lib/embeddings.js";
 import { ensurePdfEnvironmentReady } from "../server-lib/pdf-node-setup.js";
+import {
+  scanDocumentContext,
+  extractChunkMetadata,
+} from "../server-lib/standards-metadata.js";
 
 const BUCKET          = "standards-uploads";
 const EMBED_BATCH_SIZE = 20;
@@ -80,14 +84,39 @@ async function processUpload({ path, filename, res }) {
     return res.status(400).json({ error: "No extractable text found in the document." });
   }
 
-  const chunks = splitIntoChunks(text.replace(/\s+/g, " ").trim())
-    .filter((c) => c.length >= 20);
-
-  const total = chunks.length;
+  const normalizedText = text.replace(/\s+/g, " ").trim();
+  const chunks = splitIntoChunks(normalizedText).filter((c) => c.length >= 20);
+  const total  = chunks.length;
 
   if (total === 0) {
     return res.status(400).json({ error: "Document produced no usable text chunks." });
   }
+
+  // ── Document-level context scan ───────────────────────────────────────────
+  // Reads the first portion of extracted text to establish grade/subject
+  // defaults that individual chunks inherit when their own metadata is absent.
+  const documentContext = scanDocumentContext(normalizedText);
+  console.log("[upload-standards-process] document context:", documentContext);
+
+  // ── Per-chunk metadata extraction ─────────────────────────────────────────
+  // Extract grade_level, grade_band, subject, standard_code for each chunk
+  // BEFORE embedding so the metadata is persisted at insert time.
+  const chunkMeta = chunks.map((content, i) =>
+    extractChunkMetadata(content, {
+      prevContent: i > 0 ? chunks[i - 1] : "",
+      documentContext,
+    })
+  );
+
+  // Diagnostic summary
+  const unknownCount = chunkMeta.filter((m) => m.extraction_source === "unknown").length;
+  const bySource = {};
+  for (const m of chunkMeta) bySource[m.extraction_source] = (bySource[m.extraction_source] ?? 0) + 1;
+  console.log(
+    `[upload-standards-process] ${total} chunks — extraction breakdown:`,
+    bySource,
+    `| unknown-grade: ${unknownCount}/${total}`
+  );
 
   // ── Dedupe against existing teacher-uploaded content ─────────────────────
   const { data: existingRows, error: fetchError } = await supabase
@@ -108,11 +137,17 @@ async function processUpload({ path, filename, res }) {
   let failed   = 0;
 
   for (let i = 0; i < chunks.length; i += EMBED_BATCH_SIZE) {
-    const batch   = chunks.slice(i, i + EMBED_BATCH_SIZE);
-    const toEmbed = batch.filter((c) => !existingContent.has(c));
-    skipped += batch.length - toEmbed.length;
-    if (toEmbed.length === 0) continue;
+    const batchSlice   = chunks.slice(i, i + EMBED_BATCH_SIZE);
+    const batchMeta    = chunkMeta.slice(i, i + EMBED_BATCH_SIZE);
+    const newIndices   = batchSlice.reduce((acc, c, j) => {
+      if (!existingContent.has(c)) acc.push(j);
+      return acc;
+    }, []);
 
+    skipped += batchSlice.length - newIndices.length;
+    if (newIndices.length === 0) continue;
+
+    const toEmbed = newIndices.map((j) => batchSlice[j]);
     let vectors;
     try {
       vectors = await embedBatch(toEmbed);
@@ -122,15 +157,30 @@ async function processUpload({ path, filename, res }) {
       continue;
     }
 
-    for (let j = 0; j < toEmbed.length; j++) {
-      const content = toEmbed[j];
+    for (let k = 0; k < newIndices.length; k++) {
+      const j       = newIndices[k];
+      const content = batchSlice[j];
+      const meta    = batchMeta[j];
+
+      console.log(
+        `[upload-standards-process] chunk ${i + j + 1}/${total}`,
+        `code=${meta.standard_code ?? "(none)"}`,
+        `grade=${meta.grade_level ?? "?"}`,
+        `band=${meta.grade_band ?? "?"}`,
+        `subject=${meta.subject ?? "?"}`,
+        `source=${meta.extraction_source}`
+      );
+
       const { error: insertError } = await supabase.from("standards").insert({
         framework:     "Custom",
-        standard_code: null,
+        standard_code: meta.standard_code ?? null,
         title:         filename || null,
+        grade_level:   meta.grade_level  ?? null,
+        grade_band:    meta.grade_band   ?? null,
+        subject:       meta.subject      ?? null,
         content,
         source:        "teacher_upload",
-        embedding:     vectors[j],
+        embedding:     vectors[k],
       });
 
       if (insertError) {
@@ -143,5 +193,5 @@ async function processUpload({ path, filename, res }) {
     }
   }
 
-  return res.status(200).json({ total, embedded, skipped, failed });
+  return res.status(200).json({ total, embedded, skipped, failed, unknownGrade: unknownCount });
 }
