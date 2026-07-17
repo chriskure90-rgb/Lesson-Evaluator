@@ -102,6 +102,51 @@ async function lookupStandardFromSupabase(framework, code) {
   return null;
 }
 
+// ── Grade-band enforcement helpers ────────────────────────────────────────────
+// The SQL match_standards() filter is a soft guard: rows with grade_band = null
+// (Custom uploads, un-coded chunks) pass through regardless of what grade band
+// the teacher selected. These helpers apply a hard application-layer filter
+// after SQL retrieval by inferring the grade from the standard code text
+// embedded in the content field.
+
+// Maps the grade-band strings used by the Generator form to the set of
+// individual grade tokens that fall within that band.
+const GRADE_BAND_GRADES = {
+  "K":    ["K"],
+  "1-2":  ["1", "2"],
+  "3-5":  ["3", "4", "5"],
+  "6-8":  ["6", "7", "8"],
+  "9-12": ["9", "10", "11", "12"],
+};
+
+// Attempts to extract a grade token ("6", "K", "3", etc.) from the beginning
+// of a content chunk where standard codes appear.
+// Covers:
+//   State patterns: NC.6.RP.1 · CA.3.NF.A.1 · MA.K.OA.1
+//   CCSS:           CCSS.MATH.CONTENT.6.RP.A.1 · CCSS.ELA-LITERACY.RI.6.1
+// Returns null when no recognizable grade code is found (genuinely untagged
+// prose, front matter, "Connections to..." callouts — these should pass through).
+function inferGradeFromContent(content) {
+  if (!content) return null;
+  const head = content.slice(0, 120);
+  // State standard: 2-4 uppercase letters · grade (digit or K) · uppercase letter
+  const stateMatch = head.match(/\b[A-Z]{2,4}\.([K\d]+)\.[A-Z]/);
+  if (stateMatch) return stateMatch[1];
+  // CCSS: CCSS.DOMAIN.SUBDOMAIN.grade.  e.g. CCSS.MATH.CONTENT.6 | CCSS.ELA-LITERACY.RI.6
+  const ccssMatch = head.match(/\bCCSS\.[A-Z.+-]+\.([K\d]+)\./);
+  if (ccssMatch) return ccssMatch[1];
+  return null;
+}
+
+// Returns true when a grade token (e.g. "6", "K") falls within a grade band
+// (e.g. "3-5"). Returns true for unknown bands so the filter is never more
+// restrictive than intended.
+function isGradeInBand(gradeToken, gradeBand) {
+  const allowed = GRADE_BAND_GRADES[gradeBand];
+  if (!allowed) return true;
+  return allowed.includes(gradeToken === "K" ? "K" : String(parseInt(gradeToken, 10)));
+}
+
 // ── Vector (pgvector) standards retrieval ─────────────────────────────────────
 // Embeds the teacher's inputs and finds the most semantically relevant
 // standards chunks for the selected framework via the `match_standards`
@@ -136,11 +181,17 @@ async function vectorSearchStandards({ framework, queryText, matchCount = VECTOR
 // a code — an explicit user selection, so it is never grade-band filtered)
 // with pgvector semantic search results from the teacher's topic, goal,
 // subject, and grade — de-duplicated and capped at VECTOR_MATCH_COUNT.
-// Returns [] (never throws) so callers can fall back to the existing mock
-// behaviour when both Supabase and the vector search are unavailable.
+//
+// Returns { chunks, totalCandidates, filteredByGrade } so callers can tell
+// whether grade enforcement actively removed results (vs. Supabase being
+// unavailable) and surface an appropriate "no in-band standard" message.
 async function retrieveRelevantStandards({ framework, code, topic, goal, subject, grade }) {
   const chunks = [];
+  let totalCandidates = 0;
+  let filteredByGrade = 0;
 
+  // Exact code lookup is treated as an explicit user selection — it is never
+  // grade-band filtered even if the code appears to be from another band.
   const trimmedCode = (code || "").trim();
   if (trimmedCode) {
     const exactContent = await lookupStandardFromSupabase(framework, trimmedCode);
@@ -153,30 +204,65 @@ async function retrieveRelevantStandards({ framework, code, topic, goal, subject
     const queryText = [topic, goal, subject, grade].filter(Boolean).join(" | ");
     if (!queryText) throw new Error("No teacher inputs available to embed");
 
-    // `grade` on the Generator form is already a grade band ("K", "1-2",
-    // "3-5", "6-8", "9-12"), matching standards.grade_band exactly — no
-    // extra mapping needed. match_standards() treats it as a soft filter:
-    // rows tagged with a *different* band are excluded, but untagged rows
-    // (Common Core, Custom uploads, un-coded NGSS chunks) are unaffected.
-    //
-    // We deliberately over-fetch (VECTOR_CANDIDATE_POOL) and then rerank in
-    // application code, rather than asking match_standards() for exactly
-    // VECTOR_MATCH_COUNT: within the already-band-filtered candidate set,
-    // generic untagged filler text (front matter, "Connections to..."
-    // callouts) can outrank an actual grade-specific performance expectation
-    // on pure cosine similarity. Reordering coded rows first — while keeping
-    // each group's own similarity ordering intact — favors citing a real
-    // standard over descriptive filler whenever both are relevant, without
-    // touching the grade-band filter itself (which still runs in SQL, so a
-    // wrong-band row is never a candidate here to begin with).
-    const matches = await vectorSearchStandards({
+    // We over-fetch (VECTOR_CANDIDATE_POOL) so the application-layer grade
+    // filter and coded-first rerank below have a wide enough pool to work with
+    // even after removing out-of-band results.
+    let matches = await vectorSearchStandards({
       framework,
       queryText,
       gradeBand: grade || null,
       matchCount: VECTOR_CANDIDATE_POOL,
     });
-    console.log("[standards:vector] retrieved", matches.length, "vector matches for framework:", framework, "grade band:", grade || "(none)");
+    totalCandidates = matches.length;
 
+    // Diagnostic: log every candidate before any application filtering.
+    console.log(`[standards:grade-filter] grade_band="${grade || "none"}" framework="${framework}" — ${totalCandidates} SQL candidates`);
+    for (const m of matches) {
+      console.log(
+        `[standards:grade-filter]  candidate: code=${m.standard_code ?? "(none)"}`
+        + ` db_grade_band=${m.grade_band ?? "(untagged)"}`
+        + ` similarity=${m.similarity != null ? m.similarity.toFixed(4) : "?"}`
+        + ` | ${(m.content ?? "").slice(0, 70)}`
+      );
+    }
+
+    // Hard application-layer grade-band enforcement for untagged rows.
+    //
+    // The SQL match_standards() filter excludes rows tagged with a *different*
+    // band, but rows with grade_band = null pass through regardless (by design,
+    // to keep genuinely un-graded content like Common Core prose visible). For
+    // custom-uploaded state standards (NC.6.RP.1, CA.3.NF.A.1, etc.) that were
+    // stored without grade_band metadata, the standard code embedded in the
+    // content text lets us enforce the hard filter here instead.
+    if (grade && GRADE_BAND_GRADES[grade]) {
+      const before = matches.length;
+      matches = matches.filter((m) => {
+        // SQL already verified this row's grade_band matches — keep it.
+        if (m.grade_band) return true;
+        // Try to infer grade from the content text.
+        const inferred = inferGradeFromContent(m.content);
+        // No recognizable grade code → genuinely untagged prose — keep it.
+        if (inferred === null) return true;
+        const keep = isGradeInBand(inferred, grade);
+        if (!keep) {
+          console.log(
+            `[standards:grade-filter]  EXCLUDED inferred_grade="${inferred}" outside band="${grade}"`
+            + ` (allowed: ${GRADE_BAND_GRADES[grade].join(",")})`
+            + ` | ${(m.content ?? "").slice(0, 70)}`
+          );
+        }
+        return keep;
+      });
+      filteredByGrade = before - matches.length;
+      console.log(
+        `[standards:grade-filter] after enforcement: ${before} → ${matches.length}`
+        + ` (${filteredByGrade} out-of-band removed, band="${grade}")`
+      );
+    }
+
+    // Rerank: coded rows first within their existing similarity ordering so a
+    // real standard code is cited over generic descriptive filler when both are
+    // relevant and similarly scored.
     const coded   = matches.filter((m) => m.standard_code);
     const uncoded = matches.filter((m) => !m.standard_code);
 
@@ -188,7 +274,7 @@ async function retrieveRelevantStandards({ framework, code, topic, goal, subject
     console.warn("[standards:vector] search failed, continuing with exact-match/mock fallback:", err.message);
   }
 
-  return chunks.slice(0, VECTOR_MATCH_COUNT);
+  return { chunks: chunks.slice(0, VECTOR_MATCH_COUNT), totalCandidates, filteredByGrade };
 }
 
 // Formats retrieved standards chunks for the RELEVANT STANDARDS prompt section.
@@ -829,11 +915,38 @@ export default async function handler(req, res) {
     // semantic search over the teacher's inputs, falling back to the mock
     // standards map when neither is available.
     const primaryFramework = Array.isArray(frameworks) ? frameworks[0] : frameworks;
-    const relevantChunks = await retrieveRelevantStandards({ framework: primaryFramework, code, topic, goal, subject, grade });
-    const standardDescription = relevantChunks.length > 0
-      ? formatStandardsBlock(relevantChunks)
-      : lookupStandard(frameworks, code);
-    console.log("[standards:diag] final source:", relevantChunks.length > 0 ? `RETRIEVED (${relevantChunks.length} chunks)` : "MOCK");
+    const { chunks: relevantChunks, totalCandidates, filteredByGrade } =
+      await retrieveRelevantStandards({ framework: primaryFramework, code, topic, goal, subject, grade });
+
+    let standardDescription;
+    if (relevantChunks.length > 0) {
+      standardDescription = formatStandardsBlock(relevantChunks);
+      console.log(
+        "[standards:grade-filter] FINAL retrieved:",
+        relevantChunks.map((c) =>
+          `${c.standard_code ?? "(no-code)"} sim=${c.similarity != null ? c.similarity.toFixed(3) : "?"}`
+        ).join(" | ")
+      );
+    } else if (filteredByGrade > 0) {
+      // Had vector candidates but every one was outside the selected grade band.
+      // Return a clear message rather than silently using a wrong-grade standard.
+      const bandLabel = grade ? `grade band ${grade}` : "the selected grade";
+      standardDescription =
+        `No ${primaryFramework || "custom"} standards matching ${bandLabel} were found for this topic. `
+        + `Design the lesson using grade-appropriate content and skills for ${grade || "this grade"} without citing a specific standard code.`;
+      console.log(`[standards:grade-filter] all ${filteredByGrade} candidate(s) excluded by grade enforcement — returning no-in-band-standard message`);
+    } else {
+      standardDescription = lookupStandard(frameworks, code);
+    }
+
+    console.log(
+      "[standards:diag] final source:",
+      relevantChunks.length > 0
+        ? `RETRIEVED (${relevantChunks.length} chunks, ${totalCandidates} candidates, ${filteredByGrade} filtered)`
+        : filteredByGrade > 0
+        ? `GRADE-FILTERED (${filteredByGrade}/${totalCandidates} out-of-band — no in-band match)`
+        : "MOCK"
+    );
     console.log("[standards:diag] standardDescription (first 120 chars):", standardDescription?.slice(0, 120));
 
     // Build the prompt here — providers receive the finished prompt string,
