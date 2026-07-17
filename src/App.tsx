@@ -1336,33 +1336,24 @@ function ReproducedTemplatePreview({
     if (isEditingContent && resolved?.editable) {
       const draftValue = draftById?.get(region.id)?.content ?? "";
       return (
-        <div>
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>{region.contextLabel || region.text || "(field)"}</div>
-          <textarea
-            className="textarea"
-            rows={4}
-            value={draftValue}
-            onChange={(e) => onSectionContentChange?.(region.id, e.target.value)}
-            style={{ width: "100%" }}
-          />
-        </div>
+        <textarea
+          className="textarea"
+          rows={4}
+          value={draftValue}
+          onChange={(e) => onSectionContentChange?.(region.id, e.target.value)}
+          style={{ width: "100%" }}
+        />
       );
     }
     return (
-      <div>
-        <div style={{ fontWeight: 600 }}>{region.contextLabel || region.text || "(field)"}</div>
-        {resolved && (
-          <div
-            style={{
-              marginTop: 2,
-              whiteSpace: "pre-wrap",
-              color: resolved.text ? "var(--foreground)" : "var(--muted-fg)",
-              fontStyle: resolved.text ? "normal" : "italic",
-            }}
-          >
-            {resolved.text || resolved.placeholder}
-          </div>
-        )}
+      <div
+        style={{
+          whiteSpace: "pre-wrap",
+          color: resolved?.text ? "var(--foreground)" : "var(--muted-fg)",
+          fontStyle: resolved?.text ? "normal" : "italic",
+        }}
+      >
+        {resolved ? (resolved.text || resolved.placeholder) : null}
       </div>
     );
   }
