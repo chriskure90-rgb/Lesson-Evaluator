@@ -542,13 +542,25 @@ function buildEvaluationExportDocument(
   return { title: title || "Lesson Evaluation", meta, sections: exportSections };
 }
 
+// The three lesson-generation output shapes that the evaluator understands.
+// This is the single source of truth for "which format was most recently
+// generated" — App tracks it alongside the three sibling lesson-state slots
+// (sharedLesson/sharedTemplate1Lesson/sharedDynamicLessonPlan) so
+// EvaluatorPage.handleEvaluate can switch on it explicitly instead of
+// inferring the active format from which lesson state happens to be
+// non-null (see handleStandardLessonGenerated/handleTemplate1LessonGenerated/
+// handleDynamicLessonGenerated in App).
+type GeneratedLessonFormat = "standard" | "template1" | "dynamic";
+
 // templateType tells the backend which field names to read when building the
 // evaluation prompt ("standard" reads title/objectives/activities/etc.,
 // "template1" reads centralFocus/lessonObjectives/introduction.teacherActions/
 // etc., "dynamic" reads a flat sections[] array keyed by regionId — see
 // buildEvaluationPrompt in api/evaluate.js). lessonData is passed through
 // as-is either way; it is never converted between formats.
-async function evaluateLessonData(lessonData: Lesson | Template1Lesson | DynamicLessonPlan, templateType: "standard" | "template1" | "dynamic"): Promise<EvaluationResult> {
+async function evaluateLessonData(lessonData: Lesson | Template1Lesson | DynamicLessonPlan, templateType: GeneratedLessonFormat): Promise<EvaluationResult> {
+  // TRACE-4/5: lesson object + templateType actually sent to /api/evaluate.
+  console.log("[TRACE-4-5 evaluate-request-payload]", { templateType, lessonData });
   const res = await fetch("/api/evaluate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2168,6 +2180,15 @@ function GeneratorPage({
   }
 
   async function handleGenerate() {
+    // TRACE-1: selected template before generation.
+    console.log("[TRACE-1 selected-template-before-generation]", {
+      lessonFormat,
+      selectedCustomTemplateId,
+      priorSharedState: {
+        hadLesson: Boolean(sharedLesson),
+        hadTemplate1Lesson: Boolean(sharedTemplate1Lesson),
+      },
+    });
     // "custom" reuses the identical Template1 generation branch below — a
     // custom template is only a different DOCX export skin over the same
     // Template1Lesson content, never its own generation schema.
@@ -2231,6 +2252,9 @@ function GeneratorPage({
         setPreviewOwnerTemplateId(selectedCustomTemplate.id);
         onDynamicLessonGenerated?.(plan);   // share with the Evaluator
         onCustomTemplateSelected(selectedCustomTemplate.id);
+        // TRACE-2/3: templateType after generation + generated lesson object.
+        console.log("[TRACE-2 templateType-after-generation]", { branch: "dynamic", generatedFormat: "dynamic", customTemplateId: selectedCustomTemplate.id });
+        console.log("[TRACE-3 generated-lesson-object]", { branch: "dynamic", plan });
         onLessonMetaGenerated?.({ model, grade, subject, standards: resolvedFrameworks().join(", "), duration });
 
         const { data: savedDynamicLesson, error: dynamicSaveError } = await supabase
@@ -2300,6 +2324,9 @@ function GeneratorPage({
         setPreviewOwnerTemplateId(isCustom ? selectedCustomTemplate?.id ?? null : null);
         onTemplate1LessonGenerated(result);   // share with the Evaluator
         onCustomTemplateSelected(isCustom ? selectedCustomTemplateId : null);
+        // TRACE-2/3: templateType after generation + generated lesson object.
+        console.log("[TRACE-2 templateType-after-generation]", { branch: isCustom ? "custom" : "template1", generatedFormat: isCustom ? "custom" : "template1", customTemplateId: isCustom ? selectedCustomTemplateId : null });
+        console.log("[TRACE-3 generated-lesson-object]", { branch: isCustom ? "custom" : "template1", result });
         onLessonMetaGenerated?.({ model, grade, subject, standards: resolvedFrameworks().join(", "), duration });
 
         const insertPayload = {
@@ -2354,6 +2381,15 @@ function GeneratorPage({
       setGeneratedFormat("standard");
       onLessonGenerated(result);   // share with the Evaluator
       onCustomTemplateSelected(null); // clear any stale custom-template linkage
+      // TRACE-2/3: templateType after generation + generated lesson object.
+      console.log("[TRACE-2 templateType-after-generation]", { branch: "standard", generatedFormat: "standard" });
+      console.log("[TRACE-3 generated-lesson-object]", { branch: "standard", result });
+      // TRACE: sibling shared-state slots that this branch does NOT clear —
+      // if either is still non-null here, it is stale leftover from an
+      // earlier generation in a different format.
+      console.log("[TRACE-3b stale-sibling-state-check]", {
+        staleSharedTemplate1Lesson: sharedTemplate1Lesson,
+      });
       onLessonMetaGenerated?.({ model, grade, subject, standards: resolvedFrameworks().join(", "), duration });
 
       // ── Supabase save ──────────────────────────────────────────────────
@@ -3662,6 +3698,7 @@ function EvaluatorPage({
   lesson,
   template1Lesson,
   dynamicLessonPlan,
+  generatedFormat,
   customTemplateId,
   lessonId,
   userId,
@@ -3676,6 +3713,13 @@ function EvaluatorPage({
   // onDynamicLessonGenerated). Reproduces the uploaded template's structure
   // via ReproducedTemplatePreview instead of the generic Template1 view.
   dynamicLessonPlan?: DynamicLessonPlan | null;
+  // Single source of truth for which of lesson/template1Lesson/
+  // dynamicLessonPlan is the one actually just generated (see App's
+  // sharedGeneratedFormat and handleStandardLessonGenerated/
+  // handleTemplate1LessonGenerated/handleDynamicLessonGenerated) — the ONLY
+  // thing handleEvaluate below switches on. Never inferred from which lesson
+  // state happens to be non-null.
+  generatedFormat: GeneratedLessonFormat | null;
   // Present only when the shared Template1Lesson was generated against a
   // custom template (see App's sharedCustomTemplateId, set from
   // GeneratorPage's onCustomTemplateSelected). Null for plain Template 1.
@@ -3856,28 +3900,88 @@ function EvaluatorPage({
   // the same ?? chain as displayLesson.
   const displayTitle = template1Lesson?.lessonTitle || (displayLesson as typeof LESSON_META).title;
 
+  // Request-identity guard: incremented at the START of every handleEvaluate
+  // call (automatic or manual). Each call captures its own id before
+  // awaiting; when its network round-trip finishes, it's only allowed to
+  // touch evalResult/evalError/evaluating if its captured id still matches
+  // evaluationRequestIdRef.current — i.e. it's still the latest call. This is
+  // what actually prevents an out-of-order response from winning; it does
+  // NOT depend on `evaluating` (which both StrictMode double-invocations see
+  // as false from the same stale render, so it can't be the guard itself).
+  const evaluationRequestIdRef = useRef(0);
+
   async function handleEvaluate() {
+    const requestId = ++evaluationRequestIdRef.current;
     setEvaluating(true);
     setEvalError(null);
+    // TRACE: explicit branch decision, driven ONLY by generatedFormat (the
+    // single source of truth for which format was last generated) — not by
+    // which lesson state happens to be non-null. Logged so a non-null state
+    // that ISN'T the active generatedFormat is visibly flagged as stale.
+    console.log("[TRACE-evaluate-branch-decision]", {
+      requestId,
+      generatedFormat,
+      hasDynamicLessonPlan: Boolean(dynamicLessonPlan),
+      hasTemplate1Lesson: Boolean(template1Lesson),
+      hasLesson: Boolean(lesson),
+    });
     try {
-      const result = dynamicLessonPlan
-        ? await evaluateLessonData(dynamicLessonPlan, "dynamic")
-        : template1Lesson
-        ? await evaluateLessonData(template1Lesson, "template1")
-        : await evaluateLessonData(displayLesson as Lesson, "standard");
+      let result: EvaluationResult;
+      if (generatedFormat === "dynamic" && dynamicLessonPlan) {
+        result = await evaluateLessonData(dynamicLessonPlan, "dynamic");
+      } else if (generatedFormat === "template1" && template1Lesson) {
+        result = await evaluateLessonData(template1Lesson, "template1");
+      } else if (generatedFormat === "standard" && lesson) {
+        result = await evaluateLessonData(lesson, "standard");
+      } else {
+        // No generation has happened yet this session (e.g. a bare visit to
+        // the Evaluator page) — falls back to the demo placeholder, matching
+        // prior behavior for that case.
+        if (generatedFormat) {
+          console.warn("[EvaluatorPage] generatedFormat set but its lesson state is missing — falling back to standard/demo.", { generatedFormat });
+        }
+        result = await evaluateLessonData(displayLesson as Lesson, "standard");
+      }
+      if (requestId !== evaluationRequestIdRef.current) {
+        // A newer handleEvaluate call has since started (StrictMode's second
+        // mount-effect invocation, or a manual re-evaluate) — this response
+        // arrived late and must not overwrite the newer one in flight.
+        console.log("[TRACE-evaluate-superseded]", { requestId, latestRequestId: evaluationRequestIdRef.current });
+        return;
+      }
+      // TRACE-10: evaluation state rendered in the UI.
+      console.log("[TRACE-10 evaluation-state-rendered]", { requestId, result });
       setEvalResult(result);
     } catch (err) {
+      if (requestId !== evaluationRequestIdRef.current) {
+        console.log("[TRACE-evaluate-superseded-error]", { requestId, latestRequestId: evaluationRequestIdRef.current });
+        return;
+      }
       setEvalError(err instanceof Error ? err.message : "Evaluation failed. Please try again.");
     } finally {
-      setEvaluating(false);
+      // Only the currently-active request may clear the spinner — a
+      // superseded request finishing (success or failure) must not flip
+      // `evaluating` back to false while the newer request is still in flight.
+      if (requestId === evaluationRequestIdRef.current) {
+        setEvaluating(false);
+      }
     }
   }
 
   const [showLesson, setShowLesson] = useState(false);
 
+  // Guards against React StrictMode's dev-only double-invocation of mount
+  // effects: both invocations run synchronously against the SAME render's
+  // closure (autoEvaluate/generatedFormat/evaluating/evalResult all read the
+  // same stale values), so `evaluating`/`evalResult` alone can't tell the
+  // second invocation "already started" — only a ref survives that replay.
+  const autoEvaluateStartedRef = useRef(false);
+
   // When arriving via the "Evaluate Lesson" button, start AI evaluation immediately
   useEffect(() => {
-    if (autoEvaluate && (lesson || template1Lesson || dynamicLessonPlan) && !evaluating && !evalResult) {
+    if (autoEvaluateStartedRef.current) return;
+    if (autoEvaluate && generatedFormat && !evaluating && !evalResult) {
+      autoEvaluateStartedRef.current = true;
       handleEvaluate();
       onAutoEvaluateDone?.();
     }
@@ -6191,6 +6295,13 @@ export default function App() {
   const [sharedLesson, setSharedLesson] = useState<Lesson | null>(null);
   const [sharedTemplate1Lesson, setSharedTemplate1Lesson] = useState<Template1Lesson | null>(null);
   const [sharedDynamicLessonPlan, setSharedDynamicLessonPlan] = useState<DynamicLessonPlan | null>(null);
+  // Single source of truth for "which format was most recently generated" —
+  // EvaluatorPage.handleEvaluate switches on this explicitly rather than
+  // inferring the active format from which of the three lesson states above
+  // happens to be non-null. Set (and the sibling lesson states cleared) only
+  // by the three handleXGenerated functions below, and only after a
+  // generation call actually succeeds.
+  const [sharedGeneratedFormat, setSharedGeneratedFormat] = useState<GeneratedLessonFormat | null>(null);
   const [sharedCustomTemplateId, setSharedCustomTemplateId] = useState<string | null>(null);
   const [sharedLessonMeta, setSharedLessonMeta] = useState<LessonMeta | null>(null);
   const [generatedLessonId, setGeneratedLessonId] = useState<number | null>(null);
@@ -6272,12 +6383,39 @@ export default function App() {
   async function handleLogout() {
     setSharedLesson(null);
     setSharedTemplate1Lesson(null);
+    setSharedDynamicLessonPlan(null);
+    setSharedGeneratedFormat(null);
     setSharedCustomTemplateId(null);
     setSharedLessonMeta(null);
     setGeneratedLessonId(null);
     setAutoEvaluate(false);
     setProfile(null);
     await supabase.auth.signOut();
+  }
+
+  // ── Single source of truth for "which format was most recently generated" ──
+  // Each of these is the ONLY place a sibling lesson-state slot gets cleared,
+  // and each only runs after GeneratorPage's corresponding generation call
+  // has already succeeded (see handleGenerate) — never eagerly on template
+  // selection, so an in-progress generation never wipes out the last valid
+  // result if it fails partway through.
+  function handleStandardLessonGenerated(l: Lesson) {
+    setSharedLesson(l);
+    setSharedTemplate1Lesson(null);
+    setSharedDynamicLessonPlan(null);
+    setSharedGeneratedFormat("standard");
+  }
+  function handleTemplate1LessonGenerated(l: Template1Lesson) {
+    setSharedTemplate1Lesson(l);
+    setSharedLesson(null);
+    setSharedDynamicLessonPlan(null);
+    setSharedGeneratedFormat("template1");
+  }
+  function handleDynamicLessonGenerated(plan: DynamicLessonPlan) {
+    setSharedDynamicLessonPlan(plan);
+    setSharedLesson(null);
+    setSharedTemplate1Lesson(null);
+    setSharedGeneratedFormat("dynamic");
   }
 
   if (!authChecked) return (
@@ -6300,21 +6438,32 @@ export default function App() {
                   sharedLesson={sharedLesson}
                   sharedTemplate1Lesson={sharedTemplate1Lesson}
                   sharedCustomTemplateId={sharedCustomTemplateId}
-                  onLessonGenerated={setSharedLesson}
-                  onTemplate1LessonGenerated={setSharedTemplate1Lesson}
+                  onLessonGenerated={handleStandardLessonGenerated}
+                  onTemplate1LessonGenerated={handleTemplate1LessonGenerated}
                   onCustomTemplateSelected={setSharedCustomTemplateId}
                   onLessonSaved={setGeneratedLessonId}
                   onLessonMetaGenerated={setSharedLessonMeta}
-                  onDynamicLessonGenerated={setSharedDynamicLessonPlan}
+                  onDynamicLessonGenerated={handleDynamicLessonGenerated}
                   onEvaluateLesson={() => { setAutoEvaluate(true); setPage("evaluator"); }}
                   lessonId={generatedLessonId}
                   userId={user!.id}
                 />
               : page === "evaluator"
               ? <EvaluatorPage
+                  // Forces a full remount (fresh evalResult/teacherOverrides/
+                  // save-state) whenever a new lesson is generated — even a
+                  // regeneration in the SAME format — or the selected
+                  // template changes, so a previous evaluation can never be
+                  // shown against a different lesson. React's own
+                  // recommended reset-on-identity-change pattern (see
+                  // https://react.dev/learn/you-might-not-need-an-effect) —
+                  // avoids an effect that would just re-derive this same
+                  // reset from these same three values.
+                  key={`${sharedGeneratedFormat ?? "none"}:${sharedCustomTemplateId ?? "none"}:${generatedLessonId ?? "none"}`}
                   lesson={sharedLesson}
                   template1Lesson={sharedTemplate1Lesson}
                   dynamicLessonPlan={sharedDynamicLessonPlan}
+                  generatedFormat={sharedGeneratedFormat}
                   customTemplateId={sharedCustomTemplateId}
                   lessonId={generatedLessonId}
                   userId={user!.id}

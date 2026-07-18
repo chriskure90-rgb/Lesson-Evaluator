@@ -138,6 +138,16 @@ function buildEvaluationPrompt(lesson, templateType) {
   const fieldGuide = templateType === "template1" ? TEMPLATE1_FIELD_GUIDE
     : templateType === "dynamic" ? DYNAMIC_FIELD_GUIDE
     : "";
+  // TRACE-7: fieldGuide selected by buildEvaluationPrompt(), and whether the
+  // lesson shape actually looks like what that fieldGuide expects.
+  console.log("[TRACE-7 field-guide-selection]", {
+    templateType,
+    fieldGuideUsed: templateType === "template1" ? "TEMPLATE1_FIELD_GUIDE" : templateType === "dynamic" ? "DYNAMIC_FIELD_GUIDE" : "none(standard)",
+    lessonTopLevelKeys: lesson && typeof lesson === "object" ? Object.keys(lesson) : lesson,
+    lessonLooksLikeDynamic: Array.isArray(lesson?.sections),
+    lessonLooksLikeTemplate1: Boolean(lesson?.centralFocus || lesson?.lessonTitle),
+    lessonLooksLikeStandard: Boolean(lesson?.title && lesson?.activities),
+  });
 
   // Build one criteria block per rubric item
   const criteriaBlocks = RUBRIC_CRITERIA.map((c) =>
@@ -216,6 +226,8 @@ function buildEvaluationPrompt(lesson, templateType) {
 export default async function handler(req, res) {
   try {
     const { lesson, templateType } = req.body;
+    // TRACE-6: req.body actually received by api/evaluate.js.
+    console.log("[TRACE-6 req-body-received]", { templateType, lesson });
 
     if (!lesson) {
       return res.status(400).json({ error: "No lesson provided for evaluation." });
@@ -226,6 +238,8 @@ export default async function handler(req, res) {
     console.debug("[Evaluate] template type:", templateType);
     console.debug("[Evaluate] lesson title:", templateType === "template1" ? lesson.lessonTitle : lesson.title);
     console.debug("[Evaluate] prompt:", prompt);
+    // TRACE-8: full LESSON PLAN JSON included in the evaluation prompt.
+    console.log("[TRACE-8 lesson-json-in-prompt]", JSON.stringify(lesson, null, 2));
 
     // Mistral is the evaluation provider for this prototype
     const evaluation = await evaluateLessonWithMistral(prompt);

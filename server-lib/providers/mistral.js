@@ -38,5 +38,7 @@ export async function generateLessonWithMistral(prompt) {
 export async function evaluateLessonWithMistral(prompt) {
   const parsed = await callMistral(prompt);
   console.debug("[Mistral] evaluation response parsed:", JSON.stringify(parsed, null, 2));
+  // TRACE-9: raw Mistral evaluation response.
+  console.log("[TRACE-9 raw-mistral-response]", JSON.stringify(parsed, null, 2));
   return parsed;
 }
