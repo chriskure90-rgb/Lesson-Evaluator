@@ -743,6 +743,15 @@ export type DynamicLessonSection = {
   id: string;
   originalLabel: string;
   content: string;
+  // "manual" = a target: "manual_entry" region (teacher-specific planning
+  // content the LLM was never asked to generate for — see
+  // TEACHER_PLANNING_FIELD_PHRASES in api/custom-templates.js); starts with
+  // content: "" and is filled in by the teacher directly in the preview.
+  // Omitted/undefined = AI-generated (every section before this field
+  // existed, and everything generation actually produces, is this case) —
+  // so a lesson saved before this field existed still loads and renders
+  // exactly as before with no migration needed.
+  origin?: "manual";
 };
 
 export type DynamicLessonPlan = {
@@ -773,7 +782,7 @@ export function toDynamicLessonPlanFromFieldMap(
   fieldMap: TemplateFieldMap
 ): DynamicLessonPlan {
   const regionById = new Map(fieldMap.regions.map((r) => [r.id, r]));
-  const sections = fieldMap.mappings
+  const generatedSections = fieldMap.mappings
     .filter((m) => {
       if (m.target === "leave_blank" || m.target === "manual_entry" || m.target === "fixed_original_text") return false;
       if (METADATA_SOURCED_TARGETS.has(m.target)) return false;
@@ -792,5 +801,26 @@ export function toDynamicLessonPlanFromFieldMap(
         content: typeof value === "string" ? value : "",
       };
     });
-  return { sections };
+  // manual_entry regions were never sent to (or asked of) the LLM, so
+  // there's no rawResponse value to read for them — they still need a
+  // section entry (content: "") so the same edit/save/export/reload path
+  // generated sections already go through also works for these, from the
+  // moment the plan is first created. See ReproducedTemplatePreview's
+  // valueForRegion in src/App.tsx for how these render as an editable field.
+  const manualSections: DynamicLessonSection[] = fieldMap.mappings
+    .filter((m) => {
+      if (m.target !== "manual_entry") return false;
+      const region = regionById.get(m.regionId);
+      return !!region && region.role === "editable_field";
+    })
+    .map((m) => {
+      const region = regionById.get(m.regionId);
+      return {
+        id: m.regionId,
+        originalLabel: m.customLabel || region?.contextLabel || "Notes",
+        content: "",
+        origin: "manual",
+      };
+    });
+  return { sections: [...generatedSections, ...manualSections] };
 }

@@ -422,7 +422,7 @@ const METADATA_FIELD_PATTERNS = [
 
 const INSTRUCTION_VERB_PATTERN = /^(describe|explain|list|identify|provide|write|state|summarize|include|indicate|discuss)\b/i;
 
-function normalizeForMatch(text) {
+export function normalizeForMatch(text) {
   return (text || "")
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, "")
@@ -677,6 +677,34 @@ const WORD_PLACEHOLDER_TAIL_RE = new RegExp(
 );
 function stripWordPlaceholderTail(text) {
   return text.replace(WORD_PLACEHOLDER_TAIL_RE, "").trim();
+}
+
+// Generic "this cell/paragraph carries no real content" markers a
+// teacher's own template authoring might use — e.g. typed directly into an
+// otherwise-empty table cell as a visual placeholder ("(empty)"), or left
+// over from a previous export of this same app ("Generated content will
+// appear here."). Distinct from WORD_CONTENT_CONTROL_PLACEHOLDERS (Word's
+// own native content-control boilerplate, stripped as a possible TAIL
+// glued onto a label above) — these are matched as a unit's ENTIRE
+// normalized text, the common shape for a standalone placeholder sitting
+// alone in an otherwise-empty cell. Matched via normalizeForMatch (lower-
+// cases, strips all punctuation including trailing colons, collapses
+// whitespace) so "(empty)", "Empty", and "empty." are all one rule —
+// centralized here so a new placeholder phrasing is a one-line addition.
+export const GENERIC_EMPTY_CELL_PLACEHOLDER_PHRASES = [
+  "(empty)",
+  "empty",
+  "n/a",
+  "na",
+  "tbd",
+  "to be determined",
+  "generated content will appear here",
+  "generated content will appear here.",
+];
+const GENERIC_EMPTY_CELL_PLACEHOLDERS = new Set(GENERIC_EMPTY_CELL_PLACEHOLDER_PHRASES.map(normalizeForMatch));
+
+export function isGenericEmptyCellPlaceholder(text) {
+  return !!text && GENERIC_EMPTY_CELL_PLACEHOLDERS.has(normalizeForMatch(text));
 }
 
 // A leading bold run followed by additional PLAIN text in the same
@@ -1197,14 +1225,40 @@ const CANONICAL_TARGET_DICTIONARY = {
   reflection: ["reflection", "highlights"],
 };
 
+// Fields whose *meaning* depends on this specific teacher's own
+// instructional context (their students, their classroom, their sequencing
+// choices) rather than on the lesson's topic/standards — asking the LLM to
+// invent this kind of content produces unreliable, generic-sounding text,
+// so a region whose label matches one of these phrases is routed to
+// "manual_entry" (never sent to the LLM — see
+// buildDynamicLessonPromptFromFieldMap in api/generate.js, which already
+// excludes manual_entry) instead of the usual custom_section AI-generatable
+// default. Checked BEFORE CANONICAL_TARGET_DICTIONARY in classifyRegionTarget
+// so a planning label never gets misrouted to a loosely-matching canonical
+// target. A label matching neither dictionary keeps today's behavior
+// unchanged — falls through to custom_section (still AI-generatable).
+// Same normalizeForMatch matching as CANONICAL_TARGET_DICTIONARY (case/
+// punctuation/whitespace/trailing-colon insensitive) — centralized here so
+// a new planning-field phrasing is a one-line addition.
+export const TEACHER_PLANNING_FIELD_PHRASES = [
+  "anticipated misconceptions", "misconceptions", "student misconceptions",
+  "questioning strategies", "questioning strategy", "guiding questions",
+  "grouping", "student grouping", "groupings", "grouping strategy",
+  "differentiation notes", "differentiation strategy", "differentiation strategies",
+  "sequencing", "sequencing decisions", "sequencing notes",
+  "pacing notes", "teacher notes", "planning notes",
+];
+
 // Rules-based only (never an LLM call) — "Suggested mapping" in the UI,
 // deliberately not "AI suggestion" wording, since this is a deterministic
 // classifier, the same mechanism detected_sections already uses for its
 // own normalizedKey, just aimed at the new canonical-target vocabulary.
-function classifyRegionTarget(region) {
+export function classifyRegionTarget(region) {
   const contextText = [region.contextLabel, region.role === "editable_field" ? null : region.text].filter(Boolean).join(" ");
   const normalized = normalizeForMatch(contextText);
   if (!normalized) return { target: null, confidence: 0 };
+  if (TEACHER_PLANNING_FIELD_PHRASES.includes(normalized)) return { target: "manual_entry", confidence: 0.9 };
+  if (TEACHER_PLANNING_FIELD_PHRASES.some((p) => normalized.includes(p))) return { target: "manual_entry", confidence: 0.65 };
   for (const [target, phrases] of Object.entries(CANONICAL_TARGET_DICTIONARY)) {
     if (phrases.includes(normalized)) return { target, confidence: 0.9 };
   }
@@ -1228,7 +1282,14 @@ function classifyRegionTarget(region) {
 // Name:", "Date:", "Grade:", "Staff:") each need their own field — but a
 // run of several long instructional/glossary paragraphs under ONE heading
 // must consolidate into a single field, not one per paragraph.
-function classifyUnitsIntoRegions(units, idPrefix, location) {
+export function classifyUnitsIntoRegions(units, idPrefix, location) {
+  // Generic placeholder text (e.g. "(empty)", "Generated content will
+  // appear here.") carries no real content, same as a genuinely empty
+  // paragraph — normalized to "" here, once, so every check below
+  // (checkbox detection, !unit.text, classifyRegionRole, etc.) treats it
+  // identically to a truly blank unit without needing its own special case.
+  units = units.map((u) => (isGenericEmptyCellPlaceholder(u.text) ? { ...u, text: "" } : u));
+
   const regions = [];
   let contextLabel;
   let contextInstruction;
@@ -1313,7 +1374,7 @@ function classifyUnitsIntoRegions(units, idPrefix, location) {
 // correct for the common case (intro text, then one main table) confirmed
 // against the real validation template, but not truly interleaved if a
 // document has meaningful content both before AND after a table.
-function buildFieldRegions(html) {
+export function buildFieldRegions(html) {
   const topLevelUnits = [];
   const tableRegions = [];
   const blockRegex = /<h([1-6])[^>]*>([\s\S]*?)<\/h\1>|<p[^>]*>([\s\S]*?)<\/p>|<table[^>]*>([\s\S]*?)<\/table>/g;
@@ -1361,12 +1422,18 @@ function buildFieldRegions(html) {
 // Shared by both the DOCX and PDF paths — turns a flat region list into one
 // mapping per editable_field/checkbox_group region. Implicit regions always
 // start "needs_review", never "ready", regardless of classifier confidence.
-function buildMappingsForRegions(regions) {
+export function buildMappingsForRegions(regions) {
   const mappings = [];
   for (const region of regions) {
     if (region.role !== "editable_field" && region.role !== "checkbox_group") continue;
     const { target, confidence } = classifyRegionTarget(region);
-    const status = region.source === "implicit"
+    // manual_entry is its own status regardless of source/confidence — same
+    // rule as deriveMappingStatus on the client (src/App.tsx), which always
+    // reports "manual_entry" whenever target === "manual_entry" rather than
+    // folding it into ready/needs_review.
+    const status = target === "manual_entry"
+      ? "manual_entry"
+      : region.source === "implicit"
       ? "needs_review"
       : (target && confidence >= 0.85 ? "ready" : "needs_review");
     mappings.push({
@@ -1381,7 +1448,7 @@ function buildMappingsForRegions(regions) {
   return mappings;
 }
 
-function buildFieldMap(html) {
+export function buildFieldMap(html) {
   const regions = buildFieldRegions(html);
   return { version: 1, regions, mappings: buildMappingsForRegions(regions), confirmed: false };
 }

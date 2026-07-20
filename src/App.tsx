@@ -1185,7 +1185,7 @@ function DynamicLessonPreview({
               />
             ) : (
               <p style={{ whiteSpace: "pre-wrap", color: "var(--muted-fg)" }}>
-                {section.content || "(no content generated)"}
+                {section.content || (section.origin === "manual" ? "Add your notes here." : "(no content generated)")}
               </p>
             )}
           </div>
@@ -1323,23 +1323,36 @@ function ReproducedTemplatePreview({
     if (!mapping) return null;
     usedRegionIds.add(region.id);
 
-    if (mapping.target === "leave_blank") return { text: undefined, placeholder: "(intentionally left blank)", editable: false };
-    if (mapping.target === "manual_entry") return { text: undefined, placeholder: "(fill in manually)", editable: false };
-    if (mapping.target === "fixed_original_text") return { text: region.text || undefined, placeholder: "(original text preserved)", editable: false };
     if (region.role === "checkbox_group") {
       // Requirement: checkbox regions display selected options, not
       // generated prose — AI-driven selection isn't wired up this phase.
+      // Checked before any target-specific branch below so a checkbox_group
+      // region always gets this treatment, regardless of what its mapping
+      // target happens to be (e.g. a "Grouping" checkbox list could
+      // auto-classify to manual_entry the same as a text field would).
       const options = region.checkboxOptions?.join(", ") || "none detected";
       return { text: undefined, placeholder: `(checkbox options: ${options} — selection not yet automated)`, editable: false };
     }
+    if (mapping.target === "leave_blank") return { text: undefined, placeholder: "(intentionally left blank)", editable: false };
+    if (mapping.target === "fixed_original_text") return { text: region.text || undefined, placeholder: "(original text preserved)", editable: false };
     if (METADATA_SOURCED_TARGETS.has(mapping.target)) {
       return { text: metadataValueByTarget[mapping.target], placeholder: "(no value yet)", editable: false };
     }
+    // manual_entry falls through to the exact same content-binding logic as
+    // an AI-generated field below — toDynamicLessonPlanFromFieldMap seeds a
+    // content: "" section for it up front (src/lib/custom-templates.ts), so
+    // it has something in generatedById/draftById to read/write from the
+    // moment the plan exists, and the teacher edits it through the same
+    // Edit-mode textarea/Save-changes flow as any other field. Only the
+    // placeholder text differs, since nothing will ever be generated here.
+    const isManualEntry = mapping.target === "manual_entry";
     const source = isEditingContent && draftById ? draftById : generatedById;
     const generated = source.get(region.id);
     return {
       text: generated?.content?.trim() || undefined,
-      placeholder: plan ? "(no content generated)" : "Generated content will appear here.",
+      placeholder: isManualEntry
+        ? "Add your notes here."
+        : plan ? "(no content generated)" : "Generated content will appear here.",
       editable: true,
     };
   }
