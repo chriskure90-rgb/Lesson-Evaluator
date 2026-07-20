@@ -20,6 +20,7 @@ import {
   updateDetectedSections,
   updateFieldMap,
   toDynamicLessonPlanFromFieldMap,
+  buildDynamicLessonExportDocument,
   METADATA_SOURCED_TARGETS,
   CANONICAL_FIELD_TARGETS,
   CANONICAL_FIELD_TARGET_LABELS,
@@ -209,22 +210,6 @@ function buildTemplate1ExportDocument(lesson: Template1Lesson): ExportDocument {
       },
       { heading: "How will you assess the objectives?", paragraphs: [lesson.assessment.howObjectivesAssessed || "Not specified."] },
     ],
-  };
-}
-
-// Generic export for dynamic (detected-section-driven) generation — one
-// ExportSection per generated content section, same as buildLessonExportDocument/
-// buildTemplate1ExportDocument above. Deliberately does NOT attempt to
-// reproduce the uploaded template's table layout (that's final-DOCX
-// reproduction, out of scope here) — just the generated content, same
-// generic .txt/.docx/.pdf converters everything else already uses.
-function buildDynamicLessonExportDocument(plan: DynamicLessonPlan, title: string): ExportDocument {
-  return {
-    title: title || "Lesson Plan",
-    sections: plan.sections.map((section) => ({
-      heading: section.originalLabel,
-      paragraphs: [section.content || "(no content generated)"],
-    })),
   };
 }
 
@@ -1185,7 +1170,7 @@ function DynamicLessonPreview({
               />
             ) : (
               <p style={{ whiteSpace: "pre-wrap", color: "var(--muted-fg)" }}>
-                {section.content || (section.origin === "manual" ? "Add your notes here." : "(no content generated)")}
+                {section.content || (section.origin === "manual" ? "(empty)" : "(no content generated)")}
               </p>
             )}
           </div>
@@ -1350,8 +1335,12 @@ function ReproducedTemplatePreview({
     const generated = source.get(region.id);
     return {
       text: generated?.content?.trim() || undefined,
+      // Manual-entry cells always show the literal "(empty)" placeholder —
+      // matching the exact text the teacher's uploaded template itself uses
+      // for these cells, so a not-yet-filled-in cell reads identically
+      // whether the teacher has generated a lesson yet or not.
       placeholder: isManualEntry
-        ? "Add your notes here."
+        ? "(empty)"
         : plan ? "(no content generated)" : "Generated content will appear here.",
       editable: true,
     };

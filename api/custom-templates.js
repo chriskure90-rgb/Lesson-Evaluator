@@ -1332,11 +1332,28 @@ export function classifyUnitsIntoRegions(units, idPrefix, location) {
     }
 
     if (!unit.text) {
-      // A genuine blank paragraph, or one that was ONLY Word-placeholder
-      // boilerplate — an explicit editable field when something has
-      // already established what it's a field FOR, otherwise just
-      // structural filler (spacing), not a mapping target at all.
-      if (contextLabel || contextInstruction) {
+      // A genuine blank paragraph, or one that was ONLY Word-placeholder /
+      // generic-placeholder boilerplate ("(empty)", "Generated content will
+      // appear here.", etc. — see isGenericEmptyCellPlaceholder above) —
+      // an explicit editable field when something has already established
+      // what it's a field FOR, otherwise just structural filler (spacing),
+      // not a mapping target at all — EXCEPT inside a table cell, where an
+      // empty cell is always a deliberate fillable spot, never mere layout
+      // spacing, even with no contextLabel/contextInstruction established
+      // yet (that happens whenever the cell's label lives in a SEPARATE
+      // cell/row, e.g. a heading row followed by several data rows — this
+      // function is called once per cell, so context never carries across
+      // cells). Each such cell keeps its own region id (idPrefix is the
+      // CELL id, unique per cell — see buildFieldRegions), so N identical
+      // "(empty)" cells under one heading become N independent regions,
+      // never one shared field. buildMappingsForRegions forces
+      // target: "manual_entry" for any editable_field region with no
+      // context at all, since there's no label to build an AI prompt
+      // around. Top-level (non-table) blank paragraphs are unaffected —
+      // location.cellId is only set for table cells (see buildFieldRegions)
+      // — so document-flow spacing still becomes role: "blank" as before.
+      const isTableCell = Boolean(location.cellId);
+      if (contextLabel || contextInstruction || isTableCell) {
         pushRegion({ role: "editable_field", text: "", source: "explicit", outputMode: "text", contextLabel, contextInstruction });
         currentRunHasField = true;
       } else {
@@ -1426,7 +1443,18 @@ export function buildMappingsForRegions(regions) {
   const mappings = [];
   for (const region of regions) {
     if (region.role !== "editable_field" && region.role !== "checkbox_group") continue;
-    const { target, confidence } = classifyRegionTarget(region);
+    const { target: suggestedTarget, confidence } = classifyRegionTarget(region);
+    // A region with no contextLabel/contextInstruction at all has no label
+    // to build an AI prompt around — classifyRegionTarget can only ever
+    // return null for it (nothing to match against), which would otherwise
+    // fall through to the custom_section default below and get sent to the
+    // LLM with zero guidance. Forced to manual_entry instead — this is the
+    // "(empty)" table cell whose label lives in a separate cell/row (see
+    // classifyUnitsIntoRegions above); it was never AI-generatable before
+    // this region existed, so this is purely additive, not a behavior
+    // change for any region that previously had a real mapping.
+    const hasNoContext = !region.contextLabel && !region.contextInstruction;
+    const target = hasNoContext ? "manual_entry" : suggestedTarget;
     // manual_entry is its own status regardless of source/confidence — same
     // rule as deriveMappingStatus on the client (src/App.tsx), which always
     // reports "manual_entry" whenever target === "manual_entry" rather than

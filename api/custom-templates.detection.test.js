@@ -189,3 +189,76 @@ describe("buildFieldMap — end-to-end regression against a realistic template",
     expect(() => JSON.stringify(legacyFieldMap)).not.toThrow();
   });
 });
+
+// Root-cause regression suite: a heading in one table cell/row and its
+// "(empty)" data cells in SEPARATE cells/rows — classifyUnitsIntoRegions is
+// called once per cell, so context never carried across cells, and these
+// cells silently became role: "blank" (never mapped, permanently
+// non-editable, hard-coded to always render literal "(empty)"). This is the
+// exact shape from the bug report:
+//   Anticipated Strategies and Misconceptions
+//   - row 1: (empty)  - row 2: (empty)  - row 3: (empty)
+//   - row 4: (empty)  - row 5: (empty)
+describe("buildFieldMap — repeated (empty) cells whose label lives in a separate cell/row", () => {
+  const fiveEmptyRowsHtml = `
+    <table>
+      <tr><td><p>Anticipated Strategies and Misconceptions</p></td></tr>
+      <tr><td><p>(empty)</p></td></tr>
+      <tr><td><p>(empty)</p></td></tr>
+      <tr><td><p>(empty)</p></td></tr>
+      <tr><td><p>(empty)</p></td></tr>
+      <tr><td><p>(empty)</p></td></tr>
+    </table>
+  `;
+
+  it("gives each of the 5 (empty) cells its own editable_field region with a unique id", () => {
+    const fieldMap = buildFieldMap(fiveEmptyRowsHtml);
+    const emptyRegions = fieldMap.regions.filter((r) => r.role === "editable_field" && !r.contextLabel);
+    expect(emptyRegions).toHaveLength(5);
+    const ids = new Set(emptyRegions.map((r) => r.id));
+    expect(ids.size).toBe(5); // no id collisions — five genuinely independent regions
+    // Never silently demoted to role: "blank" (the bug) or promoted to a
+    // heading/unmatched section (requirement 10).
+    expect(fieldMap.regions.some((r) => r.role === "blank")).toBe(false);
+  });
+
+  it("maps all 5 to target manual_entry, status manual_entry — never custom_section", () => {
+    const fieldMap = buildFieldMap(fiveEmptyRowsHtml);
+    const emptyRegionIds = new Set(
+      fieldMap.regions.filter((r) => r.role === "editable_field" && !r.contextLabel).map((r) => r.id)
+    );
+    const emptyMappings = fieldMap.mappings.filter((m) => emptyRegionIds.has(m.regionId));
+    expect(emptyMappings).toHaveLength(5);
+    for (const m of emptyMappings) {
+      expect(m.target).toBe("manual_entry");
+      expect(m.status).toBe("manual_entry");
+    }
+  });
+
+  it("AI generation excludes all 5 — none carry a real (non-manual_entry) target", () => {
+    // api/generate.js's buildDynamicLessonPromptFromFieldMap filters out
+    // exactly target === "manual_entry" — asserting the target here is the
+    // direct guarantee that filter acts on.
+    const fieldMap = buildFieldMap(fiveEmptyRowsHtml);
+    const generatable = fieldMap.mappings.filter((m) =>
+      m.target !== "leave_blank" && m.target !== "manual_entry" && m.target !== "fixed_original_text"
+    );
+    expect(generatable).toHaveLength(0);
+  });
+
+  it("does not affect a cell whose label lives in the SAME cell (regression guard)", () => {
+    const html = `<table><tr><td><p>Materials:</p><p>(empty)</p></td></tr></table>`;
+    const fieldMap = buildFieldMap(html);
+    const mapping = fieldMap.mappings.find((m) => {
+      const region = fieldMap.regions.find((r) => r.id === m.regionId);
+      return region?.contextLabel === "Materials";
+    });
+    expect(mapping?.target).toBe("materials"); // existing canonical target, unaffected
+  });
+
+  it("does not affect top-level (non-table) blank paragraphs — still structural filler, not a field", () => {
+    const units = [{ text: "" }];
+    const regions = classifyUnitsIntoRegions(units, "doc", {}); // no cellId — not a table cell
+    expect(regions).toEqual([expect.objectContaining({ role: "blank", text: "" })]);
+  });
+});

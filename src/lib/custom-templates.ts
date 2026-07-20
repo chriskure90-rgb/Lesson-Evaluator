@@ -1,5 +1,6 @@
 import { supabase } from "./supabase";
 import type { Template1Lesson } from "../App";
+import type { ExportDocument } from "./export";
 
 export type CustomTemplateStatus = "processing" | "ready" | "error";
 
@@ -823,4 +824,26 @@ export function toDynamicLessonPlanFromFieldMap(
       };
     });
   return { sections: [...generatedSections, ...manualSections] };
+}
+
+// Generic export for dynamic (field-map-driven) generation — one
+// ExportSection per section (generated and manual-entry alike). Lives here
+// rather than in App.tsx (a React component file, where an exported plain
+// function breaks Vite Fast Refresh) even though every caller today is in
+// App.tsx. Deliberately does NOT attempt to reproduce the uploaded
+// template's table layout (that's final-DOCX reproduction, out of scope
+// here) — just the content, same generic .txt/.docx/.pdf converters
+// everything else already uses.
+export function buildDynamicLessonExportDocument(plan: DynamicLessonPlan, title: string): ExportDocument {
+  return {
+    title: title || "Lesson Plan",
+    sections: plan.sections.map((section) => ({
+      heading: section.originalLabel,
+      // A manual-entry field left unfilled reads as "(empty)" — the same
+      // placeholder the teacher's own template/preview uses for it — never
+      // "(no content generated)", since nothing was ever supposed to
+      // generate it in the first place.
+      paragraphs: [section.content || (section.origin === "manual" ? "(empty)" : "(no content generated)")],
+    })),
+  };
 }
