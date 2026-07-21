@@ -326,8 +326,18 @@ async function generateLesson(params: {
     body: JSON.stringify({ ...params, lessonFormat: "standard" }),
   });
   if (!res.ok) {
-    const msg = await res.text().catch(() => `HTTP ${res.status}`);
-    throw new Error(msg || `Server error ${res.status}`);
+    // The server returns { error, details, ...fallback-lesson-shape } on
+    // failure — surface `details` (the specific, teacher-facing message)
+    // rather than dumping the raw JSON body, same pattern
+    // generateDynamicLessonPlan below already uses.
+    const raw = await res.text().catch(() => "");
+    let details: string | undefined;
+    try {
+      details = JSON.parse(raw)?.details;
+    } catch {
+      // not JSON — fall through to raw text below
+    }
+    throw new Error(details || raw || `Server error ${res.status}`);
   }
   const raw = await res.json();
   return normaliseLesson(raw);
@@ -370,8 +380,15 @@ async function generateTemplate1Lesson(params: {
     body: JSON.stringify(requestBody),
   });
   if (!res.ok) {
-    const msg = await res.text().catch(() => `HTTP ${res.status}`);
-    throw new Error(msg || `Server error ${res.status}`);
+    // Same clean-error-message pattern as generateLesson above.
+    const raw = await res.text().catch(() => "");
+    let details: string | undefined;
+    try {
+      details = JSON.parse(raw)?.details;
+    } catch {
+      // not JSON — fall through to raw text below
+    }
+    throw new Error(details || raw || `Server error ${res.status}`);
   }
   const raw = await res.json();
   return normaliseTemplate1Lesson(raw, { subject: params.subjectLabel, gradeLabel: params.gradeLabel, duration: params.duration });
@@ -1705,6 +1722,12 @@ function GeneratorPage({
     return () => { cancelled = true; };
   }, []);
   const [loading, setLoading]         = useState(false);
+  // Synchronous duplicate-submit guard for handleGenerate — `loading` state
+  // alone can't prevent a same-tick double click/Enter-key-repeat from
+  // starting two requests, since the button's disabled={loading} only takes
+  // effect once React actually commits the re-render. A ref is mutated
+  // immediately, before any await, so a second call this tick sees it set.
+  const generateInFlightRef = useRef(false);
   const [lesson, setLesson]           = useState<Lesson | null>(sharedLesson);
   const [error, setError]             = useState<string | null>(null);
   const [editing, setEditing]         = useState(false);
@@ -2182,6 +2205,13 @@ function GeneratorPage({
   }
 
   async function handleGenerate() {
+    // Guards against a duplicate submission (double-click, held Enter key)
+    // starting a second request while one is already in flight — checked
+    // and set synchronously, before any of the validation/async work below,
+    // so it can't be outraced by React's render/commit cycle the way relying
+    // on `loading` state alone could be.
+    if (generateInFlightRef.current) return;
+    generateInFlightRef.current = true;
     // TRACE-1: selected template before generation.
     console.log("[TRACE-1 selected-template-before-generation]", {
       lessonFormat,
@@ -2196,14 +2226,17 @@ function GeneratorPage({
     // Template1Lesson content, never its own generation schema.
     if (lessonFormat === "custom" && !selectedCustomTemplateId) {
       setError("Please select one of your uploaded templates first.");
+      generateInFlightRef.current = false;
       return;
     }
     if (lessonFormat === "dynamic" && !selectedCustomTemplateId) {
       setError("Please select one of your uploaded templates first.");
+      generateInFlightRef.current = false;
       return;
     }
     if (isMyStandards && !selectedUploadId) {
       setError("Please select a standards document from My Standards.");
+      generateInFlightRef.current = false;
       return;
     }
 
@@ -2439,6 +2472,7 @@ function GeneratorPage({
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
     } finally {
       setLoading(false);
+      generateInFlightRef.current = false;
     }
   }
 

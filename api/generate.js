@@ -1,5 +1,6 @@
 import { generateLessonWithMistral } from "../server-lib/providers/mistral.js";
 import { generateLessonWithGemini  } from "../server-lib/providers/gemini.js";
+import { generateLessonWithOpenAI  } from "../server-lib/providers/openai.js";
 import { supabase }                  from "../server-lib/supabase.js";
 import { openai }                    from "../server-lib/openai.js";
 import { Mistral }                   from "@mistralai/mistralai";
@@ -771,8 +772,10 @@ function dynamicStageError(stage, message, extra = {}) {
 
 // Returns the flat, region-id-keyed JSON object for a dynamic request, or
 // throws a dynamicStageError tagged "llm-call" | "json-parse" | "response-mapping".
+const OPENAI_MODEL_VALUES = new Set(["gpt-4", "GPT-4", "openai", "OpenAI"]);
+
 async function generateDynamicLessonContent(model, prompt, regionIds) {
-  if (model !== "mistral" && model !== "Mistral" && model !== "gemini" && model !== "Gemini") {
+  if (model !== "mistral" && model !== "Mistral" && model !== "gemini" && model !== "Gemini" && !OPENAI_MODEL_VALUES.has(model)) {
     console.log("[Generate][dynamic] stage=llm-call — provider not implemented, returning placeholder:", model);
     return Object.fromEntries(regionIds.map((id) => [id, `${model} provider not implemented yet.`]));
   }
@@ -786,6 +789,16 @@ async function generateDynamicLessonContent(model, prompt, regionIds) {
         messages: [{ role: "user", content: prompt }],
       });
       rawText = result.choices[0].message.content.trim();
+    } else if (OPENAI_MODEL_VALUES.has(model)) {
+      if (!openai) {
+        throw new Error("OpenAI is not configured on the server (OPENAI_API_KEY missing).");
+      }
+      const result = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [{ role: "user", content: prompt }],
+        response_format: { type: "json_object" },
+      });
+      rawText = (result.choices?.[0]?.message?.content ?? "").trim();
     } else {
       const genModel = dynamicGemini.getGenerativeModel({ model: "gemini-3.5-flash" });
       const result = await genModel.generateContent(prompt);
@@ -1030,6 +1043,13 @@ export default async function handler(req, res) {
       return res.status(200).json(lesson);
     }
 
+    // "gpt-4" is the MODELS dropdown's literal value (src/App.tsx) — GPT-4/GPT-4o
+    // are the same OpenAI provider slot from the teacher's perspective.
+    if (model === "gpt-4" || model === "GPT-4" || model === "openai" || model === "OpenAI") {
+      const lesson = await generateLessonWithOpenAI(prompt);
+      return res.status(200).json(lesson);
+    }
+
     // Placeholder for providers not yet implemented
     return res.status(200).json(
       isTemplate1
@@ -1069,9 +1089,17 @@ export default async function handler(req, res) {
       });
     }
 
+    // error/details are additive — generateLesson/generateTemplate1Lesson
+    // (src/App.tsx) parse `details` for a clean message, same pattern
+    // generateDynamicLessonPlan already uses for the dynamic path above.
+    // The rest of the body is kept unchanged for backward compatibility with
+    // anything still relying on the old raw-text-dump shape.
+    const details = error instanceof Error ? error.message : String(error);
     return res.status(500).json(
       isTemplate1
         ? {
+            error: "Lesson generation failed",
+            details,
             lessonTitle: "Generation Failed",
             centralFocus: "An error occurred during generation.",
             standardsAddressed: "",
@@ -1083,6 +1111,8 @@ export default async function handler(req, res) {
             assessment: { howObjectivesAssessed: "" },
           }
         : {
+            error: "Lesson generation failed",
+            details,
             title: "Generation Failed",
             objectives: [],
             materials: [],
