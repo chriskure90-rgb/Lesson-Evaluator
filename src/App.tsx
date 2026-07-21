@@ -1702,11 +1702,11 @@ function GeneratorPage({
   const [framework, setFramework]     = useState("ngss");
   const [lessonFormat, setLessonFormat] = useState("standard");
   const [model, setModel]             = useState("claude");
-  const [grade, setGrade]             = useState("6-8");
-  const [subject, setSubject]         = useState("Science");
-  const [code, setCode]               = useState("MS-LS1-6");
+  const [grade, setGrade]             = useState("");
+  const [subject, setSubject]         = useState("");
+  const [code, setCode]               = useState("");
   const [topic, setTopic]             = useState("");
-  const [goal, setGoal]               = useState("Help students understand how plants produce energy through photosynthesis.");
+  const [goal, setGoal]               = useState("");
   const [duration, setDuration]       = useState(60);
   const [technologyUsage, setTechnologyUsage] = useState<TechnologyUsageLevel>("medium");
   const [studentTechnology, setStudentTechnology] = useState("");
