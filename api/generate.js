@@ -1,10 +1,12 @@
 import { generateLessonWithMistral } from "../server-lib/providers/mistral.js";
 import { generateLessonWithGemini  } from "../server-lib/providers/gemini.js";
 import { generateLessonWithOpenAI  } from "../server-lib/providers/openai.js";
+import { generateLessonWithClaude  } from "../server-lib/providers/anthropic.js";
 import { supabase }                  from "../server-lib/supabase.js";
 import { openai }                    from "../server-lib/openai.js";
 import { Mistral }                   from "@mistralai/mistralai";
 import { GoogleGenerativeAI }        from "@google/generative-ai";
+import Anthropic                     from "@anthropic-ai/sdk";
 
 const EMBEDDING_MODEL       = "text-embedding-3-small";
 const VECTOR_MATCH_COUNT    = 5;
@@ -759,8 +761,9 @@ function buildDynamicLessonPromptFromFieldMap({ grade, subject, frameworks, code
 // providers' behavior. dynamicMistral/dynamicGemini are separate client
 // instances from the ones in server-lib/providers, constructed from the same
 // env vars.
-const dynamicMistral = new Mistral({ apiKey: process.env.MISTRAL_API_KEY });
-const dynamicGemini  = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const dynamicMistral   = new Mistral({ apiKey: process.env.MISTRAL_API_KEY });
+const dynamicGemini    = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const dynamicAnthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
 
 function dynamicStageError(stage, message, extra = {}) {
   const err = new Error(message);
@@ -772,10 +775,14 @@ function dynamicStageError(stage, message, extra = {}) {
 
 // Returns the flat, region-id-keyed JSON object for a dynamic request, or
 // throws a dynamicStageError tagged "llm-call" | "json-parse" | "response-mapping".
-const OPENAI_MODEL_VALUES = new Set(["gpt-4", "GPT-4", "openai", "OpenAI"]);
+const OPENAI_MODEL_VALUES  = new Set(["gpt-4", "GPT-4", "openai", "OpenAI"]);
+const CLAUDE_MODEL_VALUES  = new Set(["claude", "Claude", "anthropic", "Anthropic"]);
 
 async function generateDynamicLessonContent(model, prompt, regionIds) {
-  if (model !== "mistral" && model !== "Mistral" && model !== "gemini" && model !== "Gemini" && !OPENAI_MODEL_VALUES.has(model)) {
+  if (
+    model !== "mistral" && model !== "Mistral" && model !== "gemini" && model !== "Gemini"
+    && !OPENAI_MODEL_VALUES.has(model) && !CLAUDE_MODEL_VALUES.has(model)
+  ) {
     console.log("[Generate][dynamic] stage=llm-call — provider not implemented, returning placeholder:", model);
     return Object.fromEntries(regionIds.map((id) => [id, `${model} provider not implemented yet.`]));
   }
@@ -799,6 +806,16 @@ async function generateDynamicLessonContent(model, prompt, regionIds) {
         response_format: { type: "json_object" },
       });
       rawText = (result.choices?.[0]?.message?.content ?? "").trim();
+    } else if (CLAUDE_MODEL_VALUES.has(model)) {
+      if (!dynamicAnthropic) {
+        throw new Error("Claude is not configured on the server (ANTHROPIC_API_KEY missing).");
+      }
+      const result = await dynamicAnthropic.messages.create({
+        model: "claude-sonnet-5",
+        max_tokens: 4096,
+        messages: [{ role: "user", content: prompt }],
+      });
+      rawText = (result.content?.find((block) => block.type === "text")?.text ?? "").trim();
     } else {
       const genModel = dynamicGemini.getGenerativeModel({ model: "gemini-3.5-flash" });
       const result = await genModel.generateContent(prompt);
@@ -1050,12 +1067,20 @@ export default async function handler(req, res) {
       return res.status(200).json(lesson);
     }
 
-    // Placeholder for providers not yet implemented
+    // "claude" is the MODELS dropdown's literal value (src/App.tsx).
+    if (model === "claude" || model === "Claude" || model === "anthropic" || model === "Anthropic") {
+      const lesson = await generateLessonWithClaude(prompt);
+      return res.status(200).json(lesson);
+    }
+
+    // Placeholder for providers not yet implemented — mistral/gemini/gpt-4/
+    // claude are all handled above, so this only fires for a genuinely
+    // unrecognized model value.
     return res.status(200).json(
       isTemplate1
         ? {
             lessonTitle: `${model} Provider Not Implemented Yet`,
-            centralFocus: "Only the Mistral provider is currently connected.",
+            centralFocus: "Only Mistral, Gemini, GPT-4, and Claude are currently connected.",
             standardsAddressed: "",
             lessonObjectives: [],
             materials: [],
@@ -1066,7 +1091,7 @@ export default async function handler(req, res) {
           }
         : {
             title: `${model} Provider Not Implemented Yet`,
-            objectives: ["Only the Mistral provider is currently connected."],
+            objectives: ["Only Mistral, Gemini, GPT-4, and Claude are currently connected."],
             materials: [],
             activities: [],
             assessment: "Provider not implemented yet.",
