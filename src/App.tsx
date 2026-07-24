@@ -1016,7 +1016,7 @@ const GRADE_BANDS = [
 const DURATIONS = [30, 45, 60, 90];
 
 const MODELS = [
-  { value: "gpt-4",    label: "GPT-4",    hint: "OpenAI"    },
+  { value: "gpt-4",    label: "GPT",      hint: "OpenAI"    },
   { value: "claude",   label: "Claude",   hint: "Anthropic" },
   { value: "gemini",   label: "Gemini",   hint: "Google"    },
   { value: "mistral",  label: "Mistral",  hint: "Mistral AI" },
