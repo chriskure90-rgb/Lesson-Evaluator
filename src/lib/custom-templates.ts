@@ -847,3 +847,34 @@ export function buildDynamicLessonExportDocument(plan: DynamicLessonPlan, title:
     })),
   };
 }
+
+// Real-template-preserving DOCX export for the dynamic (field_map) pipeline —
+// same request/response shape as exportCustomTemplateLessonDocx above, but
+// hits the server's "export-dynamic" action (handleExportDynamic in
+// api/custom-templates.js), which merges plan.sections into the ORIGINAL
+// uploaded .docx by region position rather than building a generic document
+// from scratch (see ReproducedTemplatePreview/buildDynamicLessonExportDocument
+// for the on-screen preview and PDF/TXT export, which still use the generic
+// flat conversion — only the Word (.docx) option for this format uses this).
+export async function exportDynamicLessonDocx(
+  customTemplateId: string,
+  userId: string,
+  lessonData: DynamicLessonPlan
+): Promise<Blob> {
+  const res = await fetch("/api/custom-templates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+    body: JSON.stringify({ action: "export-dynamic", customTemplateId, userId, lessonData }),
+  });
+  if (!res.ok) {
+    const raw = await res.text().catch(() => "");
+    let details: string | undefined;
+    try {
+      details = JSON.parse(raw)?.error;
+    } catch {
+      // not JSON — fall through to raw text below
+    }
+    throw new Error(details || raw || `Server error ${res.status}`);
+  }
+  return res.blob();
+}

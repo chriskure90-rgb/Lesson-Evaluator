@@ -17,6 +17,7 @@ import {
   renameCustomTemplate,
   deleteCustomTemplate,
   exportCustomTemplateLessonDocx,
+  exportDynamicLessonDocx,
   updateDetectedSections,
   updateFieldMap,
   toDynamicLessonPlanFromFieldMap,
@@ -3318,6 +3319,11 @@ function GeneratorPage({
                     label="Export lesson"
                     filenameBase={slugifyFilename(topic, "lesson-plan")}
                     getDocument={() => buildDynamicLessonExportDocument(dynamicLessonPlan, topic)}
+                    getDocxOverride={
+                      selectedCustomTemplateId
+                        ? () => exportDynamicLessonDocx(selectedCustomTemplateId, userId, dynamicLessonPlan)
+                        : undefined
+                    }
                   />
                 }
                 onEvaluate={() => onEvaluateLesson()}

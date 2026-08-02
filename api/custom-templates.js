@@ -2236,6 +2236,377 @@ async function handleDelete(req, res, authenticatedUserId) {
   return res.status(200).json({ success: true });
 }
 
+// ── action: "export-dynamic" ────────────────────────────────────────────────
+// Fills the teacher's ORIGINAL uploaded .docx directly for the field_map
+// ("dynamic") pipeline, by locating each region's real paragraph in the raw
+// OOXML (word/document.xml) and replacing only its text — never touching
+// table/row/cell properties (borders, shading, gridSpan/vMerge, widths,
+// heights) or any paragraph that isn't a generated/manually-entered field.
+//
+// This is a POSITION-based merge (table/row/cell index + per-container
+// paragraph order), not Docxtemplater's {{TAG}} substitution used by
+// handleExport above — field_map regions carry no textual tag in the source
+// document to substitute against, only a detected position (see
+// buildFieldRegions' tableId/rowId/cellId scheme, which this reuses exactly:
+// the Nth <w:tbl> / Nth <w:tr> within it / Nth <w:tc> within that row, same
+// counting order buildFieldRegions already established from mammoth's HTML).
+//
+// EXPLICIT regions (region.source !== "implicit") correspond to a real
+// paragraph that existed in the original document (even a genuinely empty
+// one) — located by simply counting <w:p> elements within the region's
+// container in document order, the exact same order extractCellUnitsRaw
+// already split mammoth's per-cell <p> tags into units. IMPLICIT regions
+// (source: "implicit") were synthesized by classifyUnitsIntoRegions purely
+// because a heading had nothing after it — there is no corresponding
+// paragraph to replace, so generated/manual content for one of these is
+// inserted as a new plain paragraph immediately after whatever paragraph the
+// previous region in that same container consumed (chaining correctly if
+// multiple implicit regions follow one another).
+//
+// Regions with no content to write (nothing generated, target leave_blank/
+// fixed_original_text, or an unfilled manual_entry field) are never touched
+// at all — their original paragraph (whatever it contained: real text, a
+// generic placeholder like "(empty)", or nothing) is copied through
+// byte-for-byte, which is what keeps intentionally-empty structural cells
+// exactly as the teacher's template had them.
+//
+// KNOWN LIMITATION (see also buildFieldRegions' own "not a full HTML parser"
+// caveat): this is a regex-based structural walk, not a real OOXML parser —
+// a table nested inside another table's cell would confuse the non-greedy
+// <w:tbl>...</w:tbl> matching the same way it would confuse detection. Not
+// seen in the templates this was validated against.
+
+const OOXML_TBL_RE  = /<w:tbl>([\s\S]*?)<\/w:tbl>/g;
+const OOXML_ROW_RE  = /<w:tr\b[^>]*>([\s\S]*?)<\/w:tr>/g;
+const OOXML_CELL_RE = /<w:tc\b[^>]*>([\s\S]*?)<\/w:tc>/g;
+const OOXML_PARA_RE = /<w:p\b[^>]*>([\s\S]*?)<\/w:p>/g;
+// Top-level body scan: a whole <w:p>...</w:p> OR a whole <w:tbl>...</w:tbl>,
+// captured as one match each — mirrors buildFieldRegions' own top-level
+// blockRegex alternation (heading/paragraph/table), just against the raw
+// OOXML tags instead of mammoth's HTML output. Two separate capture groups
+// (one per alternative) since a paragraph's inner XML and a table's inner
+// XML are read differently below — xmlMatchesWithIndex takes whichever one
+// is defined for a given match.
+const OOXML_TOP_RE = /<w:p\b[^>]*>([\s\S]*?)<\/w:p>|<w:tbl>([\s\S]*?)<\/w:tbl>/g;
+
+function xmlMatchesWithIndex(str, regex) {
+  return [...str.matchAll(regex)].map((m) => ({ text: m[0], inner: m[1] !== undefined ? m[1] : m[2], index: m.index }));
+}
+
+function escapeXmlText(value) {
+  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Reuses the first real run's <w:rPr> (font/bold/size/etc.) so replaced text
+// keeps looking like whatever the original placeholder run looked like,
+// rather than falling back to the document's bare default formatting.
+function firstRunPropsXml(paragraphInner) {
+  const m = /<w:r\b[^>]*>[\s\S]*?(<w:rPr>[\s\S]*?<\/w:rPr>)?/.exec(paragraphInner);
+  return m && m[1] ? m[1] : "";
+}
+
+function textRunsXml(content, runPropsXml) {
+  const lines = String(content).split(/\r?\n/).map(escapeXmlText);
+  return lines
+    .map((line, i) => (i === 0 ? "" : "<w:br/>") + `<w:t xml:space="preserve">${line}</w:t>`)
+    .join("")
+    .replace(/^/, `<w:r>${runPropsXml}`) + "</w:r>";
+}
+
+// Builds a replacement <w:p>...</w:p> for an EXPLICIT region — keeps the
+// original paragraph's <w:pPr> (alignment, spacing, borders, style) and the
+// first run's <w:rPr>, replacing only the visible text.
+function buildReplacementParagraphXml(originalParagraphInner, content) {
+  const pPrMatch = /<w:pPr>[\s\S]*?<\/w:pPr>/.exec(originalParagraphInner);
+  const pPr = pPrMatch ? pPrMatch[0] : "";
+  const rPr = firstRunPropsXml(originalParagraphInner);
+  return `<w:p>${pPr}${textRunsXml(content, rPr)}</w:p>`;
+}
+
+// Builds a brand-new <w:p>...</w:p> for an IMPLICIT region — deliberately
+// plain (no <w:pPr>/<w:rPr> cloned from the heading it follows), so inserted
+// content reads as normal body text rather than inheriting the heading's own
+// bold/larger styling.
+function buildInsertedParagraphXml(content) {
+  return `<w:p>${textRunsXml(content, "")}</w:p>`;
+}
+
+function extractParagraphPlainText(paragraphInner) {
+  const textRegex = /<w:t[^>]*>([^<]*)<\/w:t>/g;
+  let out = "";
+  let m;
+  while ((m = textRegex.exec(paragraphInner)) !== null) out += m[1];
+  return out;
+}
+
+function normalizeForFuzzyMatch(text) {
+  return (text || "").toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+}
+
+// region.text (for heading/instruction roles) has already been through
+// mammoth's own text transforms (stripWordPlaceholderTail,
+// extractLeadingBoldLabel — see buildFieldRegions) before detection ever
+// saw it, so it won't always be a byte-exact substring of a naive raw-XML
+// <w:t> concatenation. "Roughly matches" (case/punctuation/whitespace
+// insensitive, either containing the other) is deliberately loose — this
+// exists to catch a genuinely WRONG paragraph (see planDynamicContainerEdits
+// below), not to demand perfect text fidelity.
+function textsRoughlyMatch(a, b) {
+  const na = normalizeForFuzzyMatch(a);
+  const nb = normalizeForFuzzyMatch(b);
+  if (!na && !nb) return true;
+  if (!na || !nb) return false;
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+
+// Given every field_map region that shares one container (a table cell, or
+// the top-level document body) sorted by detection order, and the real
+// <w:p> paragraphs found in that exact container, decides for each region
+// whether it consumes the next real paragraph (explicit) or has no
+// paragraph of its own and must be inserted after whatever the previous
+// region touched (implicit). Only regions present in contentByRegionId
+// (i.e. something was actually generated/entered for them) produce an edit —
+// everything else is left as a no-op so its original paragraph passes
+// through untouched.
+//
+// NEVER throws for a detected mismatch — returns { ok: false, reason }
+// instead. Confirmed against a real uploaded template: mammoth's HTML
+// (which detection is built on) does not always represent a genuinely-empty
+// paragraph immediately adjacent to a table the same way the raw OOXML
+// does, which can offset this container's real <w:p> sequence relative to
+// what field_map expected. Every consumed heading/instruction region (the
+// only roles with known, fixed original text) is cross-checked against the
+// real paragraph's actual text specifically to catch that kind of drift —
+// on any mismatch (or running out of real paragraphs), the caller leaves
+// this ENTIRE container's original content untouched rather than risk
+// writing generated/manual content into the wrong paragraph.
+export function planDynamicContainerEdits(regionsInContainer, paragraphs, contentByRegionId) {
+  const replaceByIndex = new Map();   // paragraphIndex -> content
+  const insertsAfterIndex = new Map(); // paragraphIndex (-1 = before all) -> content[]
+  let paragraphIndex = 0;
+  let lastConsumedIndex = -1;
+  const sorted = [...regionsInContainer].sort((a, b) => a.order - b.order);
+  for (const region of sorted) {
+    const consumesParagraph = region.source !== "implicit";
+    if (consumesParagraph) {
+      if (paragraphIndex >= paragraphs.length) {
+        return { ok: false, reason: `region ${region.id} expected a real paragraph (#${paragraphIndex + 1}) but this container only has ${paragraphs.length}` };
+      }
+      if (region.role === "heading" || region.role === "instruction") {
+        const actualText = extractParagraphPlainText(paragraphs[paragraphIndex].inner);
+        if (!textsRoughlyMatch(actualText, region.text)) {
+          return {
+            ok: false,
+            reason: `region ${region.id} (${region.role}) expected text ${JSON.stringify(region.text)} but paragraph #${paragraphIndex + 1} actually contains ${JSON.stringify(actualText)}`,
+          };
+        }
+      }
+      const content = contentByRegionId.get(region.id);
+      if (content !== undefined && region.role === "editable_field") {
+        replaceByIndex.set(paragraphIndex, content);
+      }
+      lastConsumedIndex = paragraphIndex;
+      paragraphIndex++;
+    } else {
+      const content = contentByRegionId.get(region.id);
+      if (content !== undefined) {
+        const list = insertsAfterIndex.get(lastConsumedIndex) || [];
+        list.push(content);
+        insertsAfterIndex.set(lastConsumedIndex, list);
+      }
+    }
+  }
+  return { ok: true, replaceByIndex, insertsAfterIndex };
+}
+
+// Rebuilds one container's inner XML (a cell's inner XML, or the document
+// body's inner XML restricted to its own top-level paragraphs) by splicing
+// in replacements/insertions at the exact original string offsets — avoids
+// the correctness pitfall of repeated string .replace() calls when two
+// untouched paragraphs happen to be byte-identical (e.g. two blank cells).
+function applyEditPlanToContainer(containerXml, paragraphs, replaceByIndex, insertsAfterIndex) {
+  let out = "";
+  let cursor = 0;
+  paragraphs.forEach((p, i) => {
+    out += containerXml.slice(cursor, p.index);
+    const replacement = replaceByIndex.get(i);
+    out += replacement !== undefined ? buildReplacementParagraphXml(p.inner, replacement) : p.text;
+    cursor = p.index + p.text.length;
+    for (const content of insertsAfterIndex.get(i) || []) out += buildInsertedParagraphXml(content);
+  });
+  out += containerXml.slice(cursor);
+  const leading = insertsAfterIndex.get(-1) || [];
+  return leading.length ? leading.map(buildInsertedParagraphXml).join("") + out : out;
+}
+
+// Top-level export: given the original template's raw document.xml, its
+// field_map, and a regionId -> content lookup, returns the modified XML plus
+// a list of any containers (cells, or "TOP") whose alignment couldn't be
+// verified and were therefore left completely untouched (see
+// planDynamicContainerEdits) — handleExportDynamic logs these server-side so
+// a drifted template shows up in logs instead of failing silently. Pure/
+// synchronous and fully unit-testable — handleExportDynamic below is only
+// responsible for the Storage download/auth around this.
+export function mergeDynamicLessonIntoDocumentXml(documentXml, fieldMap, contentByRegionId) {
+  const bodyStart = documentXml.indexOf("<w:body>") + "<w:body>".length;
+  const bodyEnd = documentXml.indexOf("</w:body>");
+  if (bodyStart < "<w:body>".length || bodyEnd === -1) {
+    throw new Error("Dynamic DOCX export: could not locate <w:body> in the template's document.xml.");
+  }
+  const bodyInner = documentXml.slice(bodyStart, bodyEnd);
+  const skipped = [];
+
+  const regionsByLocation = new Map();
+  for (const region of fieldMap.regions) {
+    const key = region.tableId ? `${region.tableId}|${region.rowId}|${region.cellId}` : "TOP";
+    if (!regionsByLocation.has(key)) regionsByLocation.set(key, []);
+    regionsByLocation.get(key).push(region);
+  }
+
+  const topBlocks = xmlMatchesWithIndex(bodyInner, OOXML_TOP_RE);
+  const topParagraphs = topBlocks
+    .filter((b) => b.text.startsWith("<w:p"))
+    .map((b) => ({ text: b.text, inner: b.inner, index: b.index }));
+  const topPlanResult = planDynamicContainerEdits(regionsByLocation.get("TOP") || [], topParagraphs, contentByRegionId);
+  if (!topPlanResult.ok) skipped.push({ location: "TOP", reason: topPlanResult.reason });
+  const topPlan = topPlanResult.ok ? topPlanResult : { replaceByIndex: new Map(), insertsAfterIndex: new Map() };
+
+  let tableIndex = 0;
+  let newBodyInner = "";
+  let cursor = 0;
+  let topParaCounter = -1;
+  for (const block of topBlocks) {
+    newBodyInner += bodyInner.slice(cursor, block.index);
+    if (block.text.startsWith("<w:tbl>")) {
+      tableIndex++;
+      const tableId = `table_${tableIndex}`;
+      const tblInner = block.inner;
+      const rows = xmlMatchesWithIndex(tblInner, OOXML_ROW_RE);
+      let newTblInner = "";
+      let rowCursor = 0;
+      let rowIndex = 0;
+      for (const row of rows) {
+        newTblInner += tblInner.slice(rowCursor, row.index);
+        rowIndex++;
+        const rowId = `${tableId}_row_${rowIndex}`;
+        const cells = xmlMatchesWithIndex(row.text, OOXML_CELL_RE);
+        let newRowText = "";
+        let cellCursor = 0;
+        let cellIndex = 0;
+        for (const cell of cells) {
+          newRowText += row.text.slice(cellCursor, cell.index);
+          cellIndex++;
+          const cellId = `${rowId}_cell_${cellIndex}`;
+          const locationKey = `${tableId}|${rowId}|${cellId}`;
+          const regionsHere = regionsByLocation.get(locationKey) || [];
+          const paragraphs = xmlMatchesWithIndex(cell.inner, OOXML_PARA_RE);
+          const planResult = regionsHere.length === 0 || paragraphs.length === 0
+            ? { ok: true, replaceByIndex: new Map(), insertsAfterIndex: new Map() }
+            : planDynamicContainerEdits(regionsHere, paragraphs, contentByRegionId);
+          if (!planResult.ok) {
+            skipped.push({ location: locationKey, reason: planResult.reason });
+          }
+          if (!planResult.ok || regionsHere.length === 0 || paragraphs.length === 0) {
+            newRowText += cell.text; // no (trustworthy) field_map region here — copy through untouched
+          } else {
+            const newCellInner = applyEditPlanToContainer(cell.inner, paragraphs, planResult.replaceByIndex, planResult.insertsAfterIndex);
+            const tcOpenTag = /^<w:tc\b[^>]*>/.exec(cell.text)[0];
+            newRowText += `${tcOpenTag}${newCellInner}</w:tc>`;
+          }
+          cellCursor = cell.index + cell.text.length;
+        }
+        newRowText += row.text.slice(cellCursor);
+        newTblInner += newRowText;
+        rowCursor = row.index + row.text.length;
+      }
+      newTblInner += tblInner.slice(rowCursor);
+      newBodyInner += `<w:tbl>${newTblInner}</w:tbl>`;
+    } else {
+      topParaCounter++;
+      const replacement = topPlan.replaceByIndex.get(topParaCounter);
+      newBodyInner += replacement !== undefined ? buildReplacementParagraphXml(block.inner, replacement) : block.text;
+      for (const content of topPlan.insertsAfterIndex.get(topParaCounter) || []) newBodyInner += buildInsertedParagraphXml(content);
+    }
+    cursor = block.index + block.text.length;
+  }
+  newBodyInner += bodyInner.slice(cursor);
+  const leadingTop = topPlan.insertsAfterIndex.get(-1) || [];
+  if (leadingTop.length) newBodyInner = leadingTop.map(buildInsertedParagraphXml).join("") + newBodyInner;
+
+  const xml = documentXml.slice(0, bodyStart) + newBodyInner + documentXml.slice(bodyEnd);
+  return { xml, skipped };
+}
+
+// ── action: "export-dynamic" route handler ──────────────────────────────────
+// Same auth/fetch/Storage-download shape as handleExport below, but for
+// template_type "dynamic": downloads the real uploaded .docx and merges the
+// DynamicLessonPlan into it via mergeDynamicLessonIntoDocumentXml instead of
+// Docxtemplater (field_map regions have no {{TAG}} to substitute against).
+async function handleExportDynamic(req, res, authenticatedUserId) {
+  const { customTemplateId, lessonData } = req.body ?? {};
+  if (!customTemplateId) return res.status(400).json({ error: "Missing customTemplateId." });
+  if (!lessonData || !Array.isArray(lessonData.sections)) {
+    return res.status(400).json({ error: "Missing or invalid lessonData (expected a DynamicLessonPlan with a sections array)." });
+  }
+
+  const { data: template, error: fetchError } = await supabase
+    .from("custom_templates")
+    .select("*")
+    .eq("id", customTemplateId)
+    .single();
+
+  if (fetchError || !template) {
+    return res.status(404).json({ error: "Template not found." });
+  }
+  if (template.user_id !== authenticatedUserId) {
+    return res.status(403).json({ error: "You do not have access to this template." });
+  }
+  if (template.status !== "ready") {
+    return res.status(400).json({ error: "This template is not ready for export." });
+  }
+  if (!template.field_map || !Array.isArray(template.field_map.regions) || template.field_map.regions.length === 0) {
+    return res.status(400).json({ error: "This template has no detected field mapping to export against." });
+  }
+
+  const { data: fileData, error: downloadError } = await supabase.storage
+    .from(BUCKET)
+    .download(template.storage_path);
+
+  if (downloadError) {
+    console.error("[custom-templates:export-dynamic] download error:", downloadError.message);
+    return res.status(500).json({ error: "Could not load the template file." });
+  }
+
+  const contentByRegionId = new Map();
+  for (const section of lessonData.sections) {
+    if (typeof section?.id === "string" && typeof section?.content === "string" && section.content.trim()) {
+      contentByRegionId.set(section.id, section.content);
+    }
+  }
+
+  try {
+    const buffer = Buffer.from(await fileData.arrayBuffer());
+    const zip = new PizZip(buffer);
+    const documentXmlFile = zip.file("word/document.xml");
+    if (!documentXmlFile) {
+      throw new Error("The uploaded file is not a valid .docx (missing word/document.xml).");
+    }
+    const { xml: newDocumentXml, skipped } = mergeDynamicLessonIntoDocumentXml(documentXmlFile.asText(), template.field_map, contentByRegionId);
+    if (skipped.length > 0) {
+      console.warn("[custom-templates:export-dynamic] left untouched (alignment could not be verified):", skipped);
+    }
+    zip.file("word/document.xml", newDocumentXml);
+    const outBuffer = zip.generate({ type: "nodebuffer" });
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    res.setHeader("Content-Disposition", 'attachment; filename="lesson-plan.docx"');
+    return res.status(200).send(outBuffer);
+  } catch (err) {
+    console.error("[custom-templates:export-dynamic] merge error:", err);
+    return res.status(500).json({ error: err instanceof Error ? err.message : "Could not build the exported document." });
+  }
+}
+
 // ── action: "export" ───────────────────────────────────────────────────────────
 // Loads the teacher's uploaded .docx template, fills in its recognized
 // {{PLACEHOLDER}} tokens from the (Template1Lesson-shaped) lessonData, and
@@ -2311,7 +2682,8 @@ export default async function handler(req, res) {
       case "upload-init": return await handleUploadInit(req, res, authenticatedUserId);
       case "register":    return await handleRegister(req, res, authenticatedUserId);
       case "delete":      return await handleDelete(req, res, authenticatedUserId);
-      case "export":      return await handleExport(req, res, authenticatedUserId);
+      case "export":         return await handleExport(req, res, authenticatedUserId);
+      case "export-dynamic": return await handleExportDynamic(req, res, authenticatedUserId);
       default:
         return res.status(400).json({ error: `Unknown action: ${action}` });
     }
