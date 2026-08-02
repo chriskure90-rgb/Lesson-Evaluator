@@ -1,10 +1,49 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   toDynamicLessonPlanFromFieldMap,
   buildDynamicLessonExportDocument,
+  getCustomTemplateFormat,
+  hasFieldMapRegions,
+  exportCustomTemplateLessonDocx,
+  exportDynamicLessonDocx,
+  DEFAULT_DETECTED_SECTIONS,
+  DEFAULT_DETECTED_LAYOUT,
   type TemplateFieldMap,
   type DynamicLessonPlan,
+  type CustomTemplate,
 } from "./custom-templates";
+
+function template(overrides: Partial<CustomTemplate>): CustomTemplate {
+  return {
+    id: "template-1",
+    user_id: "user-1",
+    name: "Test Template",
+    original_filename: "test.docx",
+    storage_path: "user-1/test.docx",
+    placeholders: [],
+    recognized_placeholders: [],
+    unrecognized_placeholders: [],
+    structured_fields: [],
+    detected_sections: DEFAULT_DETECTED_SECTIONS,
+    section_detection_status: "ready",
+    section_detection_error: null,
+    detected_layout: DEFAULT_DETECTED_LAYOUT,
+    layout_detection_status: "ready",
+    layout_detection_error: null,
+    field_map: { version: 1, regions: [], mappings: [], confirmed: false },
+    field_map_status: "ready",
+    field_map_error: null,
+    status: "ready",
+    error_message: null,
+    created_at: new Date(0).toISOString(),
+    deleted_at: null,
+    ...overrides,
+  };
+}
+
+function regionWithMapping(id: string): TemplateFieldMap["regions"][number] {
+  return { id, order: 1, role: "editable_field", text: "", source: "explicit", outputMode: "text" };
+}
 
 function region(overrides: Partial<TemplateFieldMap["regions"][number]> & { id: string }): TemplateFieldMap["regions"][number] {
   return { order: 1, role: "editable_field", text: "", source: "explicit", outputMode: "text", ...overrides };
@@ -278,5 +317,106 @@ describe("buildDynamicLessonExportDocument — manual-entry sections in export",
     const emptyGeneratedPlan: DynamicLessonPlan = { sections: [{ id: "g1", originalLabel: "Assessment", content: "" }] };
     const doc = buildDynamicLessonExportDocument(emptyGeneratedPlan, "Lesson");
     expect(doc.sections[0].paragraphs).toEqual(["(no content generated)"]);
+  });
+});
+
+// Root-cause regression suite: a template with recognized {{TOKEN}}
+// placeholders was being routed into the dynamic (field_map) pipeline
+// whenever field_map ALSO detected regions — which it does for virtually
+// any real document, since Phase 5 detection runs unconditionally and
+// independently of {{TOKEN}} presence. getCustomTemplateFormat is the
+// single source of truth fixing this; every case here mirrors one of the
+// call sites in src/App.tsx (selectCustomTemplate, handleCustomTemplatesChange,
+// handleGenerate's dynamic-branch guard) that used to re-derive this decision
+// from hasFieldMapRegions() alone.
+describe("getCustomTemplateFormat", () => {
+  it("1. routes to custom when recognized {{TOKEN}} placeholders exist, even with field-map regions also present", () => {
+    const t = template({
+      recognized_placeholders: ["OBJECTIVES", "GRADE_LEVEL"],
+      field_map: { version: 1, regions: [regionWithMapping("doc_unit_1")], mappings: [], confirmed: false },
+    });
+    expect(getCustomTemplateFormat(t)).toBe("custom");
+  });
+
+  it("2. routes to dynamic when there are no recognized placeholders but field-map regions exist", () => {
+    const t = template({
+      recognized_placeholders: [],
+      field_map: { version: 1, regions: [regionWithMapping("doc_unit_1")], mappings: [], confirmed: false },
+    });
+    expect(getCustomTemplateFormat(t)).toBe("dynamic");
+  });
+
+  it("3. falls back to custom (existing behavior) when neither recognized placeholders nor field-map regions exist", () => {
+    const t = template({ recognized_placeholders: [], field_map: { version: 1, regions: [], mappings: [], confirmed: false } });
+    expect(getCustomTemplateFormat(t)).toBe("custom");
+  });
+
+  it("recognized tokens win even when field_map has zero regions (the simple, unambiguous case)", () => {
+    const t = template({
+      recognized_placeholders: ["OBJECTIVES"],
+      field_map: { version: 1, regions: [], mappings: [], confirmed: false },
+    });
+    expect(getCustomTemplateFormat(t)).toBe("custom");
+  });
+
+  it("hasFieldMapRegions remains a plain region-count check, independent of recognized_placeholders", () => {
+    const withTokensAndRegions = template({
+      recognized_placeholders: ["OBJECTIVES"],
+      field_map: { version: 1, regions: [regionWithMapping("r1")], mappings: [], confirmed: false },
+    });
+    // Still true — hasFieldMapRegions answers a different question (does
+    // field_map have data) than getCustomTemplateFormat (which pipeline to use).
+    expect(hasFieldMapRegions(withTokensAndRegions)).toBe(true);
+    expect(getCustomTemplateFormat(withTokensAndRegions)).toBe("custom");
+  });
+});
+
+// 4/5: exported through the correct server action — the actual mechanism
+// that ultimately determines whether handleExport (Docxtemplater/{{TAG}})
+// or handleExportDynamic (field_map position-based merge) runs.
+describe("export routing — correct server action per format", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("4. exportCustomTemplateLessonDocx sends action: 'export' (token-based path -> handleExport)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(new Blob(["docx bytes"])) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await exportCustomTemplateLessonDocx("template-1", "user-1", {
+      lessonTitle: "Photosynthesis",
+      teacherName: "",
+      subjectGradeLevel: "Grade 7 Science",
+      lessonDuration: "60",
+      centralFocus: "",
+      standardsAddressed: "",
+      lessonObjectives: ["Objective A"],
+      materials: [],
+      introduction: { teacherActions: "", studentActions: "", studentSupport: "" },
+      mainLearningActivities: { teacherActions: "", studentActions: "", studentSupport: "" },
+      closure: { teacherActions: "", studentActions: "" },
+      assessment: { howObjectivesAssessed: "" },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/custom-templates");
+    const body = JSON.parse(options.body);
+    expect(body.action).toBe("export");
+    expect(body.customTemplateId).toBe("template-1");
+  });
+
+  it("5. exportDynamicLessonDocx sends action: 'export-dynamic' (field_map path -> handleExportDynamic)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(new Blob(["docx bytes"])) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await exportDynamicLessonDocx("template-1", "user-1", { sections: [{ id: "r1", originalLabel: "Objectives", content: "Objective A" }] });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/custom-templates");
+    const body = JSON.parse(options.body);
+    expect(body.action).toBe("export-dynamic");
+    expect(body.customTemplateId).toBe("template-1");
   });
 });

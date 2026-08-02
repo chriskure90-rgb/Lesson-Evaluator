@@ -231,6 +231,57 @@ export type CustomTemplate = {
   deleted_at: string | null;
 };
 
+// A template is eligible for the region-based ("dynamic") generation
+// pipeline as soon as it has any detected field_map regions — this is
+// deliberately not gated on field_map.confirmed. Confirmation is still
+// tracked and shown (FieldMappingPanel/FieldMappingReviewDrawer), but it's
+// no longer a requirement for Generate Lesson to use it; api/generate.js
+// independently validates there's at least one real generatable field.
+//
+// NOTE: field_map detection (Phase 5, api/custom-templates.js) runs
+// unconditionally on every upload, completely independent of whether the
+// document also has {{TOKEN}} placeholders — so this alone being true does
+// NOT mean a template should use the dynamic pipeline. See
+// getCustomTemplateFormat below, which is the actual routing decision;
+// this helper only answers "does field_map have usable regions at all,"
+// used both inside that decision and as a standalone readiness check
+// (e.g. "does this template have enough data to render a structural
+// preview") that's independent of custom-vs-dynamic classification.
+export function hasFieldMapRegions(t: CustomTemplate | null | undefined): boolean {
+  return (t?.field_map?.regions?.length ?? 0) > 0;
+}
+
+// Single source of truth for "custom" (token/{{PLACEHOLDER}}-based,
+// Docxtemplater merge — see handleExport) vs "dynamic" (field_map
+// position-based merge — see handleExportDynamic) classification. Every
+// place that decides which generation/export pipeline a custom template
+// uses (upload/selection, generation, export) must call this — never
+// re-derive the decision from hasFieldMapRegions alone.
+//
+// Recognized {{TOKEN}} placeholders always win: a teacher who authored a
+// template with real {{OBJECTIVES}}/{{GRADE_LEVEL}}-style tags clearly
+// intended the token system, and field_map detection runs unconditionally
+// on every upload regardless — so field_map.regions.length > 0 is true for
+// virtually any real document (any heading/paragraph produces a region),
+// including token-tagged ones. Checking hasFieldMapRegions() first (the
+// bug this fixes) silently routed token-based templates into the dynamic
+// pipeline, whose position-based merge has no concept of {{TAG}} syntax at
+// all — the literal tag text is classified as a heading (never a mapping
+// target, never touched by export) and the tags were never replaced.
+//
+// Falls back to "custom" — matching every pre-existing call site's own
+// prior fallback — when there are neither recognized tokens nor field_map
+// regions; the CustomTemplate type has no separate "unconfigured" format
+// value to fall back to instead (status: "processing"/"error" already
+// covers "not usable yet" independently of this decision, and a "ready"
+// template is only ever reachable here after passing handleRegister's own
+// "at least one recognized placeholder or structured field" gate).
+export function getCustomTemplateFormat(template: CustomTemplate): "custom" | "dynamic" {
+  const hasRecognizedTokens = (template.recognized_placeholders?.length ?? 0) > 0;
+  if (hasRecognizedTokens) return "custom";
+  return hasFieldMapRegions(template) ? "dynamic" : "custom";
+}
+
 const BUCKET = "custom-templates";
 
 // A server-side crash (e.g. a serverless function invocation failure) can

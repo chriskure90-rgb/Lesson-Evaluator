@@ -18,6 +18,8 @@ import {
   deleteCustomTemplate,
   exportCustomTemplateLessonDocx,
   exportDynamicLessonDocx,
+  hasFieldMapRegions,
+  getCustomTemplateFormat,
   updateDetectedSections,
   updateFieldMap,
   toDynamicLessonPlanFromFieldMap,
@@ -1576,8 +1578,11 @@ function CustomTemplatePreviewModal({
   onClose: () => void;
   onUseTemplate: () => void;
 }) {
-  const hasFieldMap = (template?.field_map?.regions?.length ?? 0) > 0;
-  const canShowPreview = template !== null && template.status === "ready" && hasFieldMap;
+  // Only about whether there's field_map data to visually reproduce a table
+  // layout with — deliberately NOT the custom-vs-dynamic routing decision
+  // (see getCustomTemplateFormat), which "Use This Template" below delegates
+  // to selectCustomTemplate regardless of what this preview shows.
+  const canShowPreview = template !== null && template.status === "ready" && hasFieldMapRegions(template);
 
   return (
     <div className="template-preview-backdrop" onClick={onClose}>
@@ -1630,16 +1635,6 @@ function CustomTemplatePreviewModal({
       </div>
     </div>
   );
-}
-
-// A template is eligible for the region-based ("dynamic") generation
-// pipeline as soon as it has any detected field_map regions — this is
-// deliberately not gated on field_map.confirmed. Confirmation is still
-// tracked and shown (FieldMappingPanel/FieldMappingReviewDrawer), but it's
-// no longer a requirement for Generate Lesson to use it; api/generate.js
-// independently validates there's at least one real generatable field.
-function hasFieldMapRegions(t: CustomTemplate | null | undefined): boolean {
-  return (t?.field_map?.regions?.length ?? 0) > 0;
 }
 
 // One shared action row for every generated-lesson format (Standard,
@@ -1865,7 +1860,7 @@ function GeneratorPage({
       // fresh would (src/App.tsx chip onClick) — otherwise a teacher whose
       // template only just finished field-region detection stays stuck
       // generating through the old Template1/CustomTemplateLessonView path.
-      setLessonFormat((prev) => (prev === "custom" || prev === "dynamic" ? (hasFieldMapRegions(current) ? "dynamic" : "custom") : prev));
+      setLessonFormat((prev) => (prev === "custom" || prev === "dynamic" ? getCustomTemplateFormat(current) : prev));
     }
     // Reconcile the optimistic `updated` list above with the server shortly
     // after — every mutation (upload/rename/delete/setup confirmation) flows
@@ -1912,7 +1907,7 @@ function GeneratorPage({
   // still-relevant generated result when re-clicking the same template.
   function selectCustomTemplate(t: CustomTemplate) {
     setSelectedCustomTemplateId(t.id);
-    setLessonFormat(hasFieldMapRegions(t) ? "dynamic" : "custom");
+    setLessonFormat(getCustomTemplateFormat(t));
     if (t.id !== previewOwnerTemplateId) setGeneratedFormat(null);
   }
 
@@ -2259,7 +2254,17 @@ function GeneratorPage({
           confirmed: selectedCustomTemplate?.field_map?.confirmed ?? false,
           regionCount: selectedCustomTemplate?.field_map?.regions?.length ?? 0,
         });
-        if (!selectedCustomTemplate || !hasFieldMapRegions(selectedCustomTemplate)) {
+        if (!selectedCustomTemplate) {
+          setError("This template has no detected fields to generate into yet.");
+          return;
+        }
+        // Re-checks classification (not just hasFieldMapRegions) at generation
+        // time too — lessonFormat is normally only ever set to "dynamic" by
+        // selectCustomTemplate/handleCustomTemplatesChange, which already use
+        // getCustomTemplateFormat, but this guards against generating through
+        // the wrong pipeline if that state is ever stale (e.g. the template's
+        // recognized_placeholders/field_map changed after selection).
+        if (getCustomTemplateFormat(selectedCustomTemplate) !== "dynamic") {
           setError("This template has no detected fields to generate into yet.");
           return;
         }

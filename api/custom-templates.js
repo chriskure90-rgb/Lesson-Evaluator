@@ -66,7 +66,7 @@ const KNOWN_PLACEHOLDER_TOKENS = Object.keys(PLACEHOLDER_CATALOG);
 // generated before this feature existed (or against a template with no
 // structured fields) simply has no customFieldSelections — every option
 // renders unchecked rather than erroring.
-function buildRenderData(lesson, recognizedTokens, structuredFields) {
+export function buildRenderData(lesson, recognizedTokens, structuredFields) {
   const data = {};
   for (const token of recognizedTokens || []) {
     const entry = PLACEHOLDER_CATALOG[token];
