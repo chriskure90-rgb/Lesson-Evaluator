@@ -1471,7 +1471,12 @@ function ReproducedTemplatePreview({
                         key={cell.cellId}
                         colSpan={geometry.colspan}
                         rowSpan={geometry.rowspan}
-                        style={{ border: "1px solid var(--border)", padding: 8, verticalAlign: "top", fontSize: 12.5, minWidth: 80, height: 36 }}
+                        // minHeight (not a fixed height) — a cell must always
+                        // grow to fit its actual content, never crowd or
+                        // clip it, while still reserving a sensible minimum
+                        // for a genuinely empty cell so the table's original
+                        // proportions still read correctly.
+                        style={{ border: "1px solid var(--border)", padding: 8, verticalAlign: "top", fontSize: 12.5, minWidth: 80, minHeight: 36 }}
                       >
                         {cell.regions.map((region, i) => (
                           <div key={region.id} style={{ marginBottom: i < cell.regions.length - 1 ? 8 : 0 }}>
@@ -2592,8 +2597,18 @@ function GeneratorPage({
     });
   }, [generatedFormat, lessonFormat, selectedCustomTemplateId, customTemplates, dynamicPreviewTemplate, dynamicLessonPlan, template1Lesson]);
 
+  // Before a lesson exists, the form and preview stay a balanced two-column
+  // layout (unchanged). Once a lesson is generated, the preview needs to
+  // resemble the exported document's proportions — much wider than a form
+  // field column — so the page widens and the grid ratio shifts sharply
+  // toward the preview. The form column keeps a real minimum (340px) so it
+  // never gets squeezed unusably narrow; the .gen-grid media query below
+  // 700px still overrides this with `!important` to stack both columns
+  // vertically regardless of ratio, so narrow screens are unaffected.
+  const hasGeneratedLesson = generatedFormat !== null;
+
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "40px 40px 60px" }}>
+    <div style={{ maxWidth: hasGeneratedLesson ? 1600 : 1100, margin: "0 auto", padding: "40px 40px 60px" }}>
       <PageHeader
         title="Lesson Generator"
         subtitle="Generate standards-aligned lesson plans in seconds."
@@ -2601,7 +2616,12 @@ function GeneratorPage({
 
       <div
         className="gen-grid"
-        style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1.15fr)", gap: 28, alignItems: "start" }}
+        style={{
+          display: "grid",
+          gridTemplateColumns: hasGeneratedLesson ? "minmax(340px, 0.9fr) minmax(0, 1.9fr)" : "minmax(0,1fr) minmax(0,1.15fr)",
+          gap: 28,
+          alignItems: "start",
+        }}
       >
         {/* ── Form ───────────────────────────────── */}
         <div className="card" style={{ padding: "24px 24px 28px" }}>
