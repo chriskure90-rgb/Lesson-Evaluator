@@ -2623,8 +2623,15 @@ function GeneratorPage({
           alignItems: "start",
         }}
       >
-        {/* ── Form ───────────────────────────────── */}
-        <div className="card" style={{ padding: "24px 24px 28px" }}>
+        {/* ── Form ─────────────────────────────────
+            minWidth: 0 (matching .lesson-preview-column's own override
+            below) — without it, a grid item defaults to a minimum width
+            equal to its content's min-content size. Once the preview
+            widened and this column's track could go as narrow as 340px,
+            that default let wide-but-unwrapped children (.grade-row's
+            13-button Grade Band/Subject rows in particular) force this
+            whole column past its track, overflowing into the preview. */}
+        <div className="card" style={{ padding: "24px 24px 28px", minWidth: 0 }}>
           <div className="space-y-6">
 
             {/* AI Model */}

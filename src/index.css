@@ -537,6 +537,7 @@ h1, h2, h3, h4, h5 {
 */
 .model-pill-group {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -587,12 +588,14 @@ h1, h2, h3, h4, h5 {
 
 /* ── Grade row ───────────────────────────────────────────── */
 /*
-  Single flex line: [K] | [1][2]…[12]
-  Buttons are compact enough that all 13 fit without wrapping
-  on any card wider than ~340px.
+  [K] | [1][2]…[12] (Grade Band) or a handful of subject buttons (Subject
+  reuses this same class) — wraps onto additional rows once the form
+  column is narrower than all buttons' combined min-width, rather than
+  forcing the column (and its .card ancestor) wider than its grid track.
 */
 .grade-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 3px;
   align-items: center;
 }
@@ -942,7 +945,7 @@ h1, h2, h3, h4, h5 {
 .toggle-btn:hover { border-color: rgb(58 107 82 / 0.4); color: var(--foreground); }
 .toggle-btn.active { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
 
-.duration-group { display: flex; gap: 6px; }
+.duration-group { display: flex; flex-wrap: wrap; gap: 6px; }
 .duration-btn {
   flex: 1;
   height: 36px;
