@@ -1,0 +1,50 @@
+-- Adds synthesized_storage_path to custom_templates, splitting the single
+-- storage_path column into two distinct concepts.
+--
+-- Root cause this fixes: for a template whose ORIGINAL upload had no
+-- {{TOKEN}} tags at all (a PDF, or a tag-free DOCX that fell back to
+-- heading-keyword detection — see handleRegister/convertHeadingsToPlaceholderDocx
+-- in api/custom-templates.js), the register flow used to overwrite
+-- storage_path with the path of a synthesized, flattened {{TOKEN}} docx it
+-- built from the detected headings. Field-map/layout detection, however,
+-- always read from the REAL original upload (originalBuffer) — so for any
+-- such template that also had real tables (e.g. the UIUC template),
+-- field_map described a table structure that no longer existed in the file
+-- every export path actually downloaded. handleExportDynamic/
+-- handleExportHybrid would silently write nothing (or fail alignment
+-- checks) since the tables their field_map addressed were never there.
+--
+-- After this fix:
+--   - storage_path ALWAYS points at the real originally-uploaded file
+--     (never reassigned to a synthesized conversion) — the same file
+--     field_map/detected_layout/detected_sections were built from, and the
+--     same file handleExportDynamic/handleExportHybrid download.
+--   - synthesized_storage_path is set ONLY when a synthesized {{TOKEN}}
+--     docx was created (PDF upload, or tag-free DOCX heading fallback) —
+--     handleExport (the pure-token export path) downloads this instead of
+--     storage_path when it's present, since Docxtemplater needs a document
+--     that actually contains the {{TOKEN}} tags being substituted.
+--   - A template whose original upload already had real {{TOKEN}} tags (no
+--     fallback ever triggered) has synthesized_storage_path = null —
+--     storage_path is both the original and the tokens document, exactly
+--     as before this split.
+--
+-- Existing rows are NOT backfilled by this migration — an existing
+-- template registered before this fix keeps its current (possibly
+-- synthesized) storage_path and a null synthesized_storage_path. Per the
+-- 2026-08-03 investigation, there is no reliable way to reconstruct which
+-- rows are affected or recover their original file after the fact; any
+-- affected template (recognized_placeholders non-empty AND
+-- field_map.regions.length non-empty, where storage_path's file has no
+-- tables matching what field_map describes) must be deleted and
+-- re-uploaded once this fix is deployed so registration runs fresh under
+-- the corrected logic.
+--
+-- Run this once in the Supabase SQL editor (Dashboard → SQL Editor).
+-- Safe to re-run.
+
+alter table custom_templates
+  add column if not exists synthesized_storage_path text;
+
+-- Verify afterwards:
+-- select id, name, storage_path, synthesized_storage_path from custom_templates order by created_at desc;

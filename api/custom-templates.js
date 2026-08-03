@@ -1907,12 +1907,26 @@ async function handleRegister(req, res, authenticatedUserId) {
     return res.status(400).json({ error: "Only DOCX lesson plan templates are currently supported. Please upload a .docx file." });
   }
 
-  // Kept aside for section detection below, which always re-reads the
-  // ORIGINAL uploaded file — for a PDF, `buffer` gets reassigned to the
-  // synthesized docx further down, but section recognition should reflect
-  // exactly what the teacher uploaded, not the converted intermediate.
+  // Kept aside for section/layout/field-map detection below, which always
+  // re-read the ORIGINAL uploaded file — `buffer` gets reassigned to a
+  // synthesized docx further down for a PDF, or for a tag-free DOCX that
+  // falls back to heading detection, but every detection pass should
+  // reflect exactly what the teacher uploaded, not the converted
+  // intermediate.
   const originalBuffer = buffer;
   let storagePath = path;
+  // Set only when a DOCX upload (never a PDF — see below) gets converted
+  // into a synthesized {{TOKEN}} docx via the heading-fallback path.
+  // storagePath is DELIBERATELY left pointing at the real original DOCX in
+  // that case (never overwritten with the synthesized file) — field_map/
+  // detected_layout are built from originalBuffer (the real file, with its
+  // real tables), and handleExportDynamic/handleExportHybrid download
+  // storage_path directly, so the two must stay the same document. The
+  // synthesized doc is still needed for the pure-token export path
+  // (handleExport downloads synthesized_storage_path when set — see below —
+  // since Docxtemplater needs a document that actually contains the
+  // {{TOKEN}} tags, which only the synthesized doc has for this case).
+  let synthesizedStoragePath = null;
   let detected = { all: [], recognized: [], unrecognized: [] };
   let structuredFields = [];
   let status = "ready";
@@ -1964,14 +1978,20 @@ async function handleRegister(req, res, authenticatedUserId) {
 
   // A .docx with no {{PLACEHOLDER}} tags at all (an ordinary lesson-plan
   // document, not one written for this feature) falls back to the same
-  // heading-keyword detection the PDF pipeline uses, then gets converted
-  // into a synthesized {{TOKEN}} docx exactly like a PDF upload — from
-  // there on it's indistinguishable from any other custom template. A docx
-  // that DOES have {{...}} tags — even ones that don't match a known
-  // token — is left alone here; it still goes through the normal
-  // "unrecognized placeholder" path below rather than being silently
-  // reinterpreted by heading, since a teacher who attempted the tag syntax
-  // likely wants to know their tags didn't match, not have them ignored.
+  // heading-keyword detection the PDF pipeline uses, converting a synthesized
+  // {{TOKEN}} docx purely for the token-export path. Unlike the PDF case
+  // above, storagePath here is NOT reassigned to that synthesized file —
+  // this upload IS a real DOCX (possibly with real tables field_map has
+  // already mapped, or will map, from originalBuffer), so storage_path must
+  // keep pointing at it for handleExportDynamic/handleExportHybrid to merge
+  // into the SAME document field_map describes. The synthesized doc's path
+  // is tracked separately in synthesizedStoragePath, for handleExport (the
+  // pure-token path) to use instead. A docx that DOES have {{...}} tags —
+  // even ones that don't match a known token — is left alone here; it still
+  // goes through the normal "unrecognized placeholder" path below rather
+  // than being silently reinterpreted by heading, since a teacher who
+  // attempted the tag syntax likely wants to know their tags didn't match,
+  // not have them ignored.
   let usedHeadingFallback = false;
   if (!isPdf && status !== "error") {
     let initialDetected;
@@ -2002,7 +2022,7 @@ async function handleRegister(req, res, authenticatedUserId) {
               : "No {{PLACEHOLDER}} tags or recognizable section headings (e.g. Objectives, Materials, Procedure, Assessment) were found in this document.";
           } else {
             buffer = converted.buffer;
-            storagePath = converted.storagePath;
+            synthesizedStoragePath = converted.storagePath; // storagePath stays the real original DOCX
             usedHeadingFallback = true;
             structuredFields = converted.structuredFields;
           }
@@ -2123,6 +2143,7 @@ async function handleRegister(req, res, authenticatedUserId) {
     name:                       templateName,
     original_filename:          filename || path,
     storage_path:               storagePath,
+    synthesized_storage_path:   synthesizedStoragePath,
     placeholders:               detected.all,
     recognized_placeholders:    detected.recognized,
     unrecognized_placeholders:  detected.unrecognized,
@@ -2154,6 +2175,7 @@ async function handleRegister(req, res, authenticatedUserId) {
     "structured_fields", "detected_sections", "section_detection_status", "section_detection_error",
     "detected_layout", "layout_detection_status", "layout_detection_error",
     "field_map", "field_map_status", "field_map_error",
+    "synthesized_storage_path",
   ];
   let payload = insertPayload;
   let saved, insertError;
@@ -2754,9 +2776,20 @@ async function handleExport(req, res, authenticatedUserId) {
     return res.status(400).json({ error: "This template is not ready for export." });
   }
 
+  // Docxtemplater needs a document that actually contains the {{TOKEN}}
+  // tags being substituted. For a template whose original upload had no
+  // tags at all (PDF, or a tag-free DOCX that fell back to heading
+  // detection — see handleRegister), those tags only exist in the
+  // synthesized conversion, tracked separately in synthesized_storage_path
+  // so storage_path itself can keep pointing at the real original document
+  // for handleExportDynamic/handleExportHybrid. A template whose original
+  // upload already had real {{TOKEN}} tags has no synthesized doc at all —
+  // synthesized_storage_path is null, and storage_path is both the
+  // original and the tokens document (same file), same as before this split.
+  const tokenDocPath = template.synthesized_storage_path || template.storage_path;
   const { data: fileData, error: downloadError } = await supabase.storage
     .from(BUCKET)
-    .download(template.storage_path);
+    .download(tokenDocPath);
 
   if (downloadError) {
     console.error("[custom-templates:export] download error:", downloadError.message);

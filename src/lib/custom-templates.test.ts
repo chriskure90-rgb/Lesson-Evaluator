@@ -23,6 +23,7 @@ function template(overrides: Partial<CustomTemplate>): CustomTemplate {
     name: "Test Template",
     original_filename: "test.docx",
     storage_path: "user-1/test.docx",
+    synthesized_storage_path: null,
     placeholders: [],
     recognized_placeholders: [],
     unrecognized_placeholders: [],

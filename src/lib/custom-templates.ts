@@ -208,6 +208,17 @@ export type CustomTemplate = {
   name: string;
   original_filename: string;
   storage_path: string;
+  // Set only when register() synthesized a separate {{TOKEN}} docx from
+  // detected headings (a PDF upload, or a tag-free DOCX that fell back to
+  // heading detection — see handleRegister/mergeTokensIntoDocxBuffer in
+  // api/custom-templates.js). storage_path always points at the real
+  // originally-uploaded file; the server's handleExport downloads this
+  // instead when it's present, since Docxtemplater needs a document that
+  // actually contains the {{TOKEN}} tags. Null for a template whose
+  // original upload already had real tags (storage_path IS the tokens
+  // document in that case) — the client never needs to choose between the
+  // two itself, this is exposed only for display/debugging.
+  synthesized_storage_path: string | null;
   placeholders: string[];
   recognized_placeholders: string[];
   unrecognized_placeholders: string[];
@@ -533,7 +544,7 @@ const OPTIONAL_COLUMNS = [
   "structured_fields", "detected_sections", "section_detection_status", "section_detection_error",
   "detected_layout", "layout_detection_status", "layout_detection_error",
   "field_map", "field_map_status", "field_map_error",
-  "deleted_at",
+  "deleted_at", "synthesized_storage_path",
 ] as const;
 
 function isMissingColumnError(error: { code?: string; message?: string } | null, column: string): boolean {
@@ -586,7 +597,7 @@ export function normalizeCustomTemplateRow(row: Record<string, unknown>): Custom
       CustomTemplate,
       "structured_fields" | "detected_sections" | "section_detection_status" | "section_detection_error"
       | "detected_layout" | "layout_detection_status" | "layout_detection_error"
-      | "field_map" | "field_map_status" | "field_map_error" | "deleted_at"
+      | "field_map" | "field_map_status" | "field_map_error" | "deleted_at" | "synthesized_storage_path"
     >),
     structured_fields: Array.isArray(row.structured_fields)
       ? (row.structured_fields as CustomTemplateStructuredField[])
@@ -601,6 +612,7 @@ export function normalizeCustomTemplateRow(row: Record<string, unknown>): Custom
     field_map_status: typeof row.field_map_status === "string" ? row.field_map_status : null,
     field_map_error: typeof row.field_map_error === "string" ? row.field_map_error : null,
     deleted_at: typeof row.deleted_at === "string" ? row.deleted_at : null,
+    synthesized_storage_path: typeof row.synthesized_storage_path === "string" ? row.synthesized_storage_path : null,
   };
 }
 
