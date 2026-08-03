@@ -2716,6 +2716,10 @@ export function mergeTokensIntoDocxBuffer(buffer, lessonData, template) {
   });
 
   const renderData = buildRenderData(lessonData, template.recognized_placeholders || [], template.structured_fields || []);
+  // TEMP_DIAGNOSTIC (UIUC hybrid export trace) — remove once the real-export
+  // investigation is closed out.
+  const filledTokens = Object.entries(renderData).filter(([, v]) => typeof v === "string" && v.trim().length > 0).map(([k]) => k);
+  console.log(`[TEMP_DIAGNOSTIC][token-merge] template=${template.id} recognized_placeholders=${JSON.stringify(template.recognized_placeholders || [])} tokensWithContent=${filledTokens.length}/${(template.recognized_placeholders || []).length} (${JSON.stringify(filledTokens)})`);
   doc.render(renderData);
 
   return doc.getZip().generate({ type: "nodebuffer" });
@@ -2788,6 +2792,10 @@ async function handleExport(req, res, authenticatedUserId) {
 //   4. Return the doubly-merged document.
 async function handleExportHybrid(req, res, authenticatedUserId) {
   const { customTemplateId, lessonData, dynamicLessonData } = req.body ?? {};
+  // TEMP_DIAGNOSTIC (UIUC hybrid export trace) — remove once the real-export
+  // investigation is closed out. Confirms this handler is actually entered
+  // and with what request shape.
+  console.log(`[TEMP_DIAGNOSTIC][export-hybrid] handleExportHybrid ENTERED — customTemplateId=${customTemplateId} dynamicLessonData.sections.length=${dynamicLessonData?.sections?.length ?? "(missing)"}`);
   if (!customTemplateId) return res.status(400).json({ error: "Missing customTemplateId." });
   if (!lessonData)       return res.status(400).json({ error: "Missing lessonData." });
   if (!dynamicLessonData || !Array.isArray(dynamicLessonData.sections)) {
@@ -2803,6 +2811,7 @@ async function handleExportHybrid(req, res, authenticatedUserId) {
   if (fetchError || !template) {
     return res.status(404).json({ error: "Template not found." });
   }
+  console.log(`[TEMP_DIAGNOSTIC][export-hybrid] template=${template.id} storage_path=${template.storage_path} recognized_placeholders=${JSON.stringify(template.recognized_placeholders || [])} field_map.regions.length=${template.field_map?.regions?.length ?? 0}`);
   if (template.user_id !== authenticatedUserId) {
     return res.status(403).json({ error: "You do not have access to this template." });
   }
@@ -2829,6 +2838,10 @@ async function handleExportHybrid(req, res, authenticatedUserId) {
     }
   }
 
+  // TEMP_DIAGNOSTIC (UIUC hybrid export trace) — remove once the real-export
+  // investigation is closed out.
+  console.log(`[TEMP_DIAGNOSTIC][export-hybrid] dynamic regions PLANNED (non-empty content) = ${contentByRegionId.size} of ${dynamicLessonData.sections.length} total sections: ${JSON.stringify([...contentByRegionId.keys()])}`);
+
   try {
     const originalBuffer = Buffer.from(await fileData.arrayBuffer());
     const originalZip = new PizZip(originalBuffer);
@@ -2837,6 +2850,8 @@ async function handleExportHybrid(req, res, authenticatedUserId) {
       throw new Error("The uploaded file is not a valid .docx (missing word/document.xml).");
     }
     const originalXml = originalDocumentXmlFile.asText();
+    const countTag = (xml, tag) => (xml.match(new RegExp(`<${tag}[ >]`, "g")) || []).length;
+    console.log(`[TEMP_DIAGNOSTIC][export-hybrid] ORIGINAL document.xml counts — w:tbl=${countTag(originalXml, "w:tbl")} w:tr=${countTag(originalXml, "w:tr")} w:tc=${countTag(originalXml, "w:tc")}`);
 
     // Step 1+2: token merge first, against the original document.
     const tokenMergedBuffer = mergeTokensIntoDocxBuffer(originalBuffer, lessonData, template);
@@ -2851,6 +2866,17 @@ async function handleExportHybrid(req, res, authenticatedUserId) {
     if (skipped.length > 0) {
       console.warn("[custom-templates:export-hybrid] left untouched:", skipped);
     }
+    // TEMP_DIAGNOSTIC (UIUC hybrid export trace) — remove once the real-export
+    // investigation is closed out. writtenCount is a heuristic (does a
+    // snippet of the planned content appear in the final XML at all).
+    let writtenCount = 0;
+    for (const content of contentByRegionId.values()) {
+      if (finalXml.includes(content.slice(0, 30))) writtenCount++;
+    }
+    console.log(`[TEMP_DIAGNOSTIC][export-hybrid] dynamic regions WRITTEN=${writtenCount} SKIPPED=${skipped.length} of ${contentByRegionId.size} planned`);
+    for (const s of skipped) console.log(`[TEMP_DIAGNOSTIC][export-hybrid] skipped region — location=${s.location} reason=${s.reason}`);
+    console.log(`[TEMP_DIAGNOSTIC][export-hybrid] EXPORTED document.xml counts — w:tbl=${countTag(finalXml, "w:tbl")} w:tr=${countTag(finalXml, "w:tr")} w:tc=${countTag(finalXml, "w:tc")}`);
+
     tokenMergedZip.file("word/document.xml", finalXml);
     const outBuffer = tokenMergedZip.generate({ type: "nodebuffer" });
 
@@ -2878,7 +2904,12 @@ export default async function handler(req, res) {
       return res.status(401).json({ error: "Not authenticated." });
     }
 
-    const { action } = req.body ?? {};
+    const { action, customTemplateId } = req.body ?? {};
+    // TEMP_DIAGNOSTIC (UIUC hybrid export trace) — remove once the
+    // real-export investigation is closed out.
+    if (action === "export" || action === "export-dynamic" || action === "export-hybrid") {
+      console.log(`[TEMP_DIAGNOSTIC][dispatch] action received="${action}" customTemplateId=${customTemplateId}`);
+    }
     switch (action) {
       case "upload-init": return await handleUploadInit(req, res, authenticatedUserId);
       case "register":    return await handleRegister(req, res, authenticatedUserId);

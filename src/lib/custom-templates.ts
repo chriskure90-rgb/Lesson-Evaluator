@@ -803,6 +803,9 @@ export async function exportCustomTemplateLessonDocx(
   userId: string,
   lessonData: Template1Lesson
 ): Promise<Blob> {
+  // TEMP_DIAGNOSTIC (UIUC hybrid export trace) — remove once the real-export
+  // investigation is closed out.
+  console.log(`[TEMP_DIAGNOSTIC] exportCustomTemplateLessonDocx invoked — customTemplateId=${customTemplateId} action=export`);
   const res = await fetch("/api/custom-templates", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(await authHeaders()) },
@@ -1005,6 +1008,9 @@ export async function exportDynamicLessonDocx(
   userId: string,
   lessonData: DynamicLessonPlan
 ): Promise<Blob> {
+  // TEMP_DIAGNOSTIC (UIUC hybrid export trace) — remove once the real-export
+  // investigation is closed out.
+  console.log(`[TEMP_DIAGNOSTIC] exportDynamicLessonDocx invoked — customTemplateId=${customTemplateId} action=export-dynamic`);
   const res = await fetch("/api/custom-templates", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(await authHeaders()) },
@@ -1039,6 +1045,9 @@ export async function exportHybridLessonDocx(
   lessonData: Template1Lesson,
   dynamicLessonData: DynamicLessonPlan
 ): Promise<Blob> {
+  // TEMP_DIAGNOSTIC (UIUC hybrid export trace) — remove once the real-export
+  // investigation is closed out.
+  console.log(`[TEMP_DIAGNOSTIC] exportHybridLessonDocx invoked — customTemplateId=${customTemplateId} action=export-hybrid dynamicLessonData.sections.length=${dynamicLessonData.sections.length}`);
   const res = await fetch("/api/custom-templates", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(await authHeaders()) },

@@ -3346,6 +3346,12 @@ function GeneratorPage({
                             // generated against — immune to the teacher having
                             // since switched the active template chip.
                             const strategy = getDocxExportStrategy(dynamicPreviewTemplate);
+                            // TEMP_DIAGNOSTIC (UIUC hybrid export trace) —
+                            // remove once the real-export investigation is
+                            // closed out.
+                            console.log(
+                              `[TEMP_DIAGNOSTIC] export dropdown — templateId=${selectedCustomTemplateId} recognized_placeholders=${JSON.stringify(dynamicPreviewTemplate.recognized_placeholders)} field_map.regions.length=${dynamicPreviewTemplate.field_map?.regions?.length ?? 0} strategy=${strategy}`
+                            );
                             if (strategy === "dynamic") {
                               return exportDynamicLessonDocx(selectedCustomTemplateId, userId, dynamicLessonPlan);
                             }
