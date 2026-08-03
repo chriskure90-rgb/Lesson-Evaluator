@@ -729,6 +729,40 @@ h1, h2, h3, h4, h5 {
   outline-offset: 2px;
 }
 
+/* ── "My Templates" list row ────────────────────────────────
+   One row per uploaded template: name chip + Preview + Delete. Grid
+   (not the inline-flex this used to be) so the name column can actually
+   shrink/truncate instead of forcing Preview/Delete outside the card —
+   min-width: 0 on both the row and the name button is what lets a long
+   template name give up space rather than overflow. */
+.template-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+.template-name-button {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.template-row-action {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+@media (max-width: 1100px) {
+  .template-list-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .template-delete-action {
+    grid-column: 2;
+  }
+}
+
 .fw-upload-area {
   margin-top: 10px;
   border: 1.5px dashed var(--border);

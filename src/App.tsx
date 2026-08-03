@@ -2935,18 +2935,19 @@ function GeneratorPage({
                     {readyCustomTemplates.map((t) => {
                       const active = (lessonFormat === "custom" || lessonFormat === "dynamic") && selectedCustomTemplateId === t.id;
                       return (
-                        <div key={t.id} style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
+                        <div key={t.id} className="template-list-row">
                           <button
                             type="button"
-                            className={`fw-chip${active ? " fw-chip-active" : ""}`}
+                            className={`fw-chip template-name-button${active ? " fw-chip-active" : ""}`}
                             onClick={() => selectCustomTemplate(t)}
                             aria-pressed={active}
+                            title={t.name}
                           >
                             {t.name}
                           </button>
                           <button
                             type="button"
-                            className="fw-chip-preview-btn"
+                            className="fw-chip-preview-btn template-row-action"
                             onClick={(e) => {
                               e.stopPropagation();
                               setPreviewingCustomTemplateId(t.id);
@@ -2958,7 +2959,7 @@ function GeneratorPage({
                           </button>
                           <button
                             type="button"
-                            className="fw-chip-delete-btn"
+                            className="fw-chip-delete-btn template-row-action template-delete-action"
                             onClick={(e) => {
                               e.stopPropagation();
                               setCustomTemplateDeleteError(null);
