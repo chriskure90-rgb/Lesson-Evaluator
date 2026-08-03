@@ -231,55 +231,73 @@ export type CustomTemplate = {
   deleted_at: string | null;
 };
 
+// ── Two INDEPENDENT decisions — never conflate them ─────────────────────────
+// getLessonDisplayFormat answers "how should this template be generated,
+// edited, and previewed on screen." getDocxExportStrategy answers "which
+// merge engine should build the exported .docx." A template can (and for
+// e.g. the UIUC template, does) answer these two questions differently: it
+// has both recognized {{TOKEN}} placeholders AND usable field_map regions,
+// so its lesson is generated/edited/previewed via the richer field-map
+// layout, but its DOCX export still merges into the original {{TAG}} text
+// via Docxtemplater, since that's what the uploaded file actually contains.
+// A single shared "custom vs dynamic" variable previously drove both
+// questions at once — routing tokens-first for export (correct) also
+// silently routed the SAME template's display/generation to the generic
+// Template1 cards instead of its own detected layout (the regression this
+// separation fixes). Every call site that needs one of these two answers
+// must call the matching function below — never derive either from the
+// other's result, and never introduce a third shared variable that answers
+// both again.
+
+export function hasRecognizedPlaceholders(t: CustomTemplate | null | undefined): boolean {
+  return (t?.recognized_placeholders?.length ?? 0) > 0;
+}
+
 // A template is eligible for the region-based ("dynamic") generation
 // pipeline as soon as it has any detected field_map regions — this is
 // deliberately not gated on field_map.confirmed. Confirmation is still
 // tracked and shown (FieldMappingPanel/FieldMappingReviewDrawer), but it's
 // no longer a requirement for Generate Lesson to use it; api/generate.js
 // independently validates there's at least one real generatable field.
-//
-// NOTE: field_map detection (Phase 5, api/custom-templates.js) runs
-// unconditionally on every upload, completely independent of whether the
-// document also has {{TOKEN}} placeholders — so this alone being true does
-// NOT mean a template should use the dynamic pipeline. See
-// getCustomTemplateFormat below, which is the actual routing decision;
-// this helper only answers "does field_map have usable regions at all,"
-// used both inside that decision and as a standalone readiness check
-// (e.g. "does this template have enough data to render a structural
-// preview") that's independent of custom-vs-dynamic classification.
 export function hasFieldMapRegions(t: CustomTemplate | null | undefined): boolean {
   return (t?.field_map?.regions?.length ?? 0) > 0;
 }
 
-// Single source of truth for "custom" (token/{{PLACEHOLDER}}-based,
-// Docxtemplater merge — see handleExport) vs "dynamic" (field_map
-// position-based merge — see handleExportDynamic) classification. Every
-// place that decides which generation/export pipeline a custom template
-// uses (upload/selection, generation, export) must call this — never
-// re-derive the decision from hasFieldMapRegions alone.
-//
-// Recognized {{TOKEN}} placeholders always win: a teacher who authored a
-// template with real {{OBJECTIVES}}/{{GRADE_LEVEL}}-style tags clearly
-// intended the token system, and field_map detection runs unconditionally
-// on every upload regardless — so field_map.regions.length > 0 is true for
-// virtually any real document (any heading/paragraph produces a region),
-// including token-tagged ones. Checking hasFieldMapRegions() first (the
-// bug this fixes) silently routed token-based templates into the dynamic
-// pipeline, whose position-based merge has no concept of {{TAG}} syntax at
-// all — the literal tag text is classified as a heading (never a mapping
-// target, never touched by export) and the tags were never replaced.
-//
-// Falls back to "custom" — matching every pre-existing call site's own
-// prior fallback — when there are neither recognized tokens nor field_map
-// regions; the CustomTemplate type has no separate "unconfigured" format
-// value to fall back to instead (status: "processing"/"error" already
-// covers "not usable yet" independently of this decision, and a "ready"
-// template is only ever reachable here after passing handleRegister's own
-// "at least one recognized placeholder or structured field" gate).
-export function getCustomTemplateFormat(template: CustomTemplate): "custom" | "dynamic" {
-  const hasRecognizedTokens = (template.recognized_placeholders?.length ?? 0) > 0;
-  if (hasRecognizedTokens) return "custom";
+// DISPLAY/GENERATION routing — field_map wins whenever it has usable
+// regions, regardless of whether {{TOKEN}} placeholders are ALSO present:
+// the field-map layout is strictly richer (real table/row/cell structure,
+// per-region editing) than the generic Template1 cards, so a template with
+// both is still best generated/edited/previewed through it. Falls back to
+// "custom" — matching this decision's own long-standing prior behavor —
+// only when field_map has no usable regions at all; the CustomTemplate type
+// has no separate "unconfigured" format value to fall back to instead
+// (status: "processing"/"error" already covers "not usable yet"
+// independently of this decision).
+export function getLessonDisplayFormat(template: CustomTemplate): "custom" | "dynamic" {
   return hasFieldMapRegions(template) ? "dynamic" : "custom";
+}
+
+// DOCX EXPORT routing — completely independent of getLessonDisplayFormat
+// above. Recognized {{TOKEN}} placeholders always win here: a teacher who
+// authored a template with real {{OBJECTIVES}}/{{GRADE_LEVEL}}-style tags
+// clearly intended Docxtemplater's {{TAG}} substitution to run against the
+// original file — regardless of which pipeline generated the on-screen
+// content — since that's the only merge engine that understands {{TAG}}
+// syntax at all (the dynamic/field_map merge doesn't; see
+// mergeDynamicLessonIntoDocumentXml's own docs). Falls back to "dynamic"
+// only when there are no recognized tokens AND field_map has usable
+// regions; falls back to "token" (not "dynamic") when NEITHER exists,
+// matching handleExport's own existing structured-fields-only case (a
+// template with zero narrative {{TOKEN}}s but real {{FIELD_*}} checklist
+// tokens still needs Docxtemplater, never the field_map merge).
+//
+// When this returns "token" for a template whose DISPLAY format resolved
+// to "dynamic" (the hybrid case), the caller cannot pass the on-screen
+// DynamicLessonPlan straight to exportCustomTemplateLessonDocx — it needs a
+// Template1Lesson-shaped object first; see buildTemplate1LessonFromDynamicPlan.
+export function getDocxExportStrategy(template: CustomTemplate): "token" | "dynamic" {
+  if (hasRecognizedPlaceholders(template)) return "token";
+  return hasFieldMapRegions(template) ? "dynamic" : "token";
 }
 
 const BUCKET = "custom-templates";
@@ -896,6 +914,70 @@ export function buildDynamicLessonExportDocument(plan: DynamicLessonPlan, title:
       // generate it in the first place.
       paragraphs: [section.content || (section.origin === "manual" ? "(empty)" : "(no content generated)")],
     })),
+  };
+}
+
+// Best-effort content bridge for the HYBRID case (see getDocxExportStrategy):
+// a template whose on-screen lesson was generated/edited via the dynamic
+// field-map pipeline (DynamicLessonPlan, keyed by region id) but whose DOCX
+// export must go through the token/Docxtemplater path, because the original
+// file has recognized {{TOKEN}} placeholders. That path expects a
+// Template1Lesson-shaped object (see buildRenderData/PLACEHOLDER_CATALOG in
+// api/custom-templates.js, which read fixed fields like .lessonObjectives/
+// .subjectGradeLevel) — not plan.sections' flat, region-id-keyed shape. Maps
+// each section back to a Template1Lesson field via the SAME canonical
+// target its field_map mapping already recorded (the meaning
+// classifyRegionTarget or the teacher's own Field Mapping Review assigned
+// it), not a fresh guess.
+//
+// Deliberately partial: field_map's canonical target vocabulary (see
+// CANONICAL_FIELD_TARGETS) is broader than Template1Lesson's fixed shape —
+// targets with no reasonable Template1Lesson home (custom_section,
+// learner_background, accommodations, culturally_responsive_education) are
+// dropped rather than guessed at, and centralFocus has no field_map
+// counterpart at all, so it's always empty here. Multiple regions sharing
+// one target are joined with a blank line, in field_map detection order.
+export function buildTemplate1LessonFromDynamicPlan(
+  plan: DynamicLessonPlan,
+  fieldMap: TemplateFieldMap,
+  // Raw components, not pre-formatted strings — formatted the exact same
+  // way normaliseTemplate1Lesson's own caller does (App.tsx), so a hybrid
+  // template's exported subjectGradeLevel/lessonDuration text matches a
+  // genuinely-generated Template1Lesson's byte-for-byte.
+  meta: { subject: string; gradeLabel: string; duration: number }
+): Template1Lesson {
+  const contentById = new Map(plan.sections.map((s) => [s.id, s.content]));
+  const targetById = new Map(fieldMap.mappings.map((m) => [m.regionId, m.target]));
+  // Regions in detection order, so a target shared by multiple regions joins
+  // in a stable, document-faithful order rather than plan.sections' own
+  // (unspecified, generation-response-dependent) order.
+  const orderedRegionIds = [...fieldMap.regions].sort((a, b) => a.order - b.order).map((r) => r.id);
+
+  function contentFor(target: FieldMappingTarget): string {
+    return orderedRegionIds
+      .filter((id) => targetById.get(id) === target)
+      .map((id) => contentById.get(id))
+      .filter((text): text is string => !!text && text.trim().length > 0)
+      .join("\n\n");
+  }
+  function linesFor(target: FieldMappingTarget): string[] {
+    const text = contentFor(target);
+    return text ? text.split(/\r?\n+/).map((line) => line.trim()).filter(Boolean) : [];
+  }
+
+  return {
+    lessonTitle: contentFor("lesson_title"),
+    teacherName: "",
+    subjectGradeLevel: `${meta.subject} — Grade ${meta.gradeLabel}`,
+    lessonDuration: `${meta.duration} minutes`,
+    centralFocus: "",
+    standardsAddressed: contentFor("standards"),
+    lessonObjectives: linesFor("learning_objectives"),
+    materials: linesFor("materials"),
+    introduction: { teacherActions: contentFor("introduction"), studentActions: "", studentSupport: "" },
+    mainLearningActivities: { teacherActions: contentFor("instruction"), studentActions: contentFor("student_activities"), studentSupport: "" },
+    closure: { teacherActions: contentFor("closure"), studentActions: contentFor("reflection") },
+    assessment: { howObjectivesAssessed: contentFor("assessment") },
   };
 }
 

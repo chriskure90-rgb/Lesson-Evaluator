@@ -2,7 +2,9 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   toDynamicLessonPlanFromFieldMap,
   buildDynamicLessonExportDocument,
-  getCustomTemplateFormat,
+  getLessonDisplayFormat,
+  getDocxExportStrategy,
+  buildTemplate1LessonFromDynamicPlan,
   hasFieldMapRegions,
   exportCustomTemplateLessonDocx,
   exportDynamicLessonDocx,
@@ -329,45 +331,169 @@ describe("buildDynamicLessonExportDocument — manual-entry sections in export",
 // call sites in src/App.tsx (selectCustomTemplate, handleCustomTemplatesChange,
 // handleGenerate's dynamic-branch guard) that used to re-derive this decision
 // from hasFieldMapRegions() alone.
-describe("getCustomTemplateFormat", () => {
-  it("1. routes to custom when recognized {{TOKEN}} placeholders exist, even with field-map regions also present", () => {
+// Regression suite for the UI-preview regression: getLessonDisplayFormat
+// (generation/edit/preview) and getDocxExportStrategy (which DOCX merge
+// engine) are two INDEPENDENT decisions — a single shared "custom vs
+// dynamic" variable previously answered both at once, which fixed export
+// routing but broke display routing for any template that has both
+// recognized tokens and field-map regions (the "hybrid"/UIUC case).
+describe("getLessonDisplayFormat — generation/edit/preview routing (field_map-first, unaffected by tokens)", () => {
+  it("HYBRID: a template with BOTH recognized tokens and field-map regions still displays via dynamic (the regression fix)", () => {
     const t = template({
       recognized_placeholders: ["OBJECTIVES", "GRADE_LEVEL"],
       field_map: { version: 1, regions: [regionWithMapping("doc_unit_1")], mappings: [], confirmed: false },
     });
-    expect(getCustomTemplateFormat(t)).toBe("custom");
+    expect(getLessonDisplayFormat(t)).toBe("dynamic");
   });
 
-  it("2. routes to dynamic when there are no recognized placeholders but field-map regions exist", () => {
+  it("routes to dynamic when there are no recognized placeholders but field-map regions exist", () => {
     const t = template({
       recognized_placeholders: [],
       field_map: { version: 1, regions: [regionWithMapping("doc_unit_1")], mappings: [], confirmed: false },
     });
-    expect(getCustomTemplateFormat(t)).toBe("dynamic");
+    expect(getLessonDisplayFormat(t)).toBe("dynamic");
   });
 
-  it("3. falls back to custom (existing behavior) when neither recognized placeholders nor field-map regions exist", () => {
-    const t = template({ recognized_placeholders: [], field_map: { version: 1, regions: [], mappings: [], confirmed: false } });
-    expect(getCustomTemplateFormat(t)).toBe("custom");
-  });
-
-  it("recognized tokens win even when field_map has zero regions (the simple, unambiguous case)", () => {
+  it("existing pure token-based templates without usable field-map regions still use the custom display flow", () => {
     const t = template({
       recognized_placeholders: ["OBJECTIVES"],
       field_map: { version: 1, regions: [], mappings: [], confirmed: false },
     });
-    expect(getCustomTemplateFormat(t)).toBe("custom");
+    expect(getLessonDisplayFormat(t)).toBe("custom");
   });
 
-  it("hasFieldMapRegions remains a plain region-count check, independent of recognized_placeholders", () => {
+  it("falls back to custom (existing behavior) when neither recognized placeholders nor field-map regions exist", () => {
+    const t = template({ recognized_placeholders: [], field_map: { version: 1, regions: [], mappings: [], confirmed: false } });
+    expect(getLessonDisplayFormat(t)).toBe("custom");
+  });
+});
+
+describe("getDocxExportStrategy — DOCX export routing (tokens-first, independent of display format)", () => {
+  it("HYBRID: a template with BOTH recognized tokens and field-map regions still exports via the token path", () => {
+    const t = template({
+      recognized_placeholders: ["OBJECTIVES", "GRADE_LEVEL"],
+      field_map: { version: 1, regions: [regionWithMapping("doc_unit_1")], mappings: [], confirmed: false },
+    });
+    // The same hybrid template: display is dynamic, export is token — the
+    // two decisions genuinely disagree for this exact case, which is the point.
+    expect(getLessonDisplayFormat(t)).toBe("dynamic");
+    expect(getDocxExportStrategy(t)).toBe("token");
+  });
+
+  it("pure dynamic template (no recognized tokens, valid field-map regions) exports via the dynamic path — unchanged", () => {
+    const t = template({
+      recognized_placeholders: [],
+      field_map: { version: 1, regions: [regionWithMapping("doc_unit_1")], mappings: [], confirmed: false },
+    });
+    expect(getDocxExportStrategy(t)).toBe("dynamic");
+  });
+
+  it("pure token template (recognized tokens, no usable field-map regions) exports via the token path — unchanged", () => {
+    const t = template({
+      recognized_placeholders: ["OBJECTIVES"],
+      field_map: { version: 1, regions: [], mappings: [], confirmed: false },
+    });
+    expect(getDocxExportStrategy(t)).toBe("token");
+  });
+
+  it("falls back to token (not dynamic) when neither recognized placeholders nor field-map regions exist", () => {
+    // Matches handleExport's own structured-fields-only case — a template
+    // with zero narrative {{TOKEN}}s can still have real {{FIELD_*}}
+    // checklist tokens, which only Docxtemplater (not the field_map merge)
+    // knows how to render.
+    const t = template({ recognized_placeholders: [], field_map: { version: 1, regions: [], mappings: [], confirmed: false } });
+    expect(getDocxExportStrategy(t)).toBe("token");
+  });
+
+  it("hasFieldMapRegions remains a plain region-count check, independent of either routing decision", () => {
     const withTokensAndRegions = template({
       recognized_placeholders: ["OBJECTIVES"],
       field_map: { version: 1, regions: [regionWithMapping("r1")], mappings: [], confirmed: false },
     });
-    // Still true — hasFieldMapRegions answers a different question (does
-    // field_map have data) than getCustomTemplateFormat (which pipeline to use).
     expect(hasFieldMapRegions(withTokensAndRegions)).toBe(true);
-    expect(getCustomTemplateFormat(withTokensAndRegions)).toBe("custom");
+    expect(getLessonDisplayFormat(withTokensAndRegions)).toBe("dynamic");
+    expect(getDocxExportStrategy(withTokensAndRegions)).toBe("token");
+  });
+});
+
+describe("buildTemplate1LessonFromDynamicPlan — hybrid export content bridge", () => {
+  const fieldMap: TemplateFieldMap = {
+    version: 1,
+    confirmed: true,
+    regions: [
+      regionWithMapping("r-title"),
+      regionWithMapping("r-obj"),
+      regionWithMapping("r-obj2"),
+      regionWithMapping("r-materials"),
+      regionWithMapping("r-standards"),
+      regionWithMapping("r-intro"),
+      regionWithMapping("r-closure"),
+      regionWithMapping("r-assessment"),
+      regionWithMapping("r-custom"),
+    ].map((r, i) => ({ ...r, order: i + 1 })),
+    mappings: [
+      { regionId: "r-title", target: "lesson_title", suggestedTarget: "lesson_title", suggestedConfidence: 0.9, status: "ready" },
+      { regionId: "r-obj", target: "learning_objectives", suggestedTarget: "learning_objectives", suggestedConfidence: 0.9, status: "ready" },
+      { regionId: "r-obj2", target: "learning_objectives", suggestedTarget: "learning_objectives", suggestedConfidence: 0.9, status: "ready" },
+      { regionId: "r-materials", target: "materials", suggestedTarget: "materials", suggestedConfidence: 0.9, status: "ready" },
+      { regionId: "r-standards", target: "standards", suggestedTarget: "standards", suggestedConfidence: 0.9, status: "ready" },
+      { regionId: "r-intro", target: "introduction", suggestedTarget: "introduction", suggestedConfidence: 0.9, status: "ready" },
+      { regionId: "r-closure", target: "closure", suggestedTarget: "closure", suggestedConfidence: 0.9, status: "ready" },
+      { regionId: "r-assessment", target: "assessment", suggestedTarget: "assessment", suggestedConfidence: 0.9, status: "ready" },
+      { regionId: "r-custom", target: "custom_section", customLabel: "Fun Fact", suggestedTarget: null, suggestedConfidence: 0, status: "ready" },
+    ],
+  };
+  const plan: DynamicLessonPlan = {
+    sections: [
+      { id: "r-title", originalLabel: "Lesson Title", content: "Photosynthesis and Energy Flow" },
+      { id: "r-obj", originalLabel: "Objectives", content: "Explain how plants convert light energy into chemical energy" },
+      { id: "r-obj2", originalLabel: "Objectives", content: "Identify inputs and outputs of photosynthesis" },
+      { id: "r-materials", originalLabel: "Materials", content: "Elodea sprigs\nBeakers" },
+      { id: "r-standards", originalLabel: "Standards", content: "MS-LS1-6" },
+      { id: "r-intro", originalLabel: "Introduction", content: "Quick-write on where plants get energy" },
+      { id: "r-closure", originalLabel: "Closure", content: "Exit ticket" },
+      { id: "r-assessment", originalLabel: "Assessment", content: "Lab report rubric" },
+      { id: "r-custom", originalLabel: "Fun Fact", content: "Plants release oxygen as a byproduct" },
+    ],
+  };
+
+  it("maps each field_map target to the correct Template1Lesson field", () => {
+    const lesson = buildTemplate1LessonFromDynamicPlan(plan, fieldMap, { subject: "Science", gradeLabel: "6-8", duration: 60 });
+    expect(lesson.lessonTitle).toBe("Photosynthesis and Energy Flow");
+    expect(lesson.standardsAddressed).toBe("MS-LS1-6");
+    expect(lesson.materials).toEqual(["Elodea sprigs", "Beakers"]);
+    expect(lesson.introduction.teacherActions).toBe("Quick-write on where plants get energy");
+    expect(lesson.closure.teacherActions).toBe("Exit ticket");
+    expect(lesson.assessment.howObjectivesAssessed).toBe("Lab report rubric");
+  });
+
+  it("joins multiple regions sharing the same target, in field_map order", () => {
+    const lesson = buildTemplate1LessonFromDynamicPlan(plan, fieldMap, { subject: "Science", gradeLabel: "6-8", duration: 60 });
+    expect(lesson.lessonObjectives).toEqual([
+      "Explain how plants convert light energy into chemical energy",
+      "Identify inputs and outputs of photosynthesis",
+    ]);
+  });
+
+  it("formats subjectGradeLevel/lessonDuration exactly like normaliseTemplate1Lesson does", () => {
+    const lesson = buildTemplate1LessonFromDynamicPlan(plan, fieldMap, { subject: "Science", gradeLabel: "6-8", duration: 60 });
+    expect(lesson.subjectGradeLevel).toBe("Science — Grade 6-8");
+    expect(lesson.lessonDuration).toBe("60 minutes");
+  });
+
+  it("drops custom_section content (no Template1Lesson field to hold it) rather than guessing where it goes", () => {
+    const lesson = buildTemplate1LessonFromDynamicPlan(plan, fieldMap, { subject: "Science", gradeLabel: "6-8", duration: 60 });
+    const serialized = JSON.stringify(lesson);
+    expect(serialized).not.toContain("Fun Fact");
+    expect(serialized).not.toContain("Plants release oxygen as a byproduct");
+  });
+
+  it("leaves a target's field empty (not throwing) when no section exists for it", () => {
+    const sparseFieldMap: TemplateFieldMap = { ...fieldMap, mappings: [fieldMap.mappings[0]] };
+    const sparsePlan: DynamicLessonPlan = { sections: [plan.sections[0]] };
+    const lesson = buildTemplate1LessonFromDynamicPlan(sparsePlan, sparseFieldMap, { subject: "Science", gradeLabel: "6-8", duration: 60 });
+    expect(lesson.standardsAddressed).toBe("");
+    expect(lesson.lessonObjectives).toEqual([]);
   });
 });
 

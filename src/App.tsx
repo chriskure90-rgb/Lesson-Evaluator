@@ -19,7 +19,9 @@ import {
   exportCustomTemplateLessonDocx,
   exportDynamicLessonDocx,
   hasFieldMapRegions,
-  getCustomTemplateFormat,
+  getLessonDisplayFormat,
+  getDocxExportStrategy,
+  buildTemplate1LessonFromDynamicPlan,
   updateDetectedSections,
   updateFieldMap,
   toDynamicLessonPlanFromFieldMap,
@@ -1579,9 +1581,9 @@ function CustomTemplatePreviewModal({
   onUseTemplate: () => void;
 }) {
   // Only about whether there's field_map data to visually reproduce a table
-  // layout with — deliberately NOT the custom-vs-dynamic routing decision
-  // (see getCustomTemplateFormat), which "Use This Template" below delegates
-  // to selectCustomTemplate regardless of what this preview shows.
+  // layout with — deliberately NOT the display-routing decision (see
+  // getLessonDisplayFormat), which "Use This Template" below delegates to
+  // selectCustomTemplate regardless of what this preview shows.
   const canShowPreview = template !== null && template.status === "ready" && hasFieldMapRegions(template);
 
   return (
@@ -1860,7 +1862,7 @@ function GeneratorPage({
       // fresh would (src/App.tsx chip onClick) — otherwise a teacher whose
       // template only just finished field-region detection stays stuck
       // generating through the old Template1/CustomTemplateLessonView path.
-      setLessonFormat((prev) => (prev === "custom" || prev === "dynamic" ? getCustomTemplateFormat(current) : prev));
+      setLessonFormat((prev) => (prev === "custom" || prev === "dynamic" ? getLessonDisplayFormat(current) : prev));
     }
     // Reconcile the optimistic `updated` list above with the server shortly
     // after — every mutation (upload/rename/delete/setup confirmation) flows
@@ -1907,7 +1909,7 @@ function GeneratorPage({
   // still-relevant generated result when re-clicking the same template.
   function selectCustomTemplate(t: CustomTemplate) {
     setSelectedCustomTemplateId(t.id);
-    setLessonFormat(getCustomTemplateFormat(t));
+    setLessonFormat(getLessonDisplayFormat(t));
     if (t.id !== previewOwnerTemplateId) setGeneratedFormat(null);
   }
 
@@ -2258,13 +2260,16 @@ function GeneratorPage({
           setError("This template has no detected fields to generate into yet.");
           return;
         }
-        // Re-checks classification (not just hasFieldMapRegions) at generation
-        // time too — lessonFormat is normally only ever set to "dynamic" by
-        // selectCustomTemplate/handleCustomTemplatesChange, which already use
-        // getCustomTemplateFormat, but this guards against generating through
-        // the wrong pipeline if that state is ever stale (e.g. the template's
-        // recognized_placeholders/field_map changed after selection).
-        if (getCustomTemplateFormat(selectedCustomTemplate) !== "dynamic") {
+        // Re-checks DISPLAY classification (not just hasFieldMapRegions) at
+        // generation time too — lessonFormat is normally only ever set to
+        // "dynamic" by selectCustomTemplate/handleCustomTemplatesChange,
+        // which already use getLessonDisplayFormat, but this guards against
+        // generating through the wrong pipeline if that state is ever stale
+        // (e.g. the template's field_map changed after selection).
+        // Deliberately getLessonDisplayFormat, not getDocxExportStrategy —
+        // this decides which content shape generation produces, not which
+        // DOCX merge engine export uses later.
+        if (getLessonDisplayFormat(selectedCustomTemplate) !== "dynamic") {
           setError("This template has no detected fields to generate into yet.");
           return;
         }
@@ -3325,8 +3330,30 @@ function GeneratorPage({
                     filenameBase={slugifyFilename(topic, "lesson-plan")}
                     getDocument={() => buildDynamicLessonExportDocument(dynamicLessonPlan, topic)}
                     getDocxOverride={
-                      selectedCustomTemplateId
-                        ? () => exportDynamicLessonDocx(selectedCustomTemplateId, userId, dynamicLessonPlan)
+                      selectedCustomTemplateId && dynamicPreviewTemplate
+                        ? () => {
+                            // Export strategy is independent of display format
+                            // (getLessonDisplayFormat, which decided this lesson
+                            // should be generated/edited/previewed via the
+                            // dynamic field-map layout in the first place) — a
+                            // template with recognized {{TOKEN}} placeholders
+                            // still needs the token/Docxtemplater merge for
+                            // export, since that's the only engine that
+                            // understands {{TAG}} syntax. dynamicPreviewTemplate
+                            // (not a fresh customTemplates lookup) is the
+                            // template this exact dynamicLessonPlan was
+                            // generated against — immune to the teacher having
+                            // since switched the active template chip.
+                            if (getDocxExportStrategy(dynamicPreviewTemplate) === "token") {
+                              const bridgedLesson = buildTemplate1LessonFromDynamicPlan(
+                                dynamicLessonPlan,
+                                dynamicPreviewTemplate.field_map,
+                                { subject, gradeLabel: gradeBandLabel.replace(/^Grades\s*/, ""), duration }
+                              );
+                              return exportCustomTemplateLessonDocx(selectedCustomTemplateId, userId, bridgedLesson);
+                            }
+                            return exportDynamicLessonDocx(selectedCustomTemplateId, userId, dynamicLessonPlan);
+                          }
                         : undefined
                     }
                   />
