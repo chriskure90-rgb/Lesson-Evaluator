@@ -8,6 +8,7 @@ import {
   hasFieldMapRegions,
   exportCustomTemplateLessonDocx,
   exportDynamicLessonDocx,
+  exportHybridLessonDocx,
   DEFAULT_DETECTED_SECTIONS,
   DEFAULT_DETECTED_LAYOUT,
   type TemplateFieldMap,
@@ -368,16 +369,16 @@ describe("getLessonDisplayFormat — generation/edit/preview routing (field_map-
   });
 });
 
-describe("getDocxExportStrategy — DOCX export routing (tokens-first, independent of display format)", () => {
-  it("HYBRID: a template with BOTH recognized tokens and field-map regions still exports via the token path", () => {
+describe("getDocxExportStrategy — DOCX export routing (three explicit strategies, independent of display format)", () => {
+  it("HYBRID: a template with BOTH recognized tokens and field-map regions exports via the combined hybrid path", () => {
     const t = template({
       recognized_placeholders: ["OBJECTIVES", "GRADE_LEVEL"],
       field_map: { version: 1, regions: [regionWithMapping("doc_unit_1")], mappings: [], confirmed: false },
     });
-    // The same hybrid template: display is dynamic, export is token — the
+    // The same hybrid template: display is dynamic, export is hybrid — the
     // two decisions genuinely disagree for this exact case, which is the point.
     expect(getLessonDisplayFormat(t)).toBe("dynamic");
-    expect(getDocxExportStrategy(t)).toBe("token");
+    expect(getDocxExportStrategy(t)).toBe("hybrid");
   });
 
   it("pure dynamic template (no recognized tokens, valid field-map regions) exports via the dynamic path — unchanged", () => {
@@ -412,7 +413,7 @@ describe("getDocxExportStrategy — DOCX export routing (tokens-first, independe
     });
     expect(hasFieldMapRegions(withTokensAndRegions)).toBe(true);
     expect(getLessonDisplayFormat(withTokensAndRegions)).toBe("dynamic");
-    expect(getDocxExportStrategy(withTokensAndRegions)).toBe("token");
+    expect(getDocxExportStrategy(withTokensAndRegions)).toBe("hybrid");
   });
 });
 
@@ -544,5 +545,35 @@ describe("export routing — correct server action per format", () => {
     const body = JSON.parse(options.body);
     expect(body.action).toBe("export-dynamic");
     expect(body.customTemplateId).toBe("template-1");
+  });
+
+  it("6. exportHybridLessonDocx sends action: 'export-hybrid' with BOTH lesson shapes (hybrid path -> handleExportHybrid)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(new Blob(["docx bytes"])) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const dynamicLessonData: DynamicLessonPlan = { sections: [{ id: "r1", originalLabel: "Objectives", content: "Objective A" }] };
+    await exportHybridLessonDocx("template-1", "user-1", {
+      lessonTitle: "Photosynthesis",
+      teacherName: "",
+      subjectGradeLevel: "Grade 7 Science",
+      lessonDuration: "60",
+      centralFocus: "",
+      standardsAddressed: "",
+      lessonObjectives: ["Objective A"],
+      materials: [],
+      introduction: { teacherActions: "", studentActions: "", studentSupport: "" },
+      mainLearningActivities: { teacherActions: "", studentActions: "", studentSupport: "" },
+      closure: { teacherActions: "", studentActions: "" },
+      assessment: { howObjectivesAssessed: "" },
+    }, dynamicLessonData);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/custom-templates");
+    const body = JSON.parse(options.body);
+    expect(body.action).toBe("export-hybrid");
+    expect(body.customTemplateId).toBe("template-1");
+    expect(body.lessonData.lessonTitle).toBe("Photosynthesis");
+    expect(body.dynamicLessonData).toEqual(dynamicLessonData);
   });
 });

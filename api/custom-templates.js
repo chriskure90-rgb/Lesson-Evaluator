@@ -2359,6 +2359,15 @@ function textsRoughlyMatch(a, b) {
   return na === nb || na.includes(nb) || nb.includes(na);
 }
 
+// Recognized {{TOKEN}}/{{FIELD_...}} placeholder syntax — same delimiter
+// shape Docxtemplater is configured with (see mergeTokensIntoDocxBuffer).
+// Used only by the token-overlap safeguard below; deliberately matches ANY
+// {{...}} looking text, not just KNOWN_PLACEHOLDER_TOKENS, since an
+// unrecognized tag still resolves via nullGetter during the token merge
+// (disappearing either way) — being conservative about what counts as
+// "token territory" is the point of a safeguard.
+const ANY_TOKEN_RE = /\{\{[A-Za-z0-9_]+\}\}/;
+
 // Given every field_map region that shares one container (a table cell, or
 // the top-level document body) sorted by detection order, and the real
 // <w:p> paragraphs found in that exact container, decides for each region
@@ -2368,6 +2377,19 @@ function textsRoughlyMatch(a, b) {
 // (i.e. something was actually generated/entered for them) produce an edit —
 // everything else is left as a no-op so its original paragraph passes
 // through untouched.
+//
+// `originalParagraphs`, when given, is the SAME container's paragraphs as
+// they existed BEFORE any token merge ran — parallel-indexed to `paragraphs`
+// (same length/order; a pure Docxtemplater {{TAG}} substitution never adds,
+// removes, or reorders paragraphs, only rewrites text inside existing runs).
+// Used exclusively by the hybrid export strategy: an editable_field region
+// that would otherwise replace paragraph #N is skipped (its original
+// content is left as whatever the token merge already put there) whenever
+// paragraph #N's ORIGINAL text already contained a recognized {{TOKEN}} —
+// token replacement takes precedence over the position-based dynamic merge
+// for that same paragraph, so nothing is double-written. Every dynamic-only
+// call site (token-only and dynamic-only exports) omits this parameter and
+// is completely unaffected.
 //
 // NEVER throws for a detected mismatch — returns { ok: false, reason }
 // instead. Confirmed against a real uploaded template: mammoth's HTML
@@ -2380,9 +2402,10 @@ function textsRoughlyMatch(a, b) {
 // on any mismatch (or running out of real paragraphs), the caller leaves
 // this ENTIRE container's original content untouched rather than risk
 // writing generated/manual content into the wrong paragraph.
-export function planDynamicContainerEdits(regionsInContainer, paragraphs, contentByRegionId) {
+export function planDynamicContainerEdits(regionsInContainer, paragraphs, contentByRegionId, originalParagraphs) {
   const replaceByIndex = new Map();   // paragraphIndex -> content
   const insertsAfterIndex = new Map(); // paragraphIndex (-1 = before all) -> content[]
+  const tokenSkippedRegionIds = [];   // regions left alone — original paragraph already had a {{TOKEN}}
   let paragraphIndex = 0;
   let lastConsumedIndex = -1;
   const sorted = [...regionsInContainer].sort((a, b) => a.order - b.order);
@@ -2403,7 +2426,13 @@ export function planDynamicContainerEdits(regionsInContainer, paragraphs, conten
       }
       const content = contentByRegionId.get(region.id);
       if (content !== undefined && region.role === "editable_field") {
-        replaceByIndex.set(paragraphIndex, content);
+        const originalPara = originalParagraphs ? originalParagraphs[paragraphIndex] : null;
+        const originalText = originalPara ? extractParagraphPlainText(originalPara.inner) : null;
+        if (originalText !== null && ANY_TOKEN_RE.test(originalText)) {
+          tokenSkippedRegionIds.push(region.id);
+        } else {
+          replaceByIndex.set(paragraphIndex, content);
+        }
       }
       lastConsumedIndex = paragraphIndex;
       paragraphIndex++;
@@ -2416,7 +2445,7 @@ export function planDynamicContainerEdits(regionsInContainer, paragraphs, conten
       }
     }
   }
-  return { ok: true, replaceByIndex, insertsAfterIndex };
+  return { ok: true, replaceByIndex, insertsAfterIndex, tokenSkippedRegionIds };
 }
 
 // Rebuilds one container's inner XML (a cell's inner XML, or the document
@@ -2439,6 +2468,47 @@ function applyEditPlanToContainer(containerXml, paragraphs, replaceByIndex, inse
   return leading.length ? leading.map(buildInsertedParagraphXml).join("") + out : out;
 }
 
+// Read-only structural walk over a document.xml, mirroring
+// mergeDynamicLessonIntoDocumentXml's own table/row/cell traversal (same
+// tableId/rowId/cellId naming), but only ever collecting each container's
+// real <w:p> paragraphs — never mutating anything. Used exclusively to look
+// up what a container's paragraphs looked like BEFORE a token merge ran
+// (see planDynamicContainerEdits' `originalParagraphs` parameter above) —
+// safe to assume the same table/row/cell/paragraph counts as the (already
+// token-merged) document passed alongside it, since Docxtemplater's {{TAG}}
+// substitution only rewrites text inside existing runs.
+function extractParagraphsByLocation(documentXml) {
+  const byLocation = new Map();
+  const bodyStart = documentXml.indexOf("<w:body>") + "<w:body>".length;
+  const bodyEnd = documentXml.indexOf("</w:body>");
+  if (bodyStart < "<w:body>".length || bodyEnd === -1) return byLocation;
+  const bodyInner = documentXml.slice(bodyStart, bodyEnd);
+  const topBlocks = xmlMatchesWithIndex(bodyInner, OOXML_TOP_RE);
+  byLocation.set("TOP", topBlocks.filter((b) => b.text.startsWith("<w:p")).map((b) => ({ inner: b.inner })));
+
+  let tableIndex = 0;
+  for (const block of topBlocks) {
+    if (!block.text.startsWith("<w:tbl>")) continue;
+    tableIndex++;
+    const tableId = `table_${tableIndex}`;
+    const rows = xmlMatchesWithIndex(block.inner, OOXML_ROW_RE);
+    let rowIndex = 0;
+    for (const row of rows) {
+      rowIndex++;
+      const rowId = `${tableId}_row_${rowIndex}`;
+      const cells = xmlMatchesWithIndex(row.text, OOXML_CELL_RE);
+      let cellIndex = 0;
+      for (const cell of cells) {
+        cellIndex++;
+        const cellId = `${rowId}_cell_${cellIndex}`;
+        const paragraphs = xmlMatchesWithIndex(cell.inner, OOXML_PARA_RE).map((para) => ({ inner: para.inner }));
+        byLocation.set(`${tableId}|${rowId}|${cellId}`, paragraphs);
+      }
+    }
+  }
+  return byLocation;
+}
+
 // Top-level export: given the original template's raw document.xml, its
 // field_map, and a regionId -> content lookup, returns the modified XML plus
 // a list of any containers (cells, or "TOP") whose alignment couldn't be
@@ -2447,7 +2517,15 @@ function applyEditPlanToContainer(containerXml, paragraphs, replaceByIndex, inse
 // a drifted template shows up in logs instead of failing silently. Pure/
 // synchronous and fully unit-testable — handleExportDynamic below is only
 // responsible for the Storage download/auth around this.
-export function mergeDynamicLessonIntoDocumentXml(documentXml, fieldMap, contentByRegionId) {
+//
+// `originalDocumentXml`, when given, is this SAME document as it existed
+// BEFORE a token merge ran (the hybrid export strategy — see
+// handleExportHybrid — runs the token merge first, then this function
+// against the result). Passed straight through to planDynamicContainerEdits
+// per-container so the token-overlap safeguard can compare against each
+// paragraph's pre-token-merge text; omitted entirely by the dynamic-only
+// export path, which behaves exactly as before.
+export function mergeDynamicLessonIntoDocumentXml(documentXml, fieldMap, contentByRegionId, originalDocumentXml) {
   const bodyStart = documentXml.indexOf("<w:body>") + "<w:body>".length;
   const bodyEnd = documentXml.indexOf("</w:body>");
   if (bodyStart < "<w:body>".length || bodyEnd === -1) {
@@ -2455,6 +2533,7 @@ export function mergeDynamicLessonIntoDocumentXml(documentXml, fieldMap, content
   }
   const bodyInner = documentXml.slice(bodyStart, bodyEnd);
   const skipped = [];
+  const originalParagraphsByLocation = originalDocumentXml ? extractParagraphsByLocation(originalDocumentXml) : null;
 
   const regionsByLocation = new Map();
   for (const region of fieldMap.regions) {
@@ -2463,12 +2542,24 @@ export function mergeDynamicLessonIntoDocumentXml(documentXml, fieldMap, content
     regionsByLocation.get(key).push(region);
   }
 
+  function recordTokenSkips(locationKey, planResult) {
+    for (const regionId of planResult.tokenSkippedRegionIds || []) {
+      skipped.push({
+        location: locationKey,
+        reason: `region ${regionId} left untouched — its original paragraph already contains a recognized {{TOKEN}}; token replacement takes precedence`,
+      });
+    }
+  }
+
   const topBlocks = xmlMatchesWithIndex(bodyInner, OOXML_TOP_RE);
   const topParagraphs = topBlocks
     .filter((b) => b.text.startsWith("<w:p"))
     .map((b) => ({ text: b.text, inner: b.inner, index: b.index }));
-  const topPlanResult = planDynamicContainerEdits(regionsByLocation.get("TOP") || [], topParagraphs, contentByRegionId);
+  const topPlanResult = planDynamicContainerEdits(
+    regionsByLocation.get("TOP") || [], topParagraphs, contentByRegionId, originalParagraphsByLocation?.get("TOP")
+  );
   if (!topPlanResult.ok) skipped.push({ location: "TOP", reason: topPlanResult.reason });
+  else recordTokenSkips("TOP", topPlanResult);
   const topPlan = topPlanResult.ok ? topPlanResult : { replaceByIndex: new Map(), insertsAfterIndex: new Map() };
 
   let tableIndex = 0;
@@ -2502,9 +2593,11 @@ export function mergeDynamicLessonIntoDocumentXml(documentXml, fieldMap, content
           const paragraphs = xmlMatchesWithIndex(cell.inner, OOXML_PARA_RE);
           const planResult = regionsHere.length === 0 || paragraphs.length === 0
             ? { ok: true, replaceByIndex: new Map(), insertsAfterIndex: new Map() }
-            : planDynamicContainerEdits(regionsHere, paragraphs, contentByRegionId);
+            : planDynamicContainerEdits(regionsHere, paragraphs, contentByRegionId, originalParagraphsByLocation?.get(locationKey));
           if (!planResult.ok) {
             skipped.push({ location: locationKey, reason: planResult.reason });
+          } else {
+            recordTokenSkips(locationKey, planResult);
           }
           if (!planResult.ok || regionsHere.length === 0 || paragraphs.length === 0) {
             newRowText += cell.text; // no (trustworthy) field_map region here — copy through untouched
@@ -2607,12 +2700,35 @@ async function handleExportDynamic(req, res, authenticatedUserId) {
   }
 }
 
+// Runs the Docxtemplater {{PLACEHOLDER}} substitution against a raw .docx
+// buffer, returning the merged buffer. Factored out of handleExport (which
+// still uses it, unchanged in behavior) so handleExportHybrid below can run
+// this exact same token merge as its first step and then keep mutating the
+// SAME resulting document with the position-based dynamic merge, rather than
+// each export strategy owning its own separate document-generation pipeline.
+export function mergeTokensIntoDocxBuffer(buffer, lessonData, template) {
+  const zip = new PizZip(buffer);
+  const doc = new Docxtemplater(zip, {
+    delimiters: { start: "{{", end: "}}" },
+    paragraphLoop: true,
+    linebreaks: true,
+    nullGetter: () => "", // any tag not in recognized_placeholders resolves to blank rather than throwing
+  });
+
+  const renderData = buildRenderData(lessonData, template.recognized_placeholders || [], template.structured_fields || []);
+  doc.render(renderData);
+
+  return doc.getZip().generate({ type: "nodebuffer" });
+}
+
 // ── action: "export" ───────────────────────────────────────────────────────────
 // Loads the teacher's uploaded .docx template, fills in its recognized
 // {{PLACEHOLDER}} tokens from the (Template1Lesson-shaped) lessonData, and
 // streams the merged .docx back. The built-in Template1 DOCX builder
 // (src/lib/template1-docx.ts) is never used for custom templates — this is
-// the only export path for template_type "custom".
+// the export path for template_type "custom" (getDocxExportStrategy ===
+// "token"). See handleExportHybrid below for templates that also have
+// usable field_map regions.
 async function handleExport(req, res, authenticatedUserId) {
   const { customTemplateId, lessonData } = req.body ?? {};
   if (!customTemplateId) return res.status(400).json({ error: "Missing customTemplateId." });
@@ -2644,22 +2760,107 @@ async function handleExport(req, res, authenticatedUserId) {
   }
 
   const buffer = Buffer.from(await fileData.arrayBuffer());
-  const zip = new PizZip(buffer);
-  const doc = new Docxtemplater(zip, {
-    delimiters: { start: "{{", end: "}}" },
-    paragraphLoop: true,
-    linebreaks: true,
-    nullGetter: () => "", // any tag not in recognized_placeholders resolves to blank rather than throwing
-  });
-
-  const renderData = buildRenderData(lessonData, template.recognized_placeholders || [], template.structured_fields || []);
-  doc.render(renderData);
-
-  const outBuffer = doc.getZip().generate({ type: "nodebuffer" });
+  const outBuffer = mergeTokensIntoDocxBuffer(buffer, lessonData, template);
 
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
   res.setHeader("Content-Disposition", 'attachment; filename="lesson-plan.docx"');
   return res.status(200).send(outBuffer);
+}
+
+// ── action: "export-hybrid" ─────────────────────────────────────────────────────
+// For a template with BOTH recognized {{TOKEN}} placeholders AND usable
+// field_map regions (getDocxExportStrategy === "hybrid" — e.g. the UIUC
+// template), neither handleExport nor handleExportDynamic alone is
+// sufficient: Docxtemplater can only populate paragraphs that contain a
+// literal {{TAG}}, and the position-based dynamic merge has no concept of
+// {{TAG}} syntax at all. This runs both, sequentially, against the SAME
+// document (never rebuilding it):
+//   1. Download the original uploaded .docx once.
+//   2. Run the existing token merge (mergeTokensIntoDocxBuffer) against it,
+//      using the Template1Lesson-shaped lessonData — same mechanism as the
+//      pure token-based export.
+//   3. Run the existing position-based dynamic merge
+//      (mergeDynamicLessonIntoDocumentXml) on the ALREADY token-merged
+//      document.xml, passing the ORIGINAL (pre-token-merge) document.xml
+//      alongside it so the merge's token-overlap safeguard can tell which
+//      paragraphs already got a token replacement and must be left alone —
+//      token replacement always wins for a paragraph represented both ways.
+//   4. Return the doubly-merged document.
+async function handleExportHybrid(req, res, authenticatedUserId) {
+  const { customTemplateId, lessonData, dynamicLessonData } = req.body ?? {};
+  if (!customTemplateId) return res.status(400).json({ error: "Missing customTemplateId." });
+  if (!lessonData)       return res.status(400).json({ error: "Missing lessonData." });
+  if (!dynamicLessonData || !Array.isArray(dynamicLessonData.sections)) {
+    return res.status(400).json({ error: "Missing or invalid dynamicLessonData (expected a DynamicLessonPlan with a sections array)." });
+  }
+
+  const { data: template, error: fetchError } = await supabase
+    .from("custom_templates")
+    .select("*")
+    .eq("id", customTemplateId)
+    .single();
+
+  if (fetchError || !template) {
+    return res.status(404).json({ error: "Template not found." });
+  }
+  if (template.user_id !== authenticatedUserId) {
+    return res.status(403).json({ error: "You do not have access to this template." });
+  }
+  if (template.status !== "ready") {
+    return res.status(400).json({ error: "This template is not ready for export." });
+  }
+  if (!template.field_map || !Array.isArray(template.field_map.regions) || template.field_map.regions.length === 0) {
+    return res.status(400).json({ error: "This template has no detected field mapping to export against." });
+  }
+
+  const { data: fileData, error: downloadError } = await supabase.storage
+    .from(BUCKET)
+    .download(template.storage_path);
+
+  if (downloadError) {
+    console.error("[custom-templates:export-hybrid] download error:", downloadError.message);
+    return res.status(500).json({ error: "Could not load the template file." });
+  }
+
+  const contentByRegionId = new Map();
+  for (const section of dynamicLessonData.sections) {
+    if (typeof section?.id === "string" && typeof section?.content === "string" && section.content.trim()) {
+      contentByRegionId.set(section.id, section.content);
+    }
+  }
+
+  try {
+    const originalBuffer = Buffer.from(await fileData.arrayBuffer());
+    const originalZip = new PizZip(originalBuffer);
+    const originalDocumentXmlFile = originalZip.file("word/document.xml");
+    if (!originalDocumentXmlFile) {
+      throw new Error("The uploaded file is not a valid .docx (missing word/document.xml).");
+    }
+    const originalXml = originalDocumentXmlFile.asText();
+
+    // Step 1+2: token merge first, against the original document.
+    const tokenMergedBuffer = mergeTokensIntoDocxBuffer(originalBuffer, lessonData, template);
+
+    // Step 3: dynamic merge on top of the already token-merged document —
+    // not a rebuild, just a further mutation of the same zip's document.xml.
+    const tokenMergedZip = new PizZip(tokenMergedBuffer);
+    const tokenMergedXml = tokenMergedZip.file("word/document.xml").asText();
+    const { xml: finalXml, skipped } = mergeDynamicLessonIntoDocumentXml(
+      tokenMergedXml, template.field_map, contentByRegionId, originalXml
+    );
+    if (skipped.length > 0) {
+      console.warn("[custom-templates:export-hybrid] left untouched:", skipped);
+    }
+    tokenMergedZip.file("word/document.xml", finalXml);
+    const outBuffer = tokenMergedZip.generate({ type: "nodebuffer" });
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    res.setHeader("Content-Disposition", 'attachment; filename="lesson-plan.docx"');
+    return res.status(200).send(outBuffer);
+  } catch (err) {
+    console.error("[custom-templates:export-hybrid] merge error:", err);
+    return res.status(500).json({ error: err instanceof Error ? err.message : "Could not build the exported document." });
+  }
 }
 
 export default async function handler(req, res) {
@@ -2684,6 +2885,7 @@ export default async function handler(req, res) {
       case "delete":      return await handleDelete(req, res, authenticatedUserId);
       case "export":         return await handleExport(req, res, authenticatedUserId);
       case "export-dynamic": return await handleExportDynamic(req, res, authenticatedUserId);
+      case "export-hybrid":  return await handleExportHybrid(req, res, authenticatedUserId);
       default:
         return res.status(400).json({ error: `Unknown action: ${action}` });
     }

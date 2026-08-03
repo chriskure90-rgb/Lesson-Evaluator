@@ -278,26 +278,37 @@ export function getLessonDisplayFormat(template: CustomTemplate): "custom" | "dy
 }
 
 // DOCX EXPORT routing — completely independent of getLessonDisplayFormat
-// above. Recognized {{TOKEN}} placeholders always win here: a teacher who
-// authored a template with real {{OBJECTIVES}}/{{GRADE_LEVEL}}-style tags
-// clearly intended Docxtemplater's {{TAG}} substitution to run against the
-// original file — regardless of which pipeline generated the on-screen
-// content — since that's the only merge engine that understands {{TAG}}
-// syntax at all (the dynamic/field_map merge doesn't; see
-// mergeDynamicLessonIntoDocumentXml's own docs). Falls back to "dynamic"
-// only when there are no recognized tokens AND field_map has usable
-// regions; falls back to "token" (not "dynamic") when NEITHER exists,
-// matching handleExport's own existing structured-fields-only case (a
-// template with zero narrative {{TOKEN}}s but real {{FIELD_*}} checklist
-// tokens still needs Docxtemplater, never the field_map merge).
+// above. Three explicit strategies:
+//   "token"   — recognized {{TOKEN}} placeholders only. Docxtemplater merge
+//               (handleExport / exportCustomTemplateLessonDocx).
+//   "dynamic" — usable field_map regions only, no recognized tokens.
+//               Position-based XML merge (handleExportDynamic /
+//               exportDynamicLessonDocx).
+//   "hybrid"  — BOTH recognized tokens AND usable field_map regions (e.g.
+//               the UIUC template). Neither merge alone is sufficient:
+//               Docxtemplater can only populate a paragraph that contains a
+//               literal {{TAG}}, so field-map-driven cells/paragraphs with
+//               no tag of their own would stay empty under a token-only
+//               export. The server runs BOTH merges sequentially against
+//               the SAME document (handleExportHybrid /
+//               exportHybridLessonDocx) — token merge first, then the
+//               position-based merge on top of that result, never
+//               rebuilding the document. Falls back to "token" (not
+//               "dynamic") when NEITHER exists, matching handleExport's own
+//               existing structured-fields-only case (a template with zero
+//               narrative {{TOKEN}}s but real {{FIELD_*}} checklist tokens
+//               still needs Docxtemplater, never the field_map merge).
 //
-// When this returns "token" for a template whose DISPLAY format resolved
-// to "dynamic" (the hybrid case), the caller cannot pass the on-screen
-// DynamicLessonPlan straight to exportCustomTemplateLessonDocx — it needs a
-// Template1Lesson-shaped object first; see buildTemplate1LessonFromDynamicPlan.
-export function getDocxExportStrategy(template: CustomTemplate): "token" | "dynamic" {
-  if (hasRecognizedPlaceholders(template)) return "token";
-  return hasFieldMapRegions(template) ? "dynamic" : "token";
+// A "hybrid" result means the caller needs BOTH a Template1Lesson-shaped
+// object (see buildTemplate1LessonFromDynamicPlan, for the token half) AND
+// the raw DynamicLessonPlan (for the dynamic half) — see
+// exportHybridLessonDocx below.
+export function getDocxExportStrategy(template: CustomTemplate): "token" | "dynamic" | "hybrid" {
+  const hasTokens = hasRecognizedPlaceholders(template);
+  const hasRegions = hasFieldMapRegions(template);
+  if (hasTokens && hasRegions) return "hybrid";
+  if (hasTokens) return "token";
+  return hasRegions ? "dynamic" : "token";
 }
 
 const BUCKET = "custom-templates";
@@ -998,6 +1009,40 @@ export async function exportDynamicLessonDocx(
     method: "POST",
     headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify({ action: "export-dynamic", customTemplateId, userId, lessonData }),
+  });
+  if (!res.ok) {
+    const raw = await res.text().catch(() => "");
+    let details: string | undefined;
+    try {
+      details = JSON.parse(raw)?.error;
+    } catch {
+      // not JSON — fall through to raw text below
+    }
+    throw new Error(details || raw || `Server error ${res.status}`);
+  }
+  return res.blob();
+}
+
+// Combined-strategy DOCX export for the HYBRID case (getDocxExportStrategy
+// === "hybrid" — recognized {{TOKEN}} placeholders AND usable field_map
+// regions both present in the same uploaded file). Hits the server's
+// "export-hybrid" action (handleExportHybrid in api/custom-templates.js),
+// which runs the token merge and the position-based dynamic merge
+// sequentially against the SAME document rather than picking just one.
+// Needs both shapes of the same lesson: `lessonData` (Template1Lesson,
+// built via buildTemplate1LessonFromDynamicPlan) for the token half, and
+// `dynamicLessonData` (the on-screen DynamicLessonPlan) for the positional
+// half.
+export async function exportHybridLessonDocx(
+  customTemplateId: string,
+  userId: string,
+  lessonData: Template1Lesson,
+  dynamicLessonData: DynamicLessonPlan
+): Promise<Blob> {
+  const res = await fetch("/api/custom-templates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+    body: JSON.stringify({ action: "export-hybrid", customTemplateId, userId, lessonData, dynamicLessonData }),
   });
   if (!res.ok) {
     const raw = await res.text().catch(() => "");

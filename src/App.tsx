@@ -18,6 +18,7 @@ import {
   deleteCustomTemplate,
   exportCustomTemplateLessonDocx,
   exportDynamicLessonDocx,
+  exportHybridLessonDocx,
   hasFieldMapRegions,
   getLessonDisplayFormat,
   getDocxExportStrategy,
@@ -3344,15 +3345,19 @@ function GeneratorPage({
                             // template this exact dynamicLessonPlan was
                             // generated against — immune to the teacher having
                             // since switched the active template chip.
-                            if (getDocxExportStrategy(dynamicPreviewTemplate) === "token") {
-                              const bridgedLesson = buildTemplate1LessonFromDynamicPlan(
-                                dynamicLessonPlan,
-                                dynamicPreviewTemplate.field_map,
-                                { subject, gradeLabel: gradeBandLabel.replace(/^Grades\s*/, ""), duration }
-                              );
-                              return exportCustomTemplateLessonDocx(selectedCustomTemplateId, userId, bridgedLesson);
+                            const strategy = getDocxExportStrategy(dynamicPreviewTemplate);
+                            if (strategy === "dynamic") {
+                              return exportDynamicLessonDocx(selectedCustomTemplateId, userId, dynamicLessonPlan);
                             }
-                            return exportDynamicLessonDocx(selectedCustomTemplateId, userId, dynamicLessonPlan);
+                            const bridgedLesson = buildTemplate1LessonFromDynamicPlan(
+                              dynamicLessonPlan,
+                              dynamicPreviewTemplate.field_map,
+                              { subject, gradeLabel: gradeBandLabel.replace(/^Grades\s*/, ""), duration }
+                            );
+                            if (strategy === "hybrid") {
+                              return exportHybridLessonDocx(selectedCustomTemplateId, userId, bridgedLesson, dynamicLessonPlan);
+                            }
+                            return exportCustomTemplateLessonDocx(selectedCustomTemplateId, userId, bridgedLesson);
                           }
                         : undefined
                     }
