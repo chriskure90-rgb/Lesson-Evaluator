@@ -2447,7 +2447,12 @@ export function planDynamicContainerEdits(regionsInContainer, paragraphs, conten
         }
       }
       const content = contentByRegionId.get(region.id);
-      if (content !== undefined && region.role === "editable_field") {
+      // "blank" (a genuinely empty top-level paragraph with no context) is
+      // writable the exact same way as an explicit editable_field — see
+      // toDynamicLessonPlanFromFieldMap (src/lib/custom-templates.ts), which
+      // seeds a manual-entry-style section for every such region so a
+      // teacher can type a note into it from the normal edit flow.
+      if (content !== undefined && (region.role === "editable_field" || region.role === "blank")) {
         const originalPara = originalParagraphs ? originalParagraphs[paragraphIndex] : null;
         const originalText = originalPara ? extractParagraphPlainText(originalPara.inner) : null;
         if (originalText !== null && ANY_TOKEN_RE.test(originalText)) {

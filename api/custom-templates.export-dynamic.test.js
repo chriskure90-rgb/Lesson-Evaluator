@@ -124,6 +124,26 @@ describe("planDynamicContainerEdits", () => {
     const result = planDynamicContainerEdits(regions, paragraphs, new Map());
     expect(result.ok).toBe(true);
   });
+
+  // "blank" (a genuinely empty top-level paragraph with no context) is now
+  // writable the exact same way as an explicit editable_field — see
+  // toDynamicLessonPlanFromFieldMap (src/lib/custom-templates.ts), which
+  // seeds a manual-entry-style section for every such region.
+  it("writes content into a 'blank' region exactly like an explicit editable_field", () => {
+    const regions = [region({ id: "b1", role: "blank", order: 1 })];
+    const paragraphs = [realPara("")];
+    const result = planDynamicContainerEdits(regions, paragraphs, new Map([["b1", "Remind students to bring calculators."]]));
+    expect(result.ok).toBe(true);
+    expect(result.replaceByIndex.get(0)).toBe("Remind students to bring calculators.");
+  });
+
+  it("leaves a 'blank' region untouched when no content was ever entered for it", () => {
+    const regions = [region({ id: "b1", role: "blank", order: 1 })];
+    const paragraphs = [realPara("")];
+    const result = planDynamicContainerEdits(regions, paragraphs, new Map()); // nothing to write
+    expect(result.ok).toBe(true);
+    expect(result.replaceByIndex.size).toBe(0);
+  });
 });
 
 describe("mergeDynamicLessonIntoDocumentXml — structural preservation", () => {
@@ -227,5 +247,58 @@ describe("mergeDynamicLessonIntoDocumentXml — structural preservation", () => 
     const { xml: outXml } = mergeDynamicLessonIntoDocumentXml(xml, fieldMap, new Map([["f1", "filled"], ["implicit1", "extra inserted paragraph"]]));
     const after = (outXml.match(/<w:p>/g) || []).length;
     expect(after).toBe(before + 1); // exactly one new paragraph inserted for the implicit region
+  });
+
+  it("writes independent content into multiple top-level 'blank' regions without cross-contamination", () => {
+    const xml = doc(p("Lesson Plan", { bold: true }) + emptyP() + p("Materials", { bold: true }) + emptyP());
+    const fieldMap = {
+      regions: [
+        { id: "h1", order: 1, role: "heading", text: "Lesson Plan" },
+        { id: "b1", order: 2, role: "blank" },
+        { id: "h2", order: 3, role: "heading", text: "Materials" },
+        { id: "b2", order: 4, role: "blank" },
+      ],
+    };
+    const { xml: outXml, skipped } = mergeDynamicLessonIntoDocumentXml(
+      xml, fieldMap, new Map([["b1", "First note."], ["b2", "Second, unrelated note."]])
+    );
+    expect(skipped).toEqual([]);
+    expect(outXml).toContain("First note.");
+    expect(outXml).toContain("Second, unrelated note.");
+    // Neither blank region's content leaked into the other's paragraph.
+    expect(outXml.indexOf("First note.")).toBeLessThan(outXml.indexOf("Materials"));
+    expect(outXml.indexOf("Second, unrelated note.")).toBeGreaterThan(outXml.indexOf("Materials"));
+  });
+
+  it("writes independent manual content into multiple empty cells across different cells, rows, and tables", () => {
+    const rowA = tr([tc([emptyP()]), tc([emptyP()])]); // two empty cells, same row
+    const rowB = tr([tc([emptyP()])]);                 // a third empty cell, different row, same table
+    const tableOne = tbl([rowA, rowB]);
+    const tableTwo = tbl([tr([tc([emptyP()])])]);       // a fourth empty cell, a completely different table
+    const xml = doc(tableOne + tableTwo);
+    const fieldMap = {
+      regions: [
+        { id: "cellA1", order: 1, role: "editable_field", text: "", source: "explicit", tableId: "table_1", rowId: "table_1_row_1", cellId: "table_1_row_1_cell_1" },
+        { id: "cellA2", order: 2, role: "editable_field", text: "", source: "explicit", tableId: "table_1", rowId: "table_1_row_1", cellId: "table_1_row_1_cell_2" },
+        { id: "cellB1", order: 3, role: "editable_field", text: "", source: "explicit", tableId: "table_1", rowId: "table_1_row_2", cellId: "table_1_row_2_cell_1" },
+        { id: "cellC1", order: 4, role: "editable_field", text: "", source: "explicit", tableId: "table_2", rowId: "table_2_row_1", cellId: "table_2_row_1_cell_1" },
+      ],
+    };
+    const { xml: outXml, skipped } = mergeDynamicLessonIntoDocumentXml(
+      xml, fieldMap, new Map([
+        ["cellA1", "Row 1, Cell 1 note"],
+        ["cellA2", "Row 1, Cell 2 note"],
+        ["cellB1", "Row 2, Cell 1 note"],
+        ["cellC1", "Table 2 note"],
+      ])
+    );
+    expect(skipped).toEqual([]);
+    for (const text of ["Row 1, Cell 1 note", "Row 1, Cell 2 note", "Row 2, Cell 1 note", "Table 2 note"]) {
+      expect(outXml).toContain(text);
+    }
+    // Structure preserved: 2 tables, 3 rows total, 4 cells total.
+    expect((outXml.match(/<w:tbl>/g) || []).length).toBe(2);
+    expect((outXml.match(/<w:tr>/g) || []).length).toBe(3);
+    expect((outXml.match(/<w:tc>/g) || []).length).toBe(4);
   });
 });

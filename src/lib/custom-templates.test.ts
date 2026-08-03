@@ -53,6 +53,15 @@ function region(overrides: Partial<TemplateFieldMap["regions"][number]> & { id: 
   return { order: 1, role: "editable_field", text: "", source: "explicit", outputMode: "text", ...overrides };
 }
 
+// A genuinely empty top-level (or, for test purposes only, table-cell)
+// paragraph with no context — real detection never gives a table cell this
+// role (see classifyUnitsIntoRegions in api/custom-templates.js), but the
+// merge/plan-building logic itself is container-agnostic, so this is safe
+// to use directly in tests that don't care about that distinction.
+function blankRegion(overrides: Partial<TemplateFieldMap["regions"][number]> & { id: string }): TemplateFieldMap["regions"][number] {
+  return { order: 1, role: "blank", text: "", source: "explicit", ...overrides };
+}
+
 describe("toDynamicLessonPlanFromFieldMap — manual_entry sections", () => {
   it("seeds a manual_entry region as its own section with empty content, origin: 'manual'", () => {
     const fieldMap: TemplateFieldMap = {
@@ -100,6 +109,98 @@ describe("toDynamicLessonPlanFromFieldMap — manual_entry sections", () => {
     };
     const plan = toDynamicLessonPlanFromFieldMap({}, fieldMap);
     expect(plan.sections).toHaveLength(0);
+  });
+});
+
+// "blank" regions (a genuinely empty top-level paragraph with no preceding
+// heading/instruction — classifyUnitsIntoRegions in api/custom-templates.js
+// never gives these a FieldMapping) used to have no DynamicLessonSection at
+// all and rendered as a permanently non-editable "(empty)" span. They're
+// now seeded exactly like a manual_entry region — same shape, same
+// edit/save/export/reload path — see toDynamicLessonPlanFromFieldMap.
+describe("toDynamicLessonPlanFromFieldMap — 'blank' regions (editable empty regions)", () => {
+  it("seeds a section for a 'blank' region even though it has no mapping at all", () => {
+    const fieldMap: TemplateFieldMap = {
+      version: 1,
+      confirmed: true,
+      regions: [blankRegion({ id: "b1" })],
+      mappings: [], // blank regions never get a FieldMapping
+    };
+    const plan = toDynamicLessonPlanFromFieldMap({}, fieldMap);
+    expect(plan.sections).toEqual([
+      { id: "b1", originalLabel: "Notes", content: "", origin: "manual" },
+    ]);
+  });
+
+  it("multiple 'blank' regions in the same table and across different cells remain independent", () => {
+    const fieldMap: TemplateFieldMap = {
+      version: 1,
+      confirmed: true,
+      regions: [
+        blankRegion({ id: "doc_b1", order: 1 }), // top-level, outside any table
+        blankRegion({ id: "table_1_row_1_cell_1_unit_1", order: 2, tableId: "table_1", rowId: "table_1_row_1", cellId: "table_1_row_1_cell_1" }),
+        blankRegion({ id: "table_1_row_1_cell_2_unit_1", order: 3, tableId: "table_1", rowId: "table_1_row_1", cellId: "table_1_row_1_cell_2" }),
+        blankRegion({ id: "table_1_row_2_cell_1_unit_1", order: 4, tableId: "table_1", rowId: "table_1_row_2", cellId: "table_1_row_2_cell_1" }),
+      ],
+      mappings: [],
+    };
+    const plan = toDynamicLessonPlanFromFieldMap({}, fieldMap);
+    expect(plan.sections).toHaveLength(4);
+    expect(new Set(plan.sections.map((s) => s.id)).size).toBe(4);
+    expect(plan.sections.every((s) => s.content === "" && s.origin === "manual")).toBe(true);
+
+    const edited = editSectionContent(plan.sections, "table_1_row_1_cell_2_unit_1", "Bring extra graph paper.");
+    expect(edited.find((s) => s.id === "table_1_row_1_cell_2_unit_1")?.content).toBe("Bring extra graph paper.");
+    // Every other blank region — including the sibling cell in the SAME row
+    // and the sibling region in the SAME cell's table — stays untouched.
+    for (const id of ["doc_b1", "table_1_row_1_cell_1_unit_1", "table_1_row_2_cell_1_unit_1"]) {
+      expect(edited.find((s) => s.id === id)?.content).toBe("");
+    }
+  });
+
+  it("mixes 'blank' top-level regions and manual_entry table-cell regions in one plan without id collisions", () => {
+    const fieldMap: TemplateFieldMap = {
+      version: 1,
+      confirmed: true,
+      regions: [
+        blankRegion({ id: "doc_b1" }),
+        region({ id: "cell_1", contextLabel: "Anticipated Misconceptions", tableId: "table_1", rowId: "table_1_row_1", cellId: "table_1_row_1_cell_1" }),
+      ],
+      mappings: [manualMapping("cell_1")],
+    };
+    const plan = toDynamicLessonPlanFromFieldMap({}, fieldMap);
+    expect(plan.sections).toHaveLength(2);
+    expect(plan.sections.find((s) => s.id === "doc_b1")).toEqual({ id: "doc_b1", originalLabel: "Notes", content: "", origin: "manual" });
+    expect(plan.sections.find((s) => s.id === "cell_1")).toEqual({ id: "cell_1", originalLabel: "Anticipated Misconceptions", content: "", origin: "manual" });
+  });
+
+  it("a 'blank' region's edited content survives a Library save/reload round-trip (JSON serialization)", () => {
+    const fieldMap: TemplateFieldMap = {
+      version: 1,
+      confirmed: true,
+      regions: [blankRegion({ id: "doc_b1" })],
+      mappings: [],
+    };
+    const plan = toDynamicLessonPlanFromFieldMap({}, fieldMap);
+    const edited = editSectionContent(plan.sections, "doc_b1", "Remind students to bring calculators.");
+    const savedJson = JSON.stringify({ sections: edited }); // what handleSaveDynamicEdit persists as lesson_json
+    const reloaded: DynamicLessonPlan = JSON.parse(savedJson);
+    expect(reloaded.sections).toEqual([
+      { id: "doc_b1", originalLabel: "Notes", content: "Remind students to bring calculators.", origin: "manual" },
+    ]);
+  });
+
+  it("clearing a 'blank' region's content back to empty results in a truly blank field, not a deleted section", () => {
+    const fieldMap: TemplateFieldMap = {
+      version: 1,
+      confirmed: true,
+      regions: [blankRegion({ id: "doc_b1" })],
+      mappings: [],
+    };
+    const plan = toDynamicLessonPlanFromFieldMap({}, fieldMap);
+    const edited = editSectionContent(plan.sections, "doc_b1", "temporary note");
+    const cleared = editSectionContent(edited, "doc_b1", "");
+    expect(cleared).toEqual([{ id: "doc_b1", originalLabel: "Notes", content: "", origin: "manual" }]);
   });
 });
 
@@ -179,7 +280,7 @@ describe("previously-saved plans continue to work without migration", () => {
     // field" check used by the preview (section.origin === "manual") is
     // false for every section here, same as before this change existed.
     expect(legacyPlan.sections.every((s) => s.origin === undefined)).toBe(true);
-    expect(legacyPlan.sections.map((s) => s.origin === "manual" ? "(empty)" : s.content)).toEqual([
+    expect(legacyPlan.sections.map((s) => s.origin === "manual" ? "" : s.content)).toEqual([
       "Students will explain photosynthesis.",
       "Elodea sprigs, beakers.",
     ]);
@@ -239,18 +340,18 @@ describe("editing manual-entry cells: identity, isolation, and persistence", () 
     }
   });
 
-  it("4. saved manual content replaces the (empty) placeholder", () => {
+  it("4. saved manual content replaces the blank placeholder", () => {
     // Mirrors valueForRegion's resolution rule exactly (src/App.tsx):
-    // text = generated?.content?.trim() || undefined; placeholder = "(empty)".
-    const resolve = (content: string) => ({ text: content.trim() || undefined, placeholder: "(empty)" });
+    // text = generated?.content?.trim() || undefined; placeholder = "".
+    const resolve = (content: string) => ({ text: content.trim() || undefined, placeholder: "" });
     const displayed = (r: ReturnType<typeof resolve>) => r.text ?? r.placeholder;
     expect(displayed(resolve("Group by lab role, not friend groups."))).toBe("Group by lab role, not friend groups.");
   });
 
-  it("5. unedited cells continue to display (empty)", () => {
-    const resolve = (content: string) => ({ text: content.trim() || undefined, placeholder: "(empty)" });
+  it("5. unedited cells display truly blank — never the literal '(empty)' text", () => {
+    const resolve = (content: string) => ({ text: content.trim() || undefined, placeholder: "" });
     const displayed = (r: ReturnType<typeof resolve>) => r.text ?? r.placeholder;
-    expect(displayed(resolve(""))).toBe("(empty)");
+    expect(displayed(resolve(""))).toBe("");
   });
 
   it("6. manual content survives a Library save/reload round-trip (JSON serialization)", () => {
@@ -310,11 +411,11 @@ describe("buildDynamicLessonExportDocument — manual-entry sections in export",
     expect(m1?.paragraphs).toEqual(["Watch for the heavier-falls-faster misconception."]);
   });
 
-  it("exports '(empty)' — not '(no content generated)' — for an unedited manual field", () => {
+  it("exports a truly blank paragraph — never the literal '(empty)' or '(no content generated)' — for an unedited manual field", () => {
     const doc = buildDynamicLessonExportDocument(plan, "Photosynthesis Lesson");
     const manualSections = doc.sections.filter((s) => s.heading === "Notes");
     const unedited = manualSections.find((s) => s.paragraphs?.[0] !== plan.sections[1].content);
-    expect(unedited?.paragraphs).toEqual(["(empty)"]);
+    expect(unedited?.paragraphs).toEqual([""]);
   });
 
   it("still exports '(no content generated)' for an AI-generated section with no content (unaffected)", () => {

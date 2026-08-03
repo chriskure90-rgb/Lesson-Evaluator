@@ -1193,7 +1193,9 @@ function DynamicLessonPreview({
               />
             ) : (
               <p style={{ whiteSpace: "pre-wrap", color: "var(--muted-fg)" }}>
-                {section.content || (section.origin === "manual" ? "(empty)" : "(no content generated)")}
+                {/* An unedited manual field renders truly blank — no literal
+                    "(empty)" placeholder — in the normal preview/export. */}
+                {section.content || (section.origin === "manual" ? "" : "(no content generated)")}
               </p>
             )}
           </div>
@@ -1326,6 +1328,21 @@ function ReproducedTemplatePreview({
   // or metadata sourced from elsewhere in the Generator, never something
   // this editor should overwrite.
   function valueForRegion(region: TemplateRegion): { text: string | undefined; placeholder: string; editable: boolean } | null {
+    if (region.role === "blank") {
+      // A genuinely empty top-level paragraph with no preceding heading/
+      // instruction context — no field_map mapping exists for it (mappings
+      // only ever cover editable_field/checkbox_group regions), but
+      // toDynamicLessonPlanFromFieldMap still seeds a manual-entry-style
+      // section for it up front (src/lib/custom-templates.ts), so it's
+      // bound to generatedById/draftById by region id exactly like a
+      // manual_entry field below — same edit/save/export/reload path.
+      usedRegionIds.add(region.id);
+      const source = isEditingContent && draftById ? draftById : generatedById;
+      const generated = source.get(region.id);
+      // Renders truly blank (no placeholder text) when unedited — see the
+      // manual_entry branch below for why this deliberately isn't "(empty)".
+      return { text: generated?.content?.trim() || undefined, placeholder: "", editable: true };
+    }
     if (region.role !== "editable_field" && region.role !== "checkbox_group") return null;
     const mapping = mappingByRegionId.get(region.id);
     if (!mapping) return null;
@@ -1358,21 +1375,23 @@ function ReproducedTemplatePreview({
     const generated = source.get(region.id);
     return {
       text: generated?.content?.trim() || undefined,
-      // Manual-entry cells always show the literal "(empty)" placeholder —
-      // matching the exact text the teacher's uploaded template itself uses
-      // for these cells, so a not-yet-filled-in cell reads identically
-      // whether the teacher has generated a lesson yet or not.
+      // An unedited manual-entry cell renders as truly blank — no literal
+      // placeholder text — in the normal (non-editing) preview and export,
+      // never the literal "(empty)" a teacher's own uploaded template might
+      // use as its own placeholder wording; that text is only ever a
+      // detection-time recognition marker (isGenericEmptyCellPlaceholder),
+      // never something this preview echoes back.
       placeholder: isManualEntry
-        ? "(empty)"
+        ? ""
         : plan ? "(no content generated)" : "Generated content will appear here.",
       editable: true,
     };
   }
 
   function renderRegionContent(region: TemplateRegion) {
-    if (region.role === "blank") {
-      return <span style={{ color: "var(--muted-fg)", fontStyle: "italic" }}>(empty)</span>;
-    }
+    // "blank" (a genuinely empty top-level paragraph with no context) falls
+    // straight through to the same valueForRegion/textarea binding as
+    // editable_field below — see valueForRegion's own "blank" branch.
     if (region.role === "heading" || region.role === "instruction") {
       // Original document text, verbatim — never overwritten.
       return (

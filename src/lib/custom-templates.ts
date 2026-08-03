@@ -918,7 +918,28 @@ export function toDynamicLessonPlanFromFieldMap(
         origin: "manual",
       };
     });
-  return { sections: [...generatedSections, ...manualSections] };
+  // A "blank" region is a genuinely empty top-level (non-table) paragraph
+  // with no preceding heading/instruction at all — classifyUnitsIntoRegions
+  // (api/custom-templates.js) never gives these a FieldMapping (mappings
+  // only ever cover editable_field/checkbox_group regions), so without this
+  // they have no DynamicLessonSection at all and ReproducedTemplatePreview
+  // has nothing to bind an editable field to — they used to render as a
+  // permanently non-editable "(empty)" span. Seeded exactly like a
+  // manual_entry section above (same origin, same empty starting content)
+  // so the same edit/save/export/reload path just works for these too, with
+  // zero new persistence shape. (A blank region can never occur INSIDE a
+  // table cell — classifyUnitsIntoRegions always gives a blank table cell
+  // role: "editable_field" instead — so this only ever adds top-level
+  // sections, never collides with a table-cell manual_entry section.)
+  const blankRegionSections: DynamicLessonSection[] = fieldMap.regions
+    .filter((r) => r.role === "blank")
+    .map((r) => ({
+      id: r.id,
+      originalLabel: "Notes",
+      content: "",
+      origin: "manual",
+    }));
+  return { sections: [...generatedSections, ...manualSections, ...blankRegionSections] };
 }
 
 // Generic export for dynamic (field-map-driven) generation — one
@@ -934,11 +955,11 @@ export function buildDynamicLessonExportDocument(plan: DynamicLessonPlan, title:
     title: title || "Lesson Plan",
     sections: plan.sections.map((section) => ({
       heading: section.originalLabel,
-      // A manual-entry field left unfilled reads as "(empty)" — the same
-      // placeholder the teacher's own template/preview uses for it — never
-      // "(no content generated)", since nothing was ever supposed to
+      // A manual-entry field left unfilled exports as a truly blank
+      // paragraph — never the literal "(empty)" text, and never
+      // "(no content generated)" either, since nothing was ever supposed to
       // generate it in the first place.
-      paragraphs: [section.content || (section.origin === "manual" ? "(empty)" : "(no content generated)")],
+      paragraphs: [section.content || (section.origin === "manual" ? "" : "(no content generated)")],
     })),
   };
 }
