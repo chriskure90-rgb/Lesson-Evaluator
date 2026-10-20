@@ -990,11 +990,11 @@ function Sidebar({ page, setPage, userEmail, onLogout }: { page: Page; setPage: 
       <div className="sidebar-footer">
         <div className="sidebar-user">
           <div className="sidebar-avatar">
-            {userEmail ? userEmail[0].toUpperCase() : "?"}
+            {userEmail ? userEmail[0].toUpperCase() : "G"}
           </div>
           <div style={{ minWidth: 0, flex: 1 }}>
             <div className="sidebar-user-name" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {userEmail ?? "Teacher"}
+              {userEmail || "Guest"}
             </div>
           </div>
         </div>
@@ -6182,6 +6182,21 @@ function LoginPage({ forceRecovery }: { forceRecovery: boolean }) {
     // On success, App's onAuthStateChange listener handles navigation.
   }
 
+  // Guest / mock login: a real Supabase anonymous session (no email or
+  // password), so RLS and the API's JWT check work exactly as for a normal
+  // account. Requires "Allow anonymous sign-ins" in the Supabase dashboard
+  // (Authentication → Sign In / Providers).
+  async function handleGuestSignIn() {
+    setError(null);
+    setLoading(true);
+    const { error: authError } = await supabase.auth.signInAnonymously();
+    if (authError) {
+      setError(authError.message);
+      setLoading(false);
+    }
+    // On success, App's onAuthStateChange listener handles navigation.
+  }
+
   async function handleForgotPassword() {
     if (!email.trim()) {
       setError("Please enter your email address.");
@@ -6398,6 +6413,14 @@ function LoginPage({ forceRecovery }: { forceRecovery: boolean }) {
                 onClick={() => switchMode(mode === "signup" ? "signin" : "signup")}
               >
                 {mode === "signup" ? "Sign in" : "Create account"}
+              </button>
+            </p>
+          )}
+
+          {mode === "signin" && (
+            <p className="login-switch">
+              <button type="button" className="login-switch-btn" onClick={handleGuestSignIn} disabled={loading}>
+                Continue as guest
               </button>
             </p>
           )}
